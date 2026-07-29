@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint, type-check & docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -e ".[all,dev,docs]"
+      - run: ruff check .
+      # TODO: drop continue-on-error once the pre-existing type errors this
+      # surfaces (Optional-access in tests/, ASGI type mismatches in
+      # integrations/fastapi.py + robyn.py) are fixed; tracked as a gap, not
+      # ignored.
+      - run: pyright
+        continue-on-error: true
+      # Catches broken nav/links/mkdocstrings refs at PR time — docs.yml only
+      # runs on push to main, which is too late to stop a bad deploy.
+      - run: mkdocs build --strict
+
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+      - run: pip install -e ".[all,dev]"
+      - run: python -m pytest -v
+
+  build:
+    name: Build distribution
+    needs: [lint, test]
+    uses: ./.github/workflows/build.yml
