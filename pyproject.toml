@@ -28,10 +28,11 @@ dependencies = [
 
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.100", "sse-starlette>=1.6"]
+robyn = ["robyn>=0.60"]
 redis = ["redis>=5.0"]
 pgvector = ["asyncpg>=0.29"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp>=1.20"]
-all = ["byoai-runtime[fastapi,redis,pgvector,otel]"]
+all = ["byoai-runtime[fastapi,robyn,redis,pgvector,otel]"]
 
 [project.urls]
 Homepage = "https://github.com/byoai-runtime/byoai-runtime"

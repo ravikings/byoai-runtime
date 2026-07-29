@@ -36,7 +36,7 @@ import json
 from typing import Any
 
 try:
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import StreamingResponse
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
@@ -45,6 +45,7 @@ except ImportError as exc:  # pragma: no cover
 
 from ..errors import ConfigurationError
 from ..runtime import Runtime
+from ..transport import chunk_to_dict, ws_reply
 
 _STATE_ATTR = "byoai"
 
@@ -89,18 +90,33 @@ def stream_response(
 
     async def event_source():
         async for chunk in runtime.stream(input, **execute_kwargs):
-            if chunk.done:
-                payload: dict[str, Any] = {"done": True}
-                if chunk.usage is not None:
-                    payload["usage"] = chunk.usage.__dict__
-                if chunk.model:
-                    payload["model"] = chunk.model
-                yield f"data: {json.dumps(payload)}\n\n"
-            elif chunk.delta:
-                yield f"data: {json.dumps({'delta': chunk.delta})}\n\n"
+            if chunk.done or chunk.delta:
+                yield f"data: {json.dumps(chunk_to_dict(chunk))}\n\n"
 
     return StreamingResponse(
         event_source(),
         media_type=media_type,
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+async def serve_websocket(runtime: Runtime, websocket: WebSocket) -> None:
+    """Serve the shared WebSocket dialect on an accepted-or-new connection.
+
+    Each client message is one JSON payload (see ``byoai.transport``); the
+    response is a stream of JSON frames — ``{"delta": ...}`` per token batch,
+    then ``{"done": true, "usage": {...}}``. Use inside your own route::
+
+        @app.websocket("/ws")
+        async def ws(websocket: WebSocket, rt: Runtime = Depends(get_runtime)):
+            await serve_websocket(rt, websocket)
+    """
+    if websocket.client_state.name == "CONNECTING":
+        await websocket.accept()
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            async for frame in ws_reply(runtime, raw):
+                await websocket.send_text(frame)
+    except WebSocketDisconnect:
+        pass
