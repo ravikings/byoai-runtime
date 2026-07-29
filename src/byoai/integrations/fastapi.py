@@ -1,0 +1,106 @@
+"""FastAPI integration.
+
+Wires a :class:`byoai.Runtime` into an existing FastAPI app with three pieces:
+
+* :func:`attach` — binds runtime lifecycle (startup/shutdown) to the app and
+  stores the runtime on ``app.state.byoai``.
+* :func:`get_runtime` — a ``Depends``-compatible accessor for route handlers.
+* :func:`stream_response` — wraps ``runtime.stream()`` in a Server-Sent-Events
+  ``StreamingResponse`` for token streaming.
+
+Usage with an existing app::
+
+    from fastapi import Depends, FastAPI
+    from byoai import Runtime
+    from byoai.integrations.fastapi import attach, get_runtime, stream_response
+
+    app = FastAPI()
+    attach(app, Runtime(llm={"provider": "openai", "model": "gpt-4o"}))
+
+    @app.post("/ask")
+    async def ask(body: dict, runtime: Runtime = Depends(get_runtime)):
+        result = await runtime.execute(body["query"], user_id=body.get("user_id"))
+        return {"content": result.content, "cached": result.cached,
+                "usage": result.usage.__dict__}
+
+    @app.post("/ask/stream")
+    async def ask_stream(body: dict, runtime: Runtime = Depends(get_runtime)):
+        return stream_response(runtime, body["query"], user_id=body.get("user_id"))
+
+Requires the ``fastapi`` extra: ``pip install byoai-runtime[fastapi]``.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+try:
+    from fastapi import FastAPI, Request
+    from fastapi.responses import StreamingResponse
+except ImportError as exc:  # pragma: no cover
+    raise ImportError(
+        "byoai.integrations.fastapi requires FastAPI: pip install 'byoai-runtime[fastapi]'"
+    ) from exc
+
+from ..errors import ConfigurationError
+from ..runtime import Runtime
+
+_STATE_ATTR = "byoai"
+
+
+def attach(app: FastAPI, runtime: Runtime) -> Runtime:
+    """Bind the runtime to an app: stores it on ``app.state`` and registers a
+    shutdown hook that closes provider/cache/vector connections.
+
+    Works alongside an app's existing lifespan/startup handlers — it only adds
+    an ``on_shutdown`` callback rather than replacing the lifespan.
+    """
+    setattr(app.state, _STATE_ATTR, runtime)
+    # Starlette >=1.0 exposes add_event_handler on the router only.
+    target = app if hasattr(app, "add_event_handler") else app.router
+    target.add_event_handler("shutdown", runtime.close)
+    return runtime
+
+
+def get_runtime(request: Request) -> Runtime:
+    """FastAPI dependency: ``runtime: Runtime = Depends(get_runtime)``."""
+    runtime = getattr(request.app.state, _STATE_ATTR, None)
+    if runtime is None:
+        raise ConfigurationError(
+            "no ByoAI runtime attached to this app — call "
+            "byoai.integrations.fastapi.attach(app, runtime) at startup"
+        )
+    return runtime
+
+
+def stream_response(
+    runtime: Runtime,
+    input: Any,
+    *,
+    media_type: str = "text/event-stream",
+    **execute_kwargs: Any,
+) -> StreamingResponse:
+    """SSE response streaming ``runtime.stream()`` chunks.
+
+    Emits ``data: {"delta": "..."}`` events per token batch and a final
+    ``data: {"done": true, "usage": {...}}`` event.
+    """
+
+    async def event_source():
+        async for chunk in runtime.stream(input, **execute_kwargs):
+            if chunk.done:
+                payload: dict[str, Any] = {"done": True}
+                if chunk.usage is not None:
+                    payload["usage"] = chunk.usage.__dict__
+                if chunk.model:
+                    payload["model"] = chunk.model
+                yield f"data: {json.dumps(payload)}\n\n"
+            elif chunk.delta:
+                yield f"data: {json.dumps({'delta': chunk.delta})}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type=media_type,
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
