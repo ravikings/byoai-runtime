@@ -30,6 +30,27 @@ matching the architecture doc's recommendation of Robyn as the primary HTTP
 runtime. Both endpoints served the full pipeline (context resolution, cache,
 provider routing) per request.
 
+### Multi-process scaling (added 2026-07-29, same 12-core machine)
+
+Robyn `--processes 8`, cache-hit path, generators sharing the machine:
+
+| Setup                                | Aggregate      | p50 | p99   | Failed |
+| ------------------------------------ | -------------- | --- | ----- | ------ |
+| 1 process (baseline above)           | 15,731 req/s   | 12ms| 21ms  | 0      |
+| 8 processes, 1 × ab (c=100)          | 54,036 req/s   | 1ms | 7ms   | 0      |
+| 8 processes, 2 × ab (c=150 each)     | **72,547 req/s** | 3ms | 14ms  | 0      |
+| 8 processes, 4 × ab (c=100 each)     | ~85k req/s     | 3-4ms | ~20ms | 0*     |
+
+\* ab counts response-length variance (`cached:false` first response) as
+"failed"; all requests returned 200.
+
+Scaling is near-linear until the *load generators* start starving on the
+shared box — the server had headroom left at 72k. A dedicated server-class
+node should clear ~100k req/s on the cached path; two nodes, comfortably.
+Ceiling to watch at that rate: the exact-match cache costs one Redis GET per
+request when backed by Redis (memory cache is free); ~100k ops/s saturates a
+single Redis — use cluster mode or accept per-process memory L1.
+
 ## Queue workers (in-process, MemoryJobQueue, 20k jobs)
 
 | Concurrency | Throughput     |
