@@ -47,6 +47,12 @@ An unrecognized `provider` is resolved through Python entry points under the `by
 group before raising `ConfigurationError` — see [Vector stores: custom adapters via
 plugins](vector-stores.md#custom-adapters-via-plugins) for how the plugin mechanism works.
 
+Every adapter accepts `retryable_status=` to override which HTTP status codes the
+[retry policy](#tuning-retries) treats as transient (default
+`{408, 409, 500, 502, 503, 504}`, plus `529` for Anthropic), and a path override
+(`chat_path=`, `messages_path=`, or `embeddings_path=` depending on the adapter) for gateways
+that mount the API at a non-standard route.
+
 ## Tuning retries
 
 ```python

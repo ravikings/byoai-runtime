@@ -32,7 +32,14 @@ async def ask_stream(body: dict, runtime: Runtime = Depends(get_runtime)):
 ```
 
 The SSE stream emits `data: {"delta": "..."}` events per token batch, then a final
-`data: {"done": true, "usage": {...}}` event.
+`data: {"done": true, "usage": {...}}` event. `stream_response()` also accepts `headers=` to
+override or drop the default buffering-safe response headers (`Cache-Control`,
+`X-Accel-Buffering`) — pass `{}` to omit them entirely.
+
+## Exposing the runtime over MCP alongside FastAPI
+
+`byoai.integrations.mcp.attach()` mounts an MCP tool server into the same FastAPI app — see the
+[MCP guide](mcp.md).
 
 ## WebSocket
 

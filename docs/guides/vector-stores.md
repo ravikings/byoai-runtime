@@ -28,7 +28,8 @@ runtime = Runtime(
 ```
 
 `byoai.vector.pgvector.PgVectorStore` also accepts `pool` (an existing `asyncpg` pool) instead of
-`dsn`, and `min_pool_size`/`max_pool_size`.
+`dsn`, `min_pool_size`/`max_pool_size`, a `command_timeout`, and arbitrary `**pool_kwargs`
+forwarded to `asyncpg.create_pool()` (e.g. `server_settings={"statement_timeout": "..."}`, `ssl=...`).
 
 ### Qdrant
 

@@ -149,3 +149,11 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 ::: byoai.integrations.robyn.attach
 
 ::: byoai.integrations.robyn.create_app
+
+## MCP integration
+
+::: byoai.integrations.mcp.create_server
+
+::: byoai.integrations.mcp.attach
+
+::: byoai.integrations.mcp.create_app

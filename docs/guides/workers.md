@@ -9,8 +9,10 @@ results back. Concurrency is semaphore-bounded; shutdown is graceful (stops popp
 drains in-flight ones).
 
 BYOI: bring your own queue. `RedisStreamQueue` rides an existing Redis with consumer groups
-(at-least-once delivery, `XACK` on completion) under the isolated `byoai:` namespace;
-`MemoryJobQueue` serves dev/tests.
+(at-least-once delivery, `XACK` on completion) under the isolated `byoai:` namespace — standalone,
+cluster, or Sentinel, via the same `mode`/`sentinels`/`service_name` options as
+[`RedisCache`](caching.md#redis). `MemoryJobQueue` serves dev/tests, with an optional `maxsize`
+to backpressure publishers when a slow worker fleet falls behind.
 
 ```python
 from byoai import Runtime
@@ -32,6 +34,13 @@ job_id = await queue.publish(Job(payload={"input": "What are our SLA terms?", "u
 # ... later, from any process:
 result = await queue.read_result(job_id)
 ```
+
+## Graceful shutdown
+
+`worker.stop()` stops popping new jobs and waits for in-flight ones to drain. Pass
+`shutdown_timeout` to `RuntimeWorker(...)` to cap how long that drain waits — past the timeout,
+remaining jobs keep running in the background but `stop()`/`run()` return anyway rather than
+hanging indefinitely (default `None` waits forever, as before).
 
 ## Failure handling
 

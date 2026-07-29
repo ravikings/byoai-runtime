@@ -11,6 +11,7 @@ Optional integrations are extras — install only what you need:
 ```bash
 pip install "byoai-runtime[fastapi]"   # FastAPI integration
 pip install "byoai-runtime[robyn]"     # Robyn integration
+pip install "byoai-runtime[mcp]"       # MCP tool-server integration
 pip install "byoai-runtime[redis]"     # Redis cache / queue / shared semantic cache
 pip install "byoai-runtime[pgvector]"  # pgvector vector store
 pip install "byoai-runtime[semantic]"  # in-process semantic (intent) cache
@@ -54,13 +55,15 @@ the [project README](https://github.com/ravikings/byoai-runtime#-quickstart).
 
 For each adapter's individual configuration surface, see
 [Caching](guides/caching.md), [Vector stores](guides/vector-stores.md), and
-[Provider routing](guides/providers.md), and the [API reference](reference/api.md) for exact
-signatures.
+[Provider routing](guides/providers.md); the [API reference](reference/api.md) auto-generates
+signatures from docstrings, and
+[CONFIGURATION.md](https://github.com/ravikings/byoai-runtime/blob/main/CONFIGURATION.md) in the
+repository is the authoritative parameter-by-parameter reference across every component.
 
 ## Next steps
 
 - Drop the runtime into an existing app: [FastAPI guide](guides/fastapi.md),
-  [Robyn guide](guides/robyn.md).
+  [Robyn guide](guides/robyn.md), or expose it as a tool over [MCP](guides/mcp.md).
 - Run executions off the request path: [Background workers](guides/workers.md).
 - Serve similar (not just identical) queries from cache: [Semantic caching](guides/semantic-cache.md).
 - Add retrieval-augmented generation: [Vector stores — RAG retrieval in the

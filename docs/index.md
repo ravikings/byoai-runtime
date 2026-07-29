@@ -26,8 +26,8 @@ instead.**
   providers (e.g. OpenAI → Azure OpenAI → Ollama).
 - **Zero-SaaS OpenTelemetry tracing** — one span per execution, per-stage children, OTLP export
   to a collector you already run.
-- **Framework-agnostic transports** — the same execution dialect over FastAPI, Robyn, WebSocket,
-  and background queue workers.
+- **Framework-agnostic transports** — the same execution dialect over FastAPI, Robyn, MCP,
+  WebSocket, and background queue workers.
 - **Plugin system** — unrecognized `provider` values for `llm=`, `cache=`, `vector_store=`,
   `embedder=`, and `semantic_cache=` resolve through Python entry points, so a `pip install` adds
   a new adapter without a ByoAI code change.
@@ -52,7 +52,13 @@ instead.**
 ```
 
 Start with [Getting Started](getting-started.md), or jump straight to a guide:
-[FastAPI](guides/fastapi.md), [Robyn](guides/robyn.md), [Caching](guides/caching.md),
-[Semantic caching](guides/semantic-cache.md), [Vector stores](guides/vector-stores.md),
-[Provider routing](guides/providers.md), [Background workers](guides/workers.md),
-[Telemetry](guides/telemetry.md).
+[FastAPI](guides/fastapi.md), [Robyn](guides/robyn.md), [MCP](guides/mcp.md),
+[Caching](guides/caching.md), [Semantic caching](guides/semantic-cache.md),
+[Vector stores](guides/vector-stores.md), [Provider routing](guides/providers.md),
+[Background workers](guides/workers.md), [Telemetry](guides/telemetry.md).
+
+These guides cover how the pieces fit together and why. For the exact parameter reference of
+every component — every constructor argument and its default — see
+[CONFIGURATION.md](https://github.com/ravikings/byoai-runtime/blob/main/CONFIGURATION.md) in the
+repository; it's kept as the single source of truth for exact signatures, cross-linked from the
+guides rather than duplicated in them.

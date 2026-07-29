@@ -21,7 +21,8 @@ app.start(port=8080)
 ```
 
 `attach` accepts a `prefix` (default `/byoai`) and registers a shutdown handler that closes the
-runtime's provider/cache/vector-store connections.
+runtime's provider/cache/vector-store connections. `stream_media_type` and `stream_headers`
+customize the SSE response the same way FastAPI's `stream_response()` does.
 
 ## Standalone service
 
@@ -33,6 +34,9 @@ from byoai.integrations.robyn import create_app
 app = create_app(runtime)
 app.start(port=8080)
 ```
+
+Pass `healthz_path=None` to skip registering the health route (e.g. if the host app already has
+one); any other keyword arguments forward to `attach()`.
 
 See [`examples/robyn_app/main.py`](https://github.com/ravikings/byoai-runtime/blob/main/examples/robyn_app/main.py)
 for a runnable example.
