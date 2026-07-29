@@ -54,6 +54,19 @@ async def test_numeric_retry_after_is_parsed():
     assert excinfo.value.retry_after == 7.0
 
 
+async def test_malformed_response_body_raises_provider_error_not_json_error():
+    # Regression: a 200 response that isn't valid JSON (e.g. a misconfigured
+    # gateway/proxy returning an HTML error page) used to leak a raw
+    # json.JSONDecodeError past the adapter instead of a ProviderError.
+    def handler(request):
+        return httpx.Response(200, content=b"<html>not json</html>")
+
+    with pytest.raises(ProviderError) as excinfo:
+        await make_provider(handler).complete(MESSAGES)
+    assert "malformed response body" in str(excinfo.value)
+    assert excinfo.value.retryable is False
+
+
 async def test_successful_completion_parses_usage():
     def handler(request):
         return httpx.Response(

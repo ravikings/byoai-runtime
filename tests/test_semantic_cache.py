@@ -121,6 +121,28 @@ async def test_embedder_failure_degrades_to_miss_not_crash():
     assert misses and "embeddings down" in misses[0]
 
 
+async def test_embedder_raw_exception_degrades_to_miss_not_crash():
+    # Regression: embedder= accepts any user-supplied async (str) -> list[float]
+    # callable, which won't necessarily raise our typed ByoAIError (e.g. a raw
+    # ConnectionError/TimeoutError from the user's own HTTP client). The stage
+    # previously only caught ByoAIError, so this leaked past and failed the
+    # whole request instead of degrading to a cache miss.
+    calls = {"n": 0}
+
+    async def flaky_embedder(text: str) -> list[float]:
+        calls["n"] += 1
+        raise ConnectionError("dns lookup failed")
+
+    runtime = Runtime(
+        providers=[FakeProvider()],
+        semantic_cache={"provider": "memory", "threshold": 0.9},
+        embedder=flaky_embedder,
+    )
+    result = await runtime.execute("hi")  # must not raise
+    assert result.content == "hello from fake"
+    assert calls["n"] == 1
+
+
 async def test_zero_magnitude_embedding_write_back_does_not_crash():
     async def zero_embedder(text: str) -> list[float]:
         return [0.0, 0.0, 0.0]

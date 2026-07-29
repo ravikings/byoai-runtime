@@ -11,7 +11,7 @@ import httpx
 from .. import _json as json
 from ..errors import ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, raise_for_status
+from .base import DEFAULT_RETRYABLE_STATUS, parse_json_response, raise_for_status
 
 
 class GeminiProvider:
@@ -105,7 +105,7 @@ class GeminiProvider:
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True
             ) from exc
         self._raise_for_status(response)
-        data = response.json()
+        data = parse_json_response(response, provider=self.name)
         if not data.get("candidates"):
             raise ProviderError(
                 f"{self.name}: response contained no candidates",

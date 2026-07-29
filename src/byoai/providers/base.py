@@ -63,6 +63,23 @@ def raise_for_status(
     )
 
 
+def parse_json_response(response: httpx.Response, *, provider: str) -> Any:
+    """Parse a response body as JSON, wrapping a malformed body (e.g. a 200
+    from a misconfigured gateway that isn't actually JSON) as a clean
+    ProviderError instead of letting a raw JSONDecodeError escape the adapter
+    — every adapter failure must be a ProviderError so the router can act on it."""
+    from ..errors import ProviderError
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise ProviderError(
+            f"{provider}: malformed response body: {exc}",
+            provider=provider,
+            retryable=False,
+        ) from exc
+
+
 def build_openai_client(
     *,
     api_key: str | None,

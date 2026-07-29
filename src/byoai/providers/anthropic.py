@@ -11,7 +11,7 @@ import httpx
 from .. import _json as json
 from ..errors import ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, raise_for_status
+from .base import DEFAULT_RETRYABLE_STATUS, parse_json_response, raise_for_status
 
 # 529 = Anthropic's "overloaded" status, retryable like a 503.
 DEFAULT_RETRYABLE_STATUS_ANTHROPIC = DEFAULT_RETRYABLE_STATUS | {529}
@@ -75,7 +75,7 @@ class AnthropicProvider:
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True
             ) from exc
         self._raise_for_status(response)
-        data = response.json()
+        data = parse_json_response(response, provider=self.name)
         content = "".join(
             block.get("text", "")
             for block in data.get("content", [])

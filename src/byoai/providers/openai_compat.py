@@ -16,7 +16,12 @@ import httpx
 from .. import _json as json
 from ..errors import ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, build_openai_client, raise_for_status
+from .base import (
+    DEFAULT_RETRYABLE_STATUS,
+    build_openai_client,
+    parse_json_response,
+    raise_for_status,
+)
 
 
 class OpenAICompatProvider:
@@ -64,7 +69,7 @@ class OpenAICompatProvider:
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True
             ) from exc
         self._raise_for_status(response)
-        data = response.json()
+        data = parse_json_response(response, provider=self.name)
         choices = data.get("choices") or []
         if not choices:
             # e.g. Azure content filtering can return 200 with no choices.

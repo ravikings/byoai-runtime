@@ -15,7 +15,7 @@ from . import _json as json
 from . import events as ev
 from .cache.base import CacheStore
 from .context import RequestContext
-from .errors import ByoAIError, CacheError, ConfigurationError
+from .errors import CacheError, ConfigurationError
 from .events import EventBus
 from .providers.router import ProviderRouter
 from .types import Document, Message
@@ -227,12 +227,15 @@ class SemanticCacheLookup:
         if query is None:
             return
         # A semantic-cache or embedder hiccup must never fail a request that
-        # the provider would have answered — degrade to a miss instead.
+        # the provider would have answered — degrade to a miss instead. Catch
+        # broadly, not just ByoAIError: embedder= accepts any user-supplied
+        # `async (str) -> list[float]` callable, which won't necessarily raise
+        # our typed errors (e.g. a raw httpx.ConnectError or ConnectionError).
         try:
             embedding = await self.embedder(query)
             ctx.state[STATE_SEMANTIC_EMBEDDING] = embedding
             hit = await self.store.find(embedding, threshold=self.threshold)
-        except ByoAIError as exc:
+        except Exception as exc:  # noqa: BLE001 - degrade-to-miss must be unconditional
             ctx.state.pop(STATE_SEMANTIC_EMBEDDING, None)  # skip write-back too
             if self._bus:
                 await self._bus.emit(ev.CACHE_MISS, ctx=ctx, semantic=True, error=str(exc))

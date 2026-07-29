@@ -48,6 +48,17 @@ Initial alpha release.
   `AttributeError: 'dict' object has no attribute 'set'` on every call — it passed a plain dict
   as `StreamingResponse(headers=...)`, but Robyn's default-SSE-header code calls `.set()` on it,
   which only Robyn's own `Headers` type supports. Wrapped in `Headers(...)`.
+- A malformed (non-JSON) 200 response — e.g. a misconfigured gateway returning an HTML error
+  page — leaked a raw `json.JSONDecodeError` past every provider adapter (`OpenAICompatProvider`,
+  `AnthropicProvider`, `GeminiProvider`, `OpenAICompatEmbedder`) instead of a `ProviderError`,
+  breaking the router's retry/fallback and error-typing contract. Added a shared
+  `parse_json_response()` helper used by all four.
+- `SemanticCacheLookup` only caught `ByoAIError` around the embedder/store call, so a
+  user-supplied `embedder=` callable (explicitly a supported use case — any
+  `async (str) -> list[float]`) raising a plain exception (`ConnectionError`, `TimeoutError`,
+  etc.) failed the whole request instead of degrading to a cache miss, contradicting the
+  documented "a semantic-cache or embedder hiccup must never fail a request" guarantee.
+  Broadened to catch any exception.
 
 [Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a1...HEAD
 [0.1.0a1]: https://github.com/ravikings/byoai-runtime/releases/tag/v0.1.0a1

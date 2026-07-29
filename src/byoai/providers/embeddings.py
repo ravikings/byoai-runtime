@@ -11,7 +11,12 @@ from typing import Any
 import httpx
 
 from ..errors import ProviderError
-from .base import DEFAULT_RETRYABLE_STATUS, build_openai_client, raise_for_status
+from .base import (
+    DEFAULT_RETRYABLE_STATUS,
+    build_openai_client,
+    parse_json_response,
+    raise_for_status,
+)
 
 
 class OpenAICompatEmbedder:
@@ -76,7 +81,7 @@ class OpenAICompatEmbedder:
                 retryable=True,
             ) from exc
         raise_for_status(response, provider=self.name, retryable_status=self._retryable_status)
-        data = response.json().get("data") or []
+        data = parse_json_response(response, provider=self.name).get("data") or []
         if len(data) != len(texts):
             raise ProviderError(
                 f"{self.name}: embeddings response had {len(data)} vectors for "
