@@ -11,9 +11,9 @@ Requires the ``redis`` extra: ``pip install byoai-runtime[redis]``.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from .. import _json as json
 from ..errors import CacheError, ConfigurationError
 
 
@@ -60,6 +60,8 @@ class RedisCache:
     async def set(self, key: str, value: Any, *, ttl: int | None = None) -> None:
         # Always JSON-encode (strings included) so get() round-trips the exact
         # value and type — set("flag", "true") must come back as the str "true".
+        # Caveat: values must be JSON-representable; non-finite floats
+        # (NaN/Infinity) are not round-trip-safe (see byoai._json).
         payload = json.dumps(value, default=str)
         effective_ttl = ttl if ttl is not None else self.default_ttl
         if effective_ttl is not None and effective_ttl <= 0:

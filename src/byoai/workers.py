@@ -17,11 +17,11 @@ isolated ``byoai:`` namespace; :class:`MemoryJobQueue` serves dev/tests.
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from . import _json as json
 from .errors import ByoAIError, ConfigurationError
 from .runtime import Runtime
 from .transport import execute_payload

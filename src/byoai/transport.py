@@ -26,10 +26,10 @@ Result shape (non-streaming):
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from . import _json as json
 from .errors import ByoAIError, ConfigurationError
 
 if TYPE_CHECKING:  # pragma: no cover

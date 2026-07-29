@@ -32,8 +32,9 @@ Requires the ``fastapi`` extra: ``pip install byoai-runtime[fastapi]``.
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from .. import _json as json
 
 try:
     from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect

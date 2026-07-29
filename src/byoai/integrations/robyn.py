@@ -21,8 +21,9 @@ extra: ``pip install byoai-runtime[robyn]``.
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from .. import _json as json
 
 try:
     from robyn import Robyn, StreamingResponse, jsonify

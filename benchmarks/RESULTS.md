@@ -39,6 +39,26 @@ provider routing) per request.
 
 All jobs acked, zero failures, zero drops on graceful shutdown.
 
+## JSON codec: stdlib vs orjson (`bench_json.py`, added 2026-07-29)
+
+The largest remaining Python slice on the request path is JSON encode/decode
+(transport framing, cache fingerprinting, provider stream parsing). Swapping
+in orjson (Rust) behind `byoai._json` — optional `perf` extra, transparent
+stdlib fallback:
+
+| Hot path                         | stdlib json  | orjson       | speedup |
+| -------------------------------- | ------------ | ------------ | ------- |
+| Cache fingerprint                | 443k ops/s   | 1,130k ops/s | 2.6×    |
+| dumps small stream frame         | 1.22M ops/s  | 7.24M ops/s  | 6.0×    |
+| dumps result dict                | 391k ops/s   | 2.02M ops/s  | 5.2×    |
+| loads result dict                | 662k ops/s   | 2.22M ops/s  | 3.4×    |
+| Provider SSE line parse          | 1.29M ops/s  | 4.54M ops/s  | 3.5×    |
+| **sse_stream end-to-end frames** | 496k/s       | 750k/s       | +51%    |
+| **ws_reply end-to-end frames**   | 478k/s       | 744k/s       | +56%    |
+
+Cache-miss execute (fingerprint on the hot path) rose 55.6k → 60.8k req/s.
+A/B: `BYOAI_JSON=std` forces the stdlib backend.
+
 ## Method notes / honesty
 
 - The pure-Python `loadtest.py` generator saturates around ~750 req/s per

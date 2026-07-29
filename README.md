@@ -90,6 +90,10 @@ runtime = Runtime(
             "deployment": "gpt-4-prod",
         }
     },
+    telemetry={
+        "provider": "opentelemetry",
+        "endpoint": "http://otel-collector.internal:4317"  # your existing collector
+    },
 )
 
 # Execute through the runtime (async, from any async framework)

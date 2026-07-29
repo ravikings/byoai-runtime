@@ -10,12 +10,13 @@ and frameworks compose stages; the runtime executes them.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
 from . import events as ev
 from .cache.base import CacheStore
-from .config import build_cache, build_router, build_vector_store
+from .config import build_cache, build_router, build_vector_store, configure_telemetry
 from .context import RequestContext
 from .errors import CacheError, ConfigurationError, PipelineNotFound
 from .events import EventBus, EventHandler
@@ -39,6 +40,7 @@ class Runtime:
         retry_policy: RetryPolicy | None = None,
         system_prompt: str | None = None,
         cache_ttl: int | None = 3600,
+        telemetry: Any | None = None,
     ) -> None:
         self.events = EventBus()
         self.middleware = MiddlewareChain()
@@ -71,6 +73,12 @@ class Runtime:
             self.pipeline.add(ProviderCall(self.router))
         self._pipelines["default"] = self.pipeline
         self._cache_ttl = cache_ttl
+
+        # A provider configure_telemetry created for us is ours to shut down
+        # (flushing the final span batch); one the caller passed in is theirs.
+        self._owned_tracer_provider: Any | None = (
+            configure_telemetry(self, telemetry) if telemetry is not None else None
+        )
 
     # -- composition ----------------------------------------------------------
 
@@ -247,6 +255,9 @@ class Runtime:
             await self.cache.close()
         if self.vector_store is not None:
             await self.vector_store.close()
+        if self._owned_tracer_provider is not None:
+            # Flush the exporter's final batch so last-window spans aren't lost.
+            await asyncio.to_thread(self._owned_tracer_provider.shutdown)
 
     async def __aenter__(self) -> Runtime:
         return self
