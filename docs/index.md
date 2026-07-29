@@ -14,23 +14,23 @@ Most AI frameworks force engineering teams to adapt their database schemas, re-e
 vectors, and rewrite state management logic. **ByoAI Runtime adapts to your existing stack
 instead.**
 
-- **Zero-migration schema mapping** — connect to existing vector tables/collections/indexes via a
-  declarative `schema_map`; no re-indexing or data duplication.
-- **Cross-provider AST filter parser** — pass one Mongo-style filter dialect; ByoAI compiles it
-  to each backend's native form (pgvector JSONB, Qdrant filters, Pinecone metadata filters).
-- **Non-invasive cache isolation** — runtime writes stay under an isolated `byoai:` namespace
-  while a read-only `session_reader` pattern ingests chat history your app already stores.
-- **Semantic (intent) caching** — serve similar, not just identical, queries from cache via
-  embedding similarity, in-process or shared across workers on Redis.
-- **Resilient provider routing** — retries with backoff/jitter and ordered fallback across
-  providers (e.g. OpenAI → Azure OpenAI → Ollama).
-- **Zero-SaaS OpenTelemetry tracing** — one span per execution, per-stage children, OTLP export
-  to a collector you already run.
-- **Framework-agnostic transports** — the same execution dialect over FastAPI, Robyn, MCP,
-  WebSocket, and background queue workers.
-- **Plugin system** — unrecognized `provider` values for `llm=`, `cache=`, `vector_store=`,
-  `embedder=`, and `semantic_cache=` resolve through Python entry points, so a `pip install` adds
-  a new adapter without a ByoAI code change.
+- **Zero-migration schema mapping.** A declarative `schema_map` points ByoAI at your existing
+  vector tables/collections/indexes — no re-indexing, no data duplication.
+- **Cross-provider AST filter parser.** Write one Mongo-style filter dialect and ByoAI compiles it
+  to each backend's native form: pgvector JSONB, Qdrant filters, Pinecone metadata filters.
+- **Non-invasive cache isolation.** Runtime writes stay under an isolated `byoai:` namespace; a
+  read-only `session_reader` pattern ingests chat history your app already stores.
+- **Semantic (intent) caching** serves similar, not just identical, queries from cache via
+  embedding similarity — in-process, or shared across workers on Redis.
+- **Resilient provider routing** retries with backoff and jitter, then falls back across an
+  ordered provider chain (OpenAI → Azure OpenAI → Ollama, for example).
+- **Zero-SaaS OpenTelemetry tracing.** One span per execution, a child span per pipeline stage,
+  OTLP export straight to a collector you already run.
+- **Framework-agnostic transports.** FastAPI, Robyn, MCP, WebSocket, and background queue workers
+  all speak the same execution dialect.
+- **A plugin system** resolves unrecognized `provider` values for `llm=`, `cache=`, `vector_store=`,
+  `embedder=`, and `semantic_cache=` through Python entry points, so a `pip install` adds a new
+  adapter without touching ByoAI's code.
 
 ## Architecture
 

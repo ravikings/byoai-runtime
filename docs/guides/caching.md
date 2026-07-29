@@ -3,11 +3,12 @@
 `byoai.cache` adapters cover two distinct, deliberately-combined concerns — they share a
 connection to the same existing infrastructure:
 
-- **Runtime cache** (read-write) — the exact-match response cache, planner state, and execution
-  artifacts. All writes stay under an isolated namespace (default `byoai:`) so ByoAI never
-  collides with your application's own keys.
-- **Session reader** (read-only) — ingest *existing* application state, such as chat history your
-  app already stores in Redis, via a key-pattern mapping. ByoAI never writes through this path.
+- **Runtime cache** (read-write) handles the exact-match response cache, planner state, and
+  execution artifacts. All writes stay under an isolated namespace (default `byoai:`), so ByoAI
+  never collides with your application's own keys.
+- **Session reader** (read-only), by contrast, only ingests *existing* application state — chat
+  history your app already stores in Redis, say — through a key-pattern mapping; ByoAI never
+  writes through this path.
 
 ## In-memory (dev/tests)
 
