@@ -4,6 +4,7 @@ import pytest
 from tests.conftest import FakeProvider
 
 from byoai import ConfigurationError, Runtime
+from byoai.errors import ProviderError
 
 numpy = pytest.importorskip("numpy")
 
@@ -99,14 +100,25 @@ async def test_streamed_response_feeds_intent_cache():
     assert text.strip() == "the SLA answer"
 
 
-async def test_embedder_failure_degrades_to_miss_not_crash():
-    from byoai.errors import ProviderError
-
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ProviderError("embeddings down", provider="emb", retryable=True),
+        # Regression: embedder= accepts any user-supplied async (str) -> list[float]
+        # callable, which won't necessarily raise our typed ByoAIError (e.g. a raw
+        # ConnectionError/TimeoutError from the user's own HTTP client). The stage
+        # previously only caught ByoAIError, so this leaked past and failed the
+        # whole request instead of degrading to a cache miss.
+        ConnectionError("dns lookup failed"),
+    ],
+    ids=["byoai-typed-error", "raw-exception"],
+)
+async def test_embedder_failure_degrades_to_miss_not_crash(exc):
     calls = {"n": 0}
 
     async def flaky_embedder(text: str) -> list[float]:
         calls["n"] += 1
-        raise ProviderError("embeddings down", provider="emb", retryable=True)
+        raise exc
 
     runtime = Runtime(
         providers=[FakeProvider()],
@@ -118,29 +130,7 @@ async def test_embedder_failure_degrades_to_miss_not_crash():
     result = await runtime.execute("hi")  # must not raise
     assert result.content == "hello from fake"
     assert calls["n"] == 1
-    assert misses and "embeddings down" in misses[0]
-
-
-async def test_embedder_raw_exception_degrades_to_miss_not_crash():
-    # Regression: embedder= accepts any user-supplied async (str) -> list[float]
-    # callable, which won't necessarily raise our typed ByoAIError (e.g. a raw
-    # ConnectionError/TimeoutError from the user's own HTTP client). The stage
-    # previously only caught ByoAIError, so this leaked past and failed the
-    # whole request instead of degrading to a cache miss.
-    calls = {"n": 0}
-
-    async def flaky_embedder(text: str) -> list[float]:
-        calls["n"] += 1
-        raise ConnectionError("dns lookup failed")
-
-    runtime = Runtime(
-        providers=[FakeProvider()],
-        semantic_cache={"provider": "memory", "threshold": 0.9},
-        embedder=flaky_embedder,
-    )
-    result = await runtime.execute("hi")  # must not raise
-    assert result.content == "hello from fake"
-    assert calls["n"] == 1
+    assert misses and str(exc) in misses[0]
 
 
 async def test_zero_magnitude_embedding_write_back_does_not_crash():

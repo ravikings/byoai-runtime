@@ -16,6 +16,37 @@ pip install -e ".[all,dev]"
 `all` pulls in every optional integration (FastAPI, Robyn, Redis, pgvector, OTel) so the full
 test suite can run; `dev` adds pytest, ruff, pyright, and packaging tools.
 
+## Design principle: bring your own function
+
+Every extension point whose protocol has **one natural operation** must accept a bare async
+function, not just a class — no boilerplate `name`/`model` attributes, no `close()` method to
+stub out, nothing to subclass. A user with an existing async callable (a wrapped SDK client, an
+internal gateway, a test double) should be able to hand it straight to `Runtime` and have it work.
+
+This is already the case for:
+
+- **Pipeline stages** — `Pipeline.add(fn)` auto-wraps a bare `async def fn(ctx)` in
+  `FunctionStage`.
+- **`embedder=`** — accepts any `async (str) -> list[float]` callable directly.
+- **`providers=`** — accepts any `async (messages, **options) -> str | ProviderResponse`
+  callable directly (auto-wrapped in `FunctionProvider`).
+- **`vector_store=`** — accepts any `async (embedding, *, top_k, filters) -> list[Document]`
+  callable directly (auto-wrapped in `FunctionVectorStore`).
+- **Middleware** — `runtime.use(fn)` accepts a bare `async def fn(ctx, call_next)` already, since
+  `MiddlewareChain` just calls whatever it's given.
+
+If you add a new extension point with a one-operation protocol, follow the same pattern: accept
+the callable directly, and auto-wrap it (`obj if hasattr(obj, "<method>") else
+FunctionSomething(obj)`) at the point of construction, matching `Pipeline.add()` and
+`ProviderRouter.__init__()`.
+
+**When *not* to force this**: a protocol with several genuinely distinct operations —
+`CacheStore` (`get`/`set`/`delete`/`read_session`/`close`) and `SemanticCacheStore`
+(`find`/`add`/`close`) — doesn't reduce cleanly to one function, since a cache is inherently
+read *and* write, not one call. Don't contort those into a single-callable shape just for
+consistency; a class (or a small tuple/namespace of callables, if that ever comes up) is the
+honest fit there.
+
 ## Branching
 
 Do all work on a feature branch off `main` — never commit directly to `main`:

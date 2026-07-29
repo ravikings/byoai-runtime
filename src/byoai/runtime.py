@@ -11,7 +11,7 @@ and frameworks compose stages; the runtime executes them.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from . import events as ev
@@ -42,7 +42,7 @@ from .stages import (
     SemanticCacheLookup,
 )
 from .types import ExecutionResult, StreamChunk
-from .vector.base import VectorStore
+from .vector.base import FunctionVectorStore, VectorStore
 
 
 class Runtime:
@@ -50,9 +50,9 @@ class Runtime:
         self,
         *,
         llm: dict[str, Any] | None = None,
-        providers: list[LLMProvider] | None = None,
+        providers: list[LLMProvider | Callable[..., Any]] | None = None,
         cache: dict[str, Any] | CacheStore | None = None,
-        vector_store: dict[str, Any] | VectorStore | None = None,
+        vector_store: dict[str, Any] | VectorStore | Callable[..., Any] | None = None,
         semantic_cache: dict[str, Any] | Any | None = None,
         embedder: dict[str, Any] | Any | None = None,
         retry_policy: RetryPolicy | None = None,
@@ -68,7 +68,11 @@ class Runtime:
             build_cache(cache) if isinstance(cache, dict) else cache
         )
         self.vector_store: VectorStore | None = (
-            build_vector_store(vector_store) if isinstance(vector_store, dict) else vector_store
+            build_vector_store(vector_store)
+            if isinstance(vector_store, dict)
+            else FunctionVectorStore(vector_store)  # type: ignore[arg-type]
+            if vector_store is not None and not hasattr(vector_store, "search")
+            else vector_store
         )
 
         resolved_providers = list(providers or [])

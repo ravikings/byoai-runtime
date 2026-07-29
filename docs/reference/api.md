@@ -80,6 +80,8 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 
 ::: byoai.vector.base.VectorStore
 
+::: byoai.vector.base.FunctionVectorStore
+
 ::: byoai.vector.pgvector.PgVectorStore
 
 ::: byoai.vector.qdrant.QdrantVectorStore
@@ -89,6 +91,8 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 ## Provider adapters
 
 ::: byoai.providers.base.LLMProvider
+
+::: byoai.providers.base.FunctionProvider
 
 ::: byoai.providers.router.ProviderRouter
 

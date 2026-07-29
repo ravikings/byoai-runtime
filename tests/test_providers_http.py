@@ -67,6 +67,20 @@ async def test_malformed_response_body_raises_provider_error_not_json_error():
     assert excinfo.value.retryable is False
 
 
+async def test_valid_json_wrong_shape_raises_provider_error_not_attribute_error():
+    # Regression: a 200 response that's valid JSON but not an object (a bare
+    # list or null — e.g. a misconfigured gateway) parsed successfully, then
+    # the adapter's next `data.get(...)` raised a raw AttributeError instead
+    # of a ProviderError.
+    def handler(request):
+        return httpx.Response(200, json=[])
+
+    with pytest.raises(ProviderError) as excinfo:
+        await make_provider(handler).complete(MESSAGES)
+    assert "not an object" in str(excinfo.value)
+    assert excinfo.value.retryable is False
+
+
 async def test_successful_completion_parses_usage():
     def handler(request):
         return httpx.Response(

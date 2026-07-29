@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `providers=` and `vector_store=` now accept a bare async function directly — no class required
+  — auto-wrapped in `FunctionProvider`/`FunctionVectorStore`, matching the existing bare-callable
+  pattern for `embedder=` and `Pipeline.add()`. See CONTRIBUTING.md's "bring your own function"
+  design principle for which extension points get this treatment and which don't.
+
 ## [0.1.0a1] - 2026-07-29
 
 Initial alpha release.

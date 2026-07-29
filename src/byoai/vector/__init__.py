@@ -1,8 +1,9 @@
-from .base import DEFAULT_SCHEMA_MAP, VectorStore
+from .base import DEFAULT_SCHEMA_MAP, FunctionVectorStore, VectorStore
 from .filters import parse, parse_json, to_pgvector_sql, to_pinecone
 
 __all__ = [
     "VectorStore",
+    "FunctionVectorStore",
     "DEFAULT_SCHEMA_MAP",
     "PgVectorStore",
     "parse",

@@ -15,6 +15,7 @@ No migrations, no re-indexing, no table duplication.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 from ..types import Document
@@ -38,3 +39,37 @@ class VectorStore(Protocol):
     ) -> list[Document]: ...
 
     async def close(self) -> None: ...
+
+
+class FunctionVectorStore:
+    """Adapts a bare async search function into a :class:`VectorStore` — for
+    a custom retrieval backend that doesn't fit a declarative
+    ``vector_store={...}`` config. ``search()`` is the only operation this
+    protocol has, so one function is the whole adapter — no class needed:
+
+        async def my_search(embedding: list[float], *, top_k=5, filters=None) -> list[Document]:
+            ...
+
+        Runtime(vector_store=my_search)  # auto-wrapped
+    """
+
+    def __init__(
+        self,
+        fn: Callable[..., Awaitable[list[Document]]],
+        *,
+        name: str | None = None,
+    ) -> None:
+        self._fn = fn
+        self.name = name or getattr(fn, "__name__", "function_vector_store")
+
+    async def search(
+        self,
+        embedding: list[float],
+        *,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+    ) -> list[Document]:
+        return await self._fn(embedding, top_k=top_k, filters=filters)
+
+    async def close(self) -> None:
+        pass  # the wrapped function owns whatever client/resources it uses

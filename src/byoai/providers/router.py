@@ -11,15 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from .. import events as ev
 from ..errors import AllProvidersFailed, ProviderError
 from ..events import EventBus
 from ..types import Message, ProviderResponse, StreamChunk
-from .base import LLMProvider
+from .base import FunctionProvider, LLMProvider
 
 
 @dataclass
@@ -39,14 +39,22 @@ class RetryPolicy:
 class ProviderRouter:
     def __init__(
         self,
-        providers: Sequence[LLMProvider],
+        providers: Sequence[LLMProvider | Callable[..., Any]],
         *,
         retry_policy: RetryPolicy | None = None,
         event_bus: EventBus | None = None,
     ) -> None:
+        """``providers`` accepts ``LLMProvider`` instances or bare async
+        functions — a callable without a ``complete`` attribute is
+        auto-wrapped in :class:`FunctionProvider`, same as ``Pipeline.add()``
+        auto-wraps a bare function into a ``FunctionStage``."""
         if not providers:
             raise ValueError("ProviderRouter requires at least one provider")
-        self.providers = list(providers)
+        wrapped = [
+            p if hasattr(p, "complete") else FunctionProvider(p)  # type: ignore[arg-type]
+            for p in providers
+        ]
+        self.providers = cast("list[LLMProvider]", wrapped)
         self.retry_policy = retry_policy or RetryPolicy()
         self._bus = event_bus
 

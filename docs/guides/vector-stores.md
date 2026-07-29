@@ -72,6 +72,21 @@ runtime = Runtime(
 `byoai.vector.pinecone.PineconeVectorStore` also takes `include_values` and a fixed
 `sparse_vector` for hybrid dense+sparse search.
 
+### Bring your own function
+
+`search()` is the vector store protocol's only operation, so a custom retrieval backend needs
+no class at all — `vector_store=` accepts a bare async function directly:
+
+```python
+async def my_search(embedding, *, top_k=5, filters=None) -> list[Document]:
+    return await my_existing_index.query(vector=embedding, limit=top_k)
+
+runtime = Runtime(vector_store=my_search)
+```
+
+Auto-wrapped in `byoai.vector.base.FunctionVectorStore` — the same pattern `providers=` uses for
+[bare provider functions](providers.md#bring-your-own-function).
+
 ### Custom adapters via plugins
 
 An unrecognized `provider` is resolved through Python entry points under the

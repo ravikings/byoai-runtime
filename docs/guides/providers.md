@@ -77,6 +77,35 @@ Pass `providers=[...]` (a list of `LLMProvider` instances) instead of `llm=` for
 or combine both — `llm=` providers are tried first. See the [API reference](../reference/api.md)
 for adapter constructor signatures.
 
+## Bring your own function
+
+For a custom or gateway-wrapped backend — an existing SDK client, an internal compliance
+gateway, anything that isn't a plain HTTP endpoint — `providers=` also accepts a bare async
+function directly. No class, no `name`/`model` attributes, no `close()` to stub out:
+
+```python
+async def my_gateway(messages, **options) -> str:
+    response = await my_existing_client.create(
+        model=options.get("model", "claude-sonnet-4-5"),
+        messages=[{"role": m.role, "content": m.content} for m in messages],
+    )
+    return response.text
+
+runtime = Runtime(providers=[my_gateway])
+result = await runtime.execute("hi", tenant="acme-corp")  # extra kwargs flow through **options
+```
+
+The function is auto-wrapped in `byoai.providers.base.FunctionProvider` — the same pattern
+`Pipeline.add()` uses for bare pipeline-stage functions and `embedder=` already uses for bare
+embedding functions. Return a plain `str` for the common case, or a full `ProviderResponse` when
+you want usage/model/finish_reason tracked. To support `runtime.stream()` too, construct
+`FunctionProvider(fn, stream_fn=my_stream_fn)` explicitly — `stream_fn` yields either plain `str`
+deltas (a trailing `done` chunk is synthesized for you) or full `StreamChunk` objects if you need
+control over the final chunk's usage.
+
+`vector_store=` has the same bare-callable support (`FunctionVectorStore`) — see
+[Vector stores](vector-stores.md#bring-your-own-function).
+
 ## Embeddings
 
 `embedder=` builds a `byoai.providers.embeddings.OpenAICompatEmbedder` — any OpenAI-compatible
