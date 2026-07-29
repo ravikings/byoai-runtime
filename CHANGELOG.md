@@ -43,5 +43,11 @@ Initial alpha release.
 - Benchmark suite for JSON encoding, runtime throughput, and multi-process Robyn scaling
   (72.5k req/s aggregate across 8 processes on the cache-hit path).
 
+### Fixed
+- `byoai.integrations.robyn`'s SSE stream route (`POST /byoai/stream`) crashed with
+  `AttributeError: 'dict' object has no attribute 'set'` on every call — it passed a plain dict
+  as `StreamingResponse(headers=...)`, but Robyn's default-SSE-header code calls `.set()` on it,
+  which only Robyn's own `Headers` type supports. Wrapped in `Headers(...)`.
+
 [Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a1...HEAD
 [0.1.0a1]: https://github.com/ravikings/byoai-runtime/releases/tag/v0.1.0a1

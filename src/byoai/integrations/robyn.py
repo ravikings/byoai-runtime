@@ -26,7 +26,7 @@ from typing import Any
 from .. import _json as json
 
 try:
-    from robyn import Robyn, StreamingResponse, jsonify
+    from robyn import Headers, Robyn, StreamingResponse, jsonify
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "byoai.integrations.robyn requires Robyn: pip install 'byoai-runtime[robyn]'"
@@ -86,7 +86,11 @@ def attach(
         return StreamingResponse(
             sse_stream(runtime, payload),
             media_type=stream_media_type,
-            headers=effective_stream_headers,
+            # Robyn's StreamingResponse expects its native Headers type — a
+            # plain dict is truthy so `headers or Headers({})` keeps the dict
+            # as-is, and Robyn's own SSE-default-header code then calls
+            # `.set()` on it, which a plain dict doesn't have.
+            headers=Headers(effective_stream_headers),
         )
 
     @app.websocket(f"{prefix}/ws")
