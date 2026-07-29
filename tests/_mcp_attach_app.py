@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from byoai import ProviderResponse, Runtime, Usage
+from byoai import ProviderResponse, Runtime, StreamChunk, Usage
 from byoai.integrations.mcp import attach
 
 
@@ -25,8 +25,12 @@ class _FakeProvider:
         )
 
     async def stream(self, messages, **options):
-        return
-        yield  # pragma: no cover - never reached; makes this an async generator
+        for word in ("Hel", "lo ", "strea", "med ", "attach"):
+            yield StreamChunk(delta=word, model=self.model, provider=self.name)
+        yield StreamChunk(
+            done=True, model=self.model, provider=self.name,
+            usage=Usage(input_tokens=10, output_tokens=5),
+        )
 
     async def close(self) -> None:
         pass

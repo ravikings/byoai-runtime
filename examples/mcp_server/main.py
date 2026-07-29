@@ -8,7 +8,10 @@ Run:
     python examples/mcp_server/main.py           # stdio (for Claude Desktop, etc.)
 
 Any MCP client can then call the ``execute`` tool with the same payload
-dialect every other ByoAI transport uses: ``{"input": "..."}``.
+dialect every other ByoAI transport uses: ``{"input": "..."}``. There's also
+an ``execute_stream`` tool that streams token deltas as MCP progress
+notifications (for clients that render them live) while still returning the
+same full result at the end.
 """
 
 from __future__ import annotations

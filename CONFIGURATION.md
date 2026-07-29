@@ -374,12 +374,21 @@ span batch flushed) on `close()`.
 
 ### MCP — `byoai.integrations.mcp`
 
-- `create_server(runtime, *, name="byoai-runtime", tool_name="execute", description=None, **server_kwargs)` —
-  `**server_kwargs` forwarded to the MCP SDK server constructor
-  (`instructions`, `version`, `debug`, `auth`, ...).
+- `create_server(runtime, *, name="byoai-runtime", tool_name="execute", description=None, stream_tool_name="execute_stream", stream_description=None, **server_kwargs)` —
+  registers two tools by default: `execute` (one request, one response) and
+  `execute_stream` (streams token deltas as MCP progress notifications for
+  clients that render them live, while still returning the same full result
+  dict at the end — non-streaming-aware clients work unchanged). Pass
+  `stream_tool_name=None` to register only `execute`. `**server_kwargs`
+  forwarded to the MCP SDK server constructor (`instructions`, `version`,
+  `debug`, `auth`, ...). Progress notifications require a live client
+  session; calling `execute_stream` without one (e.g. a local `call_tool()`)
+  skips reporting and still returns the correct full result.
 - `attach(app, runtime, *, path="/mcp", name="byoai-runtime", **create_kwargs)` —
   mounts streamable-HTTP MCP into an existing Starlette/FastAPI app.
 - `create_app(runtime, *, name="byoai-runtime", **create_kwargs)` — standalone ASGI app.
+- Also works over **stdio** (`server.run_stdio_async()`) — the classic MCP
+  transport for local clients like Claude Desktop; same two tools, same dialect.
 
 All three transports (FastAPI, Robyn, MCP tool calls, queue workers) share one
 payload/result/frame dialect (`byoai/transport.py`) — nothing transport-specific

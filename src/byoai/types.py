@@ -58,7 +58,11 @@ class ProviderResponse:
 
 @dataclass
 class StreamChunk:
-    """One streamed increment. ``delta`` is the new text; ``done`` marks the end."""
+    """One streamed increment. ``delta`` is the new text; ``done`` marks the end.
+
+    ``cached``/``request_id`` are only ever set on the final ``done`` chunk
+    Runtime.stream() yields (mirroring ExecutionResult), never on individual
+    provider-level deltas."""
 
     delta: str = ""
     done: bool = False
@@ -66,6 +70,8 @@ class StreamChunk:
     provider: str | None = None
     usage: Usage | None = None
     raw: Any = None
+    cached: bool = False
+    request_id: str | None = None
 
 
 @dataclass

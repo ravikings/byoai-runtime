@@ -258,7 +258,10 @@ class Runtime:
 
         if ctx.short_circuited and ctx.response is not None:
             yield StreamChunk(delta=ctx.response)
-            yield StreamChunk(done=True)
+            yield StreamChunk(
+                done=True, model=ctx.model, provider=ctx.provider,
+                cached=ctx.cached, request_id=ctx.request_id,
+            )
             await self.events.emit(ev.REQUEST_COMPLETED, ctx=ctx)
             return
 
@@ -273,9 +276,16 @@ class Runtime:
                 ctx.provider = chunk.provider or ctx.provider
                 if chunk.usage:
                     ctx.usage.add(chunk.usage)
+                # A new chunk (not the provider's raw one) so cached/request_id
+                # — which the provider adapter has no knowledge of — ride the
+                # final frame too, matching ExecutionResult's full result shape.
+                yield StreamChunk(
+                    done=True, model=ctx.model, provider=ctx.provider, usage=chunk.usage,
+                    cached=ctx.cached, request_id=ctx.request_id,
+                )
             else:
                 parts.append(chunk.delta)
-            yield chunk
+                yield chunk
         ctx.response = "".join(parts)
         # Exact-match cache skips streaming (no STATE_CACHE_KEY set), but the
         # semantic cache stores streamed answers for future intent hits.
