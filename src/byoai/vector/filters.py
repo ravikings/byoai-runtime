@@ -125,7 +125,7 @@ def _to_text(value: Any) -> str:
     return str(value)
 
 
-# --- Qdrant / Pinecone dialects (Phase 6) ------------------------------------
+# --- Pinecone dialect ---------------------------------------------------------
 
 
 def to_pinecone(node: FilterNode) -> dict[str, Any]:
@@ -135,6 +135,36 @@ def to_pinecone(node: FilterNode) -> dict[str, Any]:
             raise FilterError("Pinecone does not support $not")
         return {node.op: [to_pinecone(c) for c in node.children]}
     return {node.field: {node.op: node.value}}
+
+
+# --- Qdrant dialect -----------------------------------------------------------
+
+_QDRANT_RANGE_OPS = {"$gt": "gt", "$gte": "gte", "$lt": "lt", "$lte": "lte"}
+
+
+def to_qdrant(node: FilterNode) -> dict[str, Any]:
+    """Compile to a Qdrant ``Filter`` object (REST/JSON form).
+
+    Qdrant filters nest recursively — a condition may itself be a filter —
+    so logical operators map onto ``must`` / ``should`` / ``must_not``.
+    """
+    if isinstance(node, Logical):
+        if node.op == "$and":
+            return {"must": [to_qdrant(c) for c in node.children]}
+        if node.op == "$or":
+            return {"should": [to_qdrant(c) for c in node.children]}
+        return {"must_not": [to_qdrant(c) for c in node.children]}
+    if node.op == "$eq":
+        return {"key": node.field, "match": {"value": node.value}}
+    if node.op == "$ne":
+        return {"must_not": [{"key": node.field, "match": {"value": node.value}}]}
+    if node.op in _QDRANT_RANGE_OPS:
+        return {"key": node.field, "range": {_QDRANT_RANGE_OPS[node.op]: node.value}}
+    if node.op == "$in":
+        return {"key": node.field, "match": {"any": list(node.value)}}
+    if node.op == "$nin":
+        return {"must_not": [{"key": node.field, "match": {"any": list(node.value)}}]}
+    raise FilterError(f"unsupported operator {node.op!r} for Qdrant")  # pragma: no cover
 
 
 def parse_json(expr: str | dict[str, Any]) -> FilterNode:

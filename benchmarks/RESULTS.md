@@ -59,6 +59,29 @@ stdlib fallback:
 Cache-miss execute (fingerprint on the hot path) rose 55.6k → 60.8k req/s.
 A/B: `BYOAI_JSON=std` forces the stdlib backend.
 
+## Semantic (intent) cache (`bench_semantic.py`, added 2026-07-29)
+
+Exact-match caching only serves identical requests; the semantic cache embeds
+the query and serves any *similar-intent* query from cache — no LLM call.
+
+| Lookup vs cache size (768-dim)   | Latency          |
+| -------------------------------- | ---------------- |
+| 1,000 entries                    | 37 µs/lookup     |
+| 10,000 entries                   | 435 µs/lookup    |
+| 100,000 entries                  | 5.5 ms/lookup    |
+
+End-to-end with a simulated 800ms LLM and 15ms embedding API:
+
+| Path                              | Latency  |
+| --------------------------------- | -------- |
+| Cold (embed + LLM call)           | 824 ms   |
+| **Intent hit (embed + lookup)**   | **16 ms** (~50× faster) |
+
+The dominant cost of an intent hit is the embedding API round-trip, not the
+lookup. Brute-force exact cosine (numpy) is deliberate — no ANN index to
+build or tune — and stays sub-ms through ~30k entries; swap in an ANN-backed
+store via the `byoai.semantic_caches` entry-point group beyond that.
+
 ## Method notes / honesty
 
 - The pure-Python `loadtest.py` generator saturates around ~750 req/s per

@@ -8,18 +8,15 @@ no provider SDK dependency.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from .. import _json as json
-from ..errors import ProviderError, RateLimitError
+from ..errors import ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import parse_retry_after
-
-_RETRYABLE_STATUS = {408, 409, 500, 502, 503, 504}
+from .base import build_openai_client, raise_for_status
 
 
 class OpenAICompatProvider:
@@ -36,14 +33,10 @@ class OpenAICompatProvider:
     ) -> None:
         self.name = name
         self.model = model
-        api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        headers = dict(default_headers or {})
-        if api_key:
-            headers.setdefault("Authorization", f"Bearer {api_key}")
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout
+        self._client, self._owns_client = build_openai_client(
+            api_key=api_key, base_url=base_url, timeout=timeout,
+            default_headers=default_headers, client=client,
         )
-        self._owns_client = client is None
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -53,25 +46,7 @@ class OpenAICompatProvider:
         }
 
     def _raise_for_status(self, response: httpx.Response) -> None:
-        if response.status_code < 400:
-            return
-        try:
-            detail = response.json().get("error", {}).get("message", response.text)
-        except Exception:
-            detail = response.text
-        if response.status_code == 429:
-            raise RateLimitError(
-                f"{self.name}: rate limited: {detail}",
-                provider=self.name,
-                retry_after=parse_retry_after(response),
-            )
-        raise ProviderError(
-            f"{self.name}: HTTP {response.status_code}: {detail}",
-            provider=self.name,
-            status_code=response.status_code,
-            retryable=response.status_code in _RETRYABLE_STATUS,
-            retry_after=parse_retry_after(response),
-        )
+        raise_for_status(response, provider=self.name)
 
     async def complete(self, messages: list[Message], **options: Any) -> ProviderResponse:
         payload = self._payload(messages, options)

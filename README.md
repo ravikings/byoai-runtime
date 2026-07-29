@@ -128,6 +128,26 @@ async def ask_stream(body: dict, rt: Runtime = Depends(get_runtime)):
 
 See `examples/fastapi_app/` for a runnable app with events, caching, and fallback.
 
+### 4. Semantic (intent) caching
+
+Serve *similar* questions from cache — not just identical ones. One embedding
+call (~15ms) replaces the whole LLM round-trip when intent matches:
+
+```python
+runtime = Runtime(
+    llm={"provider": "openai", "model": "gpt-4o"},
+    cache={"provider": "redis", "url": "redis://redis.internal:6379"},  # exact match
+    semantic_cache={"provider": "memory", "threshold": 0.92},           # intent match
+    embedder={"provider": "openai", "model": "text-embedding-3-small"},
+)
+
+await runtime.execute("What are our enterprise SLA terms?")   # LLM call (~800ms)
+await runtime.execute("Tell me about our enterprise SLAs")    # intent hit (~16ms)
+```
+
+Measured ~50× faster on intent hits; lookups stay sub-millisecond to ~30k
+cached answers (`benchmarks/RESULTS.md`).
+
 ---
 
 ## 🛠️ Core Capabilities

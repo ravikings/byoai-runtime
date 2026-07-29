@@ -9,11 +9,12 @@ from typing import Any
 import httpx
 
 from .. import _json as json
-from ..errors import ProviderError, RateLimitError
+from ..errors import ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import parse_retry_after
+from .base import DEFAULT_RETRYABLE_STATUS, raise_for_status
 
-_RETRYABLE_STATUS = {408, 409, 500, 502, 503, 504, 529}
+# 529 = Anthropic's "overloaded" status, retryable like a 503.
+_RETRYABLE_STATUS = DEFAULT_RETRYABLE_STATUS | {529}
 _API_VERSION = "2023-06-01"
 
 
@@ -54,26 +55,7 @@ class AnthropicProvider:
         return payload
 
     def _raise_for_status(self, response: httpx.Response) -> None:
-        if response.status_code < 400:
-            return
-        try:
-            detail = response.json().get("error", {}).get("message", response.text)
-        except Exception:
-            detail = response.text
-        retry_after = parse_retry_after(response)
-        if response.status_code == 429:
-            raise RateLimitError(
-                f"{self.name}: rate limited: {detail}",
-                provider=self.name,
-                retry_after=retry_after,
-            )
-        raise ProviderError(
-            f"{self.name}: HTTP {response.status_code}: {detail}",
-            provider=self.name,
-            status_code=response.status_code,
-            retryable=response.status_code in _RETRYABLE_STATUS,
-            retry_after=retry_after,
-        )
+        raise_for_status(response, provider=self.name, retryable_status=_RETRYABLE_STATUS)
 
     async def complete(self, messages: list[Message], **options: Any) -> ProviderResponse:
         payload = self._payload(messages, options)

@@ -28,6 +28,68 @@ def parse_retry_after(response: httpx.Response) -> float | None:
         return None
 
 
+DEFAULT_RETRYABLE_STATUS = frozenset({408, 409, 500, 502, 503, 504})
+
+
+def raise_for_status(
+    response: httpx.Response,
+    *,
+    provider: str,
+    retryable_status: frozenset[int] | set[int] = DEFAULT_RETRYABLE_STATUS,
+) -> None:
+    """Shared HTTP error normalization: 429 → RateLimitError, everything else
+    → ProviderError with retryability derived from the status set. Used by all
+    httpx-based adapters so classification can't drift between them."""
+    from ..errors import ProviderError, RateLimitError
+
+    if response.status_code < 400:
+        return
+    try:
+        detail = response.json().get("error", {}).get("message", response.text)
+    except Exception:
+        detail = response.text
+    if response.status_code == 429:
+        raise RateLimitError(
+            f"{provider}: rate limited: {detail}",
+            provider=provider,
+            retry_after=parse_retry_after(response),
+        )
+    raise ProviderError(
+        f"{provider}: HTTP {response.status_code}: {detail}",
+        provider=provider,
+        status_code=response.status_code,
+        retryable=response.status_code in retryable_status,
+        retry_after=parse_retry_after(response),
+    )
+
+
+def build_openai_client(
+    *,
+    api_key: str | None,
+    base_url: str,
+    timeout: float,
+    default_headers: dict[str, str] | None = None,
+    client: httpx.AsyncClient | None = None,
+    env_var: str = "OPENAI_API_KEY",
+) -> tuple[httpx.AsyncClient, bool]:
+    """Shared httpx client construction for OpenAI-compatible endpoints.
+
+    Returns ``(client, owns_client)`` — adapters close only clients they own.
+    """
+    import os
+
+    api_key = api_key or os.environ.get(env_var)
+    headers = dict(default_headers or {})
+    if api_key:
+        headers.setdefault("Authorization", f"Bearer {api_key}")
+    if client is not None:
+        return client, False
+    return (
+        httpx.AsyncClient(base_url=base_url.rstrip("/"), headers=headers, timeout=timeout),
+        True,
+    )
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     name: str

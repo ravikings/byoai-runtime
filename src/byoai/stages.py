@@ -15,7 +15,7 @@ from . import _json as json
 from . import events as ev
 from .cache.base import CacheStore
 from .context import RequestContext
-from .errors import CacheError, ConfigurationError
+from .errors import ByoAIError, CacheError, ConfigurationError
 from .events import EventBus
 from .providers.router import ProviderRouter
 from .types import Document, Message
@@ -24,6 +24,7 @@ from .vector.base import VectorStore
 # ctx.state keys used by the built-in stages (namespaced to avoid collisions).
 STATE_STREAMING = "byoai.streaming"
 STATE_CACHE_KEY = "byoai.cache_key"
+STATE_SEMANTIC_EMBEDDING = "byoai.semantic_embedding"
 
 
 class ContextResolver:
@@ -172,6 +173,59 @@ class CacheLookup:
 Embedder = Callable[[str], Awaitable[list[float]]]
 
 
+def _last_user_message(ctx: RequestContext) -> str | None:
+    return next((m.content for m in reversed(ctx.messages) if m.role == "user"), None)
+
+
+class SemanticCacheLookup:
+    """Intent cache: short-circuit when a *similar* (not identical) query was
+    already answered. Runs after the exact-match cache — exact hits are cheaper
+    (no embedding call). On a miss, the query embedding is kept on the context
+    so the runtime can store the eventual response for future intent hits.
+
+    Streaming requests participate too: a hit streams back as a single chunk.
+    """
+
+    name = "semantic_cache_lookup"
+
+    def __init__(
+        self,
+        store: Any,  # SemanticCacheStore
+        embedder: Embedder,
+        *,
+        threshold: float = 0.92,
+        bus: EventBus | None = None,
+    ) -> None:
+        self.store = store
+        self.embedder = embedder
+        self.threshold = threshold
+        self._bus = bus
+
+    async def execute(self, ctx: RequestContext) -> None:
+        query = _last_user_message(ctx)
+        if query is None:
+            return
+        # A semantic-cache or embedder hiccup must never fail a request that
+        # the provider would have answered — degrade to a miss instead.
+        try:
+            embedding = await self.embedder(query)
+            ctx.state[STATE_SEMANTIC_EMBEDDING] = embedding
+            hit = await self.store.find(embedding, threshold=self.threshold)
+        except ByoAIError as exc:
+            ctx.state.pop(STATE_SEMANTIC_EMBEDDING, None)  # skip write-back too
+            if self._bus:
+                await self._bus.emit(ev.CACHE_MISS, ctx=ctx, semantic=True, error=str(exc))
+            return
+        if hit is not None:
+            response, score = hit
+            if self._bus:
+                await self._bus.emit(ev.CACHE_HIT, ctx=ctx, semantic=True, score=score)
+            ctx.metadata["semantic_cache_score"] = score
+            ctx.short_circuit(response, cached=True)
+        elif self._bus:
+            await self._bus.emit(ev.CACHE_MISS, ctx=ctx, semantic=True)
+
+
 class VectorRetrieve:
     """Retrieve documents from an existing vector store for the last user message.
 
@@ -198,7 +252,7 @@ class VectorRetrieve:
         self._bus = bus
 
     async def execute(self, ctx: RequestContext) -> None:
-        query = next((m.content for m in reversed(ctx.messages) if m.role == "user"), None)
+        query = _last_user_message(ctx)
         if query is None:
             return
         embedding = await self.embedder(query)

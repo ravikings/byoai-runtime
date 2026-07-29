@@ -16,15 +16,30 @@ from typing import Any
 
 from . import events as ev
 from .cache.base import CacheStore
-from .config import build_cache, build_router, build_vector_store, configure_telemetry
+from .config import (
+    build_cache,
+    build_embedder,
+    build_router,
+    build_semantic_cache,
+    build_vector_store,
+    configure_telemetry,
+)
 from .context import RequestContext
-from .errors import CacheError, ConfigurationError, PipelineNotFound
+from .errors import ByoAIError, CacheError, ConfigurationError, PipelineNotFound
 from .events import EventBus, EventHandler
 from .middleware import MiddlewareChain, MiddlewareLike
 from .pipeline import Pipeline
 from .providers.base import LLMProvider
 from .providers.router import ProviderRouter, RetryPolicy
-from .stages import STATE_CACHE_KEY, STATE_STREAMING, CacheLookup, ContextResolver, ProviderCall
+from .stages import (
+    STATE_CACHE_KEY,
+    STATE_SEMANTIC_EMBEDDING,
+    STATE_STREAMING,
+    CacheLookup,
+    ContextResolver,
+    ProviderCall,
+    SemanticCacheLookup,
+)
 from .types import ExecutionResult, StreamChunk
 from .vector.base import VectorStore
 
@@ -37,6 +52,8 @@ class Runtime:
         providers: list[LLMProvider] | None = None,
         cache: dict[str, Any] | CacheStore | None = None,
         vector_store: dict[str, Any] | VectorStore | None = None,
+        semantic_cache: dict[str, Any] | Any | None = None,
+        embedder: dict[str, Any] | Any | None = None,
         retry_policy: RetryPolicy | None = None,
         system_prompt: str | None = None,
         cache_ttl: int | None = 3600,
@@ -62,13 +79,39 @@ class Runtime:
             else None
         )
 
-        # Default pipeline: resolve context → cache lookup → provider call.
+        self.embedder = build_embedder(embedder) if isinstance(embedder, dict) else embedder
+        self.semantic_cache = (
+            build_semantic_cache(semantic_cache)
+            if isinstance(semantic_cache, dict)
+            else semantic_cache
+        )
+        self._semantic_threshold = (
+            semantic_cache.get("threshold", 0.92)
+            if isinstance(semantic_cache, dict)
+            else 0.92
+        )
+        if self.semantic_cache is not None and self.embedder is None:
+            raise ConfigurationError(
+                "semantic_cache requires an embedder= (config dict or async callable)"
+            )
+
+        # Default pipeline: resolve context → exact cache → semantic (intent)
+        # cache → provider call.
         self.pipeline = Pipeline("default")
         self.pipeline.add(
             ContextResolver(system_prompt=system_prompt, cache=self.cache)
         )
         if self.cache is not None:
             self.pipeline.add(CacheLookup(self.cache, bus=self.events))
+        if self.semantic_cache is not None:
+            self.pipeline.add(
+                SemanticCacheLookup(
+                    self.semantic_cache,
+                    self.embedder,
+                    threshold=self._semantic_threshold,
+                    bus=self.events,
+                )
+            )
         if self.router is not None:
             self.pipeline.add(ProviderCall(self.router))
         self._pipelines["default"] = self.pipeline
@@ -233,20 +276,36 @@ class Runtime:
                 parts.append(chunk.delta)
             yield chunk
         ctx.response = "".join(parts)
+        # Exact-match cache skips streaming (no STATE_CACHE_KEY set), but the
+        # semantic cache stores streamed answers for future intent hits.
+        await self._write_back_cache(ctx)
         await self.events.emit(ev.RESPONSE_STREAMED, ctx=ctx)
         await self.events.emit(ev.REQUEST_COMPLETED, ctx=ctx)
 
     async def _write_back_cache(self, ctx: RequestContext) -> None:
-        if self.cache is None or ctx.cached or ctx.response is None:
+        if ctx.cached or ctx.response is None:
             return
-        key = ctx.state.get(STATE_CACHE_KEY)
-        if not key:
-            return
-        entry = {"content": ctx.response, "model": ctx.model, "provider": ctx.provider}
-        try:
-            await self.cache.set(key, entry, ttl=self._cache_ttl)
-        except CacheError:
-            pass  # cache outage must never fail the request
+        if self.cache is not None:
+            key = ctx.state.get(STATE_CACHE_KEY)
+            if key:
+                entry = {
+                    "content": ctx.response,
+                    "model": ctx.model,
+                    "provider": ctx.provider,
+                }
+                try:
+                    await self.cache.set(key, entry, ttl=self._cache_ttl)
+                except CacheError:
+                    pass  # cache outage must never fail the request
+        if self.semantic_cache is not None:
+            embedding = ctx.state.get(STATE_SEMANTIC_EMBEDDING)
+            if embedding is not None:
+                try:
+                    await self.semantic_cache.add(embedding, ctx.response)
+                except ByoAIError:
+                    # e.g. a zero-magnitude embedding — a cache write failure
+                    # must never fail an already-answered request.
+                    pass
 
     async def close(self) -> None:
         if self.router is not None:
@@ -255,6 +314,10 @@ class Runtime:
             await self.cache.close()
         if self.vector_store is not None:
             await self.vector_store.close()
+        if self.semantic_cache is not None:
+            await self.semantic_cache.close()
+        if self.embedder is not None and hasattr(self.embedder, "close"):
+            await self.embedder.close()
         if self._owned_tracer_provider is not None:
             # Flush the exporter's final batch so last-window spans aren't lost.
             await asyncio.to_thread(self._owned_tracer_provider.shutdown)

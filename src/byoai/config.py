@@ -23,6 +23,21 @@ from .providers.base import LLMProvider
 from .vector.base import VectorStore
 
 
+def _load_plugin(group: str, name: str, config: dict[str, Any]) -> Any:
+    """Resolve an unknown provider name via entry points (``pip install
+    byoai-<something>`` packages register factories under ``byoai.*`` groups).
+
+    Returns the built instance, or None if no plugin claims the name.
+    """
+    from importlib.metadata import entry_points
+
+    for entry_point in entry_points(group=group):
+        if entry_point.name == name:
+            factory = entry_point.load()
+            return factory(config)
+    return None
+
+
 def build_cache(config: dict[str, Any]) -> CacheStore:
     config = dict(config)
     provider = config.pop("provider", "memory")
@@ -33,6 +48,9 @@ def build_cache(config: dict[str, Any]) -> CacheStore:
     if provider in ("memory", "inmemory"):
         config.pop("url", None)
         return MemoryCache(**config)
+    plugin = _load_plugin("byoai.caches", provider, config)
+    if plugin is not None:
+        return plugin
     raise ConfigurationError(f"unknown cache provider {provider!r}")
 
 
@@ -45,9 +63,61 @@ def build_vector_store(config: dict[str, Any]) -> VectorStore:
         from .vector.pgvector import PgVectorStore
 
         return PgVectorStore(**config)
-    raise ConfigurationError(
-        f"unknown vector provider {provider!r} (MVP supports: pgvector; see ROADMAP Phase 6)"
-    )
+    if provider == "qdrant":
+        from .vector.qdrant import QdrantVectorStore
+
+        return QdrantVectorStore(**config)
+    if provider == "pinecone":
+        from .vector.pinecone import PineconeVectorStore
+
+        return PineconeVectorStore(**config)
+    plugin = _load_plugin("byoai.vector_stores", provider, config)
+    if plugin is not None:
+        return plugin
+    raise ConfigurationError(f"unknown vector provider {provider!r}")
+
+
+def build_semantic_cache(config: dict[str, Any]) -> Any:
+    config = dict(config)
+    config.pop("threshold", None)  # consumed by the stage, not the store
+    provider = config.pop("provider", "memory")
+    if provider in ("memory", "inmemory"):
+        from .cache.semantic import MemorySemanticCache
+
+        return MemorySemanticCache(**config)
+    plugin = _load_plugin("byoai.semantic_caches", provider, config)
+    if plugin is not None:
+        return plugin
+    raise ConfigurationError(f"unknown semantic cache provider {provider!r}")
+
+
+def _apply_openai_compat_defaults(provider: str, config: dict[str, Any]) -> bool:
+    """Shared endpoint defaults for the OpenAI-compatible family. Returns
+    True when ``provider`` belongs to the family (config mutated in place)."""
+    if provider == "openai":
+        return True
+    if provider == "ollama":
+        config.setdefault("base_url", "http://localhost:11434/v1")
+        config.setdefault("api_key", "ollama")
+        return True
+    if provider in ("openai_compatible", "vllm", "litellm"):
+        if "base_url" not in config:
+            raise ConfigurationError(f"{provider} requires 'base_url'")
+        return True
+    return False
+
+
+def build_embedder(config: dict[str, Any]) -> Any:
+    config = dict(config)
+    provider = config.pop("provider", "openai")
+    if _apply_openai_compat_defaults(provider, config):
+        from .providers.embeddings import OpenAICompatEmbedder
+
+        return OpenAICompatEmbedder(name=provider, **config)
+    plugin = _load_plugin("byoai.embedders", provider, config)
+    if plugin is not None:
+        return plugin
+    raise ConfigurationError(f"unknown embedder provider {provider!r}")
 
 
 def build_provider(config: dict[str, Any]) -> LLMProvider:
@@ -61,11 +131,15 @@ def build_provider(config: dict[str, Any]) -> LLMProvider:
         from .providers.anthropic import AnthropicProvider
 
         return AnthropicProvider(name=provider, **config)
+    if provider == "gemini":
+        from .providers.gemini import GeminiProvider
+
+        return GeminiProvider(name=provider, **config)
 
     from .providers.openai_compat import OpenAICompatProvider
 
-    if provider == "openai":
-        return OpenAICompatProvider(name="openai", **config)
+    if _apply_openai_compat_defaults(provider, config):
+        return OpenAICompatProvider(name=provider, **config)
     if provider == "azure_openai":
         # Azure's deployment-scoped URL; api key travels in the api-key header.
         deployment = config.pop("deployment", None) or config.get("model")
@@ -83,19 +157,14 @@ def build_provider(config: dict[str, Any]) -> LLMProvider:
             default_headers={"api-key": api_key},
             **config,
         )
-    if provider == "ollama":
-        config.setdefault("base_url", "http://localhost:11434/v1")
-        config.setdefault("api_key", "ollama")
-        return OpenAICompatProvider(name="ollama", **config)
     if provider == "openrouter":
         config.setdefault("base_url", "https://openrouter.ai/api/v1")
         config.setdefault("api_key", os.environ.get("OPENROUTER_API_KEY"))
         return OpenAICompatProvider(name="openrouter", **config)
-    if provider in ("openai_compatible", "vllm", "litellm"):
-        if "base_url" not in config:
-            raise ConfigurationError(f"{provider} requires 'base_url'")
-        return OpenAICompatProvider(name=provider, **config)
 
+    plugin = _load_plugin("byoai.providers", provider, config)
+    if plugin is not None:
+        return plugin
     raise ConfigurationError(f"unknown llm provider {provider!r}")
 
 
