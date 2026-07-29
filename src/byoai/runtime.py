@@ -32,6 +32,7 @@ from .pipeline import Pipeline
 from .providers.base import LLMProvider
 from .providers.router import ProviderRouter, RetryPolicy
 from .stages import (
+    DEFAULT_SEMANTIC_THRESHOLD,
     STATE_CACHE_KEY,
     STATE_SEMANTIC_EMBEDDING,
     STATE_STREAMING,
@@ -86,9 +87,9 @@ class Runtime:
             else semantic_cache
         )
         self._semantic_threshold = (
-            semantic_cache.get("threshold", 0.92)
+            semantic_cache.get("threshold", DEFAULT_SEMANTIC_THRESHOLD)
             if isinstance(semantic_cache, dict)
-            else 0.92
+            else DEFAULT_SEMANTIC_THRESHOLD
         )
         if self.semantic_cache is not None and self.embedder is None:
             raise ConfigurationError(

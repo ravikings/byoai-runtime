@@ -151,15 +151,21 @@ class RedisSemanticCache:
         mode: str = "standalone",
         sentinels: list | None = None,
         service_name: str | None = None,
+        approximate_trim: bool = True,
+        **client_kwargs: Any,
     ) -> None:
         if client is None:
             from .redis import make_redis_client
 
             client = make_redis_client(
-                url=url, mode=mode, sentinels=sentinels, service_name=service_name
+                url=url, mode=mode, sentinels=sentinels, service_name=service_name,
+                **client_kwargs,
             )
         self._client = client
         self.stream = stream
+        # False = exact XTRIM MAXLEN (costlier) instead of "~" approximate
+        # trimming — for deployments that need an exact capacity bound.
+        self.approximate_trim = approximate_trim
         self.capacity = capacity
         self.ttl = ttl
         self._mirror = MemorySemanticCache(capacity=capacity, ttl=ttl)
@@ -210,7 +216,7 @@ class RedisSemanticCache:
         fields = {"v": self._pack(embedding), "r": response, "e": str(expires_wall)}
         try:
             entry_id = await self._client.xadd(
-                self.stream, fields, maxlen=self.capacity, approximate=True
+                self.stream, fields, maxlen=self.capacity, approximate=self.approximate_trim
             )
         except Exception as exc:
             raise CacheError(f"semantic cache write failed: {exc}") from exc

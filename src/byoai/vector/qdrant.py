@@ -31,6 +31,9 @@ class QdrantVectorStore:
         schema_map: dict[str, Any] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
+        with_vectors: bool = False,
+        score_threshold: float | None = None,
+        search_params: dict[str, Any] | None = None,
     ) -> None:
         self.collection = collection
         schema_map = schema_map or {}
@@ -38,6 +41,13 @@ class QdrantVectorStore:
         self._content_field = schema_map.get("content", "content")
         # payload field holding metadata; None means "the whole payload"
         self._metadata_field = schema_map.get("metadata", None)
+        self.with_vectors = with_vectors
+        # A server-side similarity floor (drop below this before top_k even
+        # applies) and HNSW search params (e.g. {"hnsw_ef": 128, "exact": False}
+        # to trade recall for latency) — Qdrant-specific, so exposed here
+        # rather than through the cross-provider filter dialect.
+        self.score_threshold = score_threshold
+        self.search_params = search_params
         headers = {"api-key": api_key} if api_key else {}
         self._client = client or httpx.AsyncClient(
             base_url=url.rstrip("/"), headers=headers, timeout=timeout
@@ -55,7 +65,12 @@ class QdrantVectorStore:
             "vector": embedding,
             "limit": top_k,
             "with_payload": True,
+            "with_vector": self.with_vectors,
         }
+        if self.score_threshold is not None:
+            body["score_threshold"] = self.score_threshold
+        if self.search_params is not None:
+            body["params"] = self.search_params
         if filters:
             body["filter"] = to_qdrant(parse(filters))
         try:
@@ -83,6 +98,7 @@ class QdrantVectorStore:
                     content=str(content),
                     metadata=metadata if isinstance(metadata, dict) else {"raw": metadata},
                     score=point.get("score"),
+                    embedding=point.get("vector") if self.with_vectors else None,
                 )
             )
         return documents

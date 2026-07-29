@@ -26,10 +26,17 @@ class PineconeVectorStore:
         schema_map: dict[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
+        include_values: bool = False,
+        sparse_vector: dict[str, Any] | None = None,
     ) -> None:
         self.namespace = namespace
         # metadata field holding the document text (Pinecone stores text in metadata)
         self._content_field = (schema_map or {}).get("content", "content")
+        self.include_values = include_values
+        # A fixed sparse component for hybrid dense+sparse search
+        # ({"indices": [...], "values": [...]}); per-query sparse vectors
+        # aren't supported by the fixed VectorStore.search() signature.
+        self.sparse_vector = sparse_vector
         self._client = client or httpx.AsyncClient(
             base_url=host.rstrip("/"),
             headers={"Api-Key": api_key},
@@ -48,7 +55,10 @@ class PineconeVectorStore:
             "vector": embedding,
             "topK": top_k,
             "includeMetadata": True,
+            "includeValues": self.include_values,
         }
+        if self.sparse_vector is not None:
+            body["sparseVector"] = self.sparse_vector
         if self.namespace:
             body["namespace"] = self.namespace
         if filters:
@@ -70,6 +80,7 @@ class PineconeVectorStore:
                     content=str(metadata.get(self._content_field, "")),
                     metadata=metadata,
                     score=match.get("score"),
+                    embedding=match.get("values") if self.include_values else None,
                 )
             )
         return documents

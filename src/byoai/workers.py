@@ -53,10 +53,15 @@ class JobQueue(Protocol):
 
 
 class MemoryJobQueue:
-    """In-process queue for dev/tests. Same contract as RedisStreamQueue."""
+    """In-process queue for dev/tests. Same contract as RedisStreamQueue.
 
-    def __init__(self) -> None:
-        self._queue: asyncio.Queue[Job] = asyncio.Queue()
+    ``maxsize`` (default 0 = unbounded, matching ``asyncio.Queue``) bounds
+    memory when publishers can outrun a slow worker fleet; ``publish()``
+    then backpressures by awaiting free space instead of growing forever.
+    """
+
+    def __init__(self, *, maxsize: int = 0) -> None:
+        self._queue: asyncio.Queue[Job] = asyncio.Queue(maxsize=maxsize)
         self._results: dict[str, dict[str, Any]] = {}
         self.acked: list[str] = []
 
@@ -105,12 +110,24 @@ class RedisStreamQueue:
         mode: str = "standalone",
         sentinels: list | None = None,
         service_name: str | None = None,
+        maxlen: int | None = None,
+        approximate_trim: bool = True,
+        start_id: str = "0",
+        **client_kwargs: Any,
     ) -> None:
+        """``maxlen`` caps the jobs stream (unbounded by default) so an idle or
+        crashed worker fleet doesn't let publishers grow it forever.
+        ``start_id`` is the consumer group's initial read position — ``"0"``
+        (default) replays the whole existing stream for a fresh group;
+        ``"$"`` starts from only new entries, for attaching a new worker
+        fleet to a pre-existing, already-large stream without a backlog
+        replay. ``**client_kwargs`` are forwarded to the redis-py client."""
         if client is None:
             from .cache.redis import make_redis_client
 
             client = make_redis_client(
-                url=url, mode=mode, sentinels=sentinels, service_name=service_name
+                url=url, mode=mode, sentinels=sentinels, service_name=service_name,
+                **client_kwargs,
             )
         self._client = client
         self.stream = stream
@@ -118,6 +135,9 @@ class RedisStreamQueue:
         self.consumer = consumer or f"worker-{uuid.uuid4().hex[:8]}"
         self.result_prefix = result_prefix
         self.result_ttl = result_ttl
+        self.maxlen = maxlen
+        self.approximate_trim = approximate_trim
+        self.start_id = start_id
         # Batch up to `prefetch` entries per XREADGROUP round-trip; pop()
         # serves from the local buffer so throughput isn't capped at one
         # network round-trip per job.
@@ -129,7 +149,9 @@ class RedisStreamQueue:
         if self._group_ready:
             return
         try:
-            await self._client.xgroup_create(self.stream, self.group, id="0", mkstream=True)
+            await self._client.xgroup_create(
+                self.stream, self.group, id=self.start_id, mkstream=True
+            )
         except Exception as exc:  # BUSYGROUP = already exists
             if "BUSYGROUP" not in str(exc):
                 raise
@@ -138,7 +160,10 @@ class RedisStreamQueue:
     async def publish(self, job: Job) -> str:
         await self._ensure_group()
         await self._client.xadd(
-            self.stream, {"id": job.id, "payload": json.dumps(job.payload)}
+            self.stream,
+            {"id": job.id, "payload": json.dumps(job.payload)},
+            maxlen=self.maxlen,
+            approximate=self.approximate_trim,
         )
         return job.id
 
@@ -191,14 +216,37 @@ class RuntimeWorker:
     time. Failed jobs get an ``{"error": ...}`` result and are still acked
     (dead-lettering/retry policy belongs to the queue, not the worker)."""
 
-    def __init__(self, runtime: Runtime, queue: JobQueue, *, concurrency: int = 10) -> None:
+    def __init__(
+        self,
+        runtime: Runtime,
+        queue: JobQueue,
+        *,
+        concurrency: int = 10,
+        shutdown_timeout: float | None = None,
+    ) -> None:
         self.runtime = runtime
         self.queue = queue
         self.concurrency = concurrency
+        # Caps how long stop()/run() waits for in-flight jobs to finish
+        # draining; None (default) waits indefinitely. A stuck job otherwise
+        # blocks graceful shutdown forever.
+        self.shutdown_timeout = shutdown_timeout
         self._stopping = asyncio.Event()
         self._in_flight: set[asyncio.Task] = set()
         self.processed = 0
         self.failed = 0
+
+    async def _drain(self) -> None:
+        if not self._in_flight:
+            return
+        gather = asyncio.gather(*self._in_flight, return_exceptions=True)
+        if self.shutdown_timeout is None:
+            await gather
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(gather), timeout=self.shutdown_timeout)
+        except asyncio.TimeoutError:
+            pass  # remaining tasks keep running in the background; not awaited further
 
     async def run(self, *, until_idle: bool = False, poll_timeout: float = 0.5) -> None:
         """Consume jobs; drains in-flight work on exit.
@@ -208,24 +256,39 @@ class RuntimeWorker:
         (batch/test runs).
         """
         semaphore = asyncio.Semaphore(self.concurrency)
-        while not self._stopping.is_set():
-            await semaphore.acquire()
-            if self._stopping.is_set():
-                semaphore.release()
-                break
-            job = await self.queue.pop(timeout=poll_timeout)
-            if job is None:
-                semaphore.release()
-                if until_idle:
-                    if not self._in_flight:
-                        return
-                    await asyncio.gather(*self._in_flight, return_exceptions=True)
-                continue
-            task = asyncio.create_task(self._process(job, semaphore))
-            self._in_flight.add(task)
-            task.add_done_callback(self._in_flight.discard)
-        if self._in_flight:
-            await asyncio.gather(*self._in_flight, return_exceptions=True)
+        # At full concurrency, semaphore.acquire() alone can block past a
+        # stop() call until some in-flight job happens to finish — race it
+        # against the stop signal so shutdown_timeout can actually take
+        # effect instead of waiting on an already-slow/stuck job. One
+        # long-lived stop_task is reused across iterations (it only resolves
+        # once, when stop() fires) rather than spun up fresh per job.
+        stop_task = asyncio.ensure_future(self._stopping.wait())
+        try:
+            while not self._stopping.is_set():
+                acquire_task = asyncio.ensure_future(semaphore.acquire())
+                await asyncio.wait(
+                    {acquire_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if stop_task.done():
+                    if acquire_task.done():
+                        semaphore.release()  # acquired right as we were stopping; give it back
+                    else:
+                        acquire_task.cancel()
+                    break
+                job = await self.queue.pop(timeout=poll_timeout)
+                if job is None:
+                    semaphore.release()
+                    if until_idle:
+                        if not self._in_flight:
+                            return
+                        await self._drain()
+                    continue
+                task = asyncio.create_task(self._process(job, semaphore))
+                self._in_flight.add(task)
+                task.add_done_callback(self._in_flight.discard)
+        finally:
+            stop_task.cancel()
+        await self._drain()
 
     async def _process(self, job: Job, semaphore: asyncio.Semaphore) -> None:
         try:

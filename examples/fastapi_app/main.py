@@ -33,11 +33,14 @@ from byoai.integrations.fastapi import attach, get_runtime, stream_response
 
 llm_config: dict = {
     # Any OpenAI-compatible endpoint: OpenAI, Azure, Ollama, vLLM, OpenRouter...
-    "provider": os.environ.get("BYOAI_PROVIDER", "openai"),
+    # BYOAI_BASE_URL implies "openai_compatible" unless BYOAI_PROVIDER was set
+    # explicitly (e.g. AnthropicProvider also takes base_url; don't clobber it).
+    "provider": os.environ.get(
+        "BYOAI_PROVIDER", "openai_compatible" if os.environ.get("BYOAI_BASE_URL") else "openai"
+    ),
     "model": os.environ.get("BYOAI_MODEL", "gpt-4o-mini"),
 }
 if os.environ.get("BYOAI_BASE_URL"):
-    llm_config["provider"] = "openai_compatible"
     llm_config["base_url"] = os.environ["BYOAI_BASE_URL"]
 if os.environ.get("BYOAI_FALLBACK_MODEL"):
     llm_config["fallback"] = {

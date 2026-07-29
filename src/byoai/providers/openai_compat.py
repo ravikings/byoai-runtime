@@ -16,7 +16,7 @@ import httpx
 from .. import _json as json
 from ..errors import ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import build_openai_client, raise_for_status
+from .base import DEFAULT_RETRYABLE_STATUS, build_openai_client, raise_for_status
 
 
 class OpenAICompatProvider:
@@ -30,9 +30,16 @@ class OpenAICompatProvider:
         timeout: float = 60.0,
         default_headers: dict[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
+        chat_path: str = "/chat/completions",
+        retryable_status: frozenset[int] | set[int] | None = None,
     ) -> None:
         self.name = name
         self.model = model
+        self._chat_path = chat_path
+        self._retryable_status = (
+            frozenset(retryable_status) if retryable_status is not None
+            else DEFAULT_RETRYABLE_STATUS
+        )
         self._client, self._owns_client = build_openai_client(
             api_key=api_key, base_url=base_url, timeout=timeout,
             default_headers=default_headers, client=client,
@@ -46,12 +53,12 @@ class OpenAICompatProvider:
         }
 
     def _raise_for_status(self, response: httpx.Response) -> None:
-        raise_for_status(response, provider=self.name)
+        raise_for_status(response, provider=self.name, retryable_status=self._retryable_status)
 
     async def complete(self, messages: list[Message], **options: Any) -> ProviderResponse:
         payload = self._payload(messages, options)
         try:
-            response = await self._client.post("/chat/completions", json=payload)
+            response = await self._client.post(self._chat_path, json=payload)
         except httpx.HTTPError as exc:
             raise ProviderError(
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True
@@ -88,7 +95,7 @@ class OpenAICompatProvider:
         payload.setdefault("stream_options", {"include_usage": True})
         try:
             async with self._client.stream(
-                "POST", "/chat/completions", json=payload
+                "POST", self._chat_path, json=payload
             ) as response:
                 if response.status_code >= 400:
                     await response.aread()

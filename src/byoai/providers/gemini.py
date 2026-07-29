@@ -11,7 +11,7 @@ import httpx
 from .. import _json as json
 from ..errors import ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import raise_for_status
+from .base import DEFAULT_RETRYABLE_STATUS, raise_for_status
 
 
 class GeminiProvider:
@@ -24,16 +24,22 @@ class GeminiProvider:
         name: str = "gemini",
         timeout: float = 60.0,
         client: httpx.AsyncClient | None = None,
+        default_headers: dict[str, str] | None = None,
+        retryable_status: frozenset[int] | set[int] | None = None,
     ) -> None:
         self.name = name
         self.model = model
+        self._retryable_status = (
+            frozenset(retryable_status) if retryable_status is not None
+            else DEFAULT_RETRYABLE_STATUS
+        )
         api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get(
             "GOOGLE_API_KEY", ""
         )
+        headers = {"x-goog-api-key": api_key}
+        headers.update(default_headers or {})
         self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
-            headers={"x-goog-api-key": api_key},
-            timeout=timeout,
+            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,
         )
         self._owns_client = client is None
 
@@ -69,7 +75,7 @@ class GeminiProvider:
         return payload
 
     def _raise_for_status(self, response: httpx.Response) -> None:
-        raise_for_status(response, provider=self.name)
+        raise_for_status(response, provider=self.name, retryable_status=self._retryable_status)
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:

@@ -5,6 +5,8 @@
   a non-positive TTL means "expire immediately" (nothing stored)
 * read-only session reader configured via ``session_reader={"pattern": ...}``
   (``session_data`` simulates the pre-existing application state)
+* ``max_size`` bounds memory in long-running processes; oldest entries
+  (by insertion/last-write order) are evicted once the cap is hit
 """
 
 from __future__ import annotations
@@ -21,9 +23,11 @@ class MemoryCache:
         default_ttl: int | None = None,
         session_reader: dict[str, str] | None = None,
         session_data: dict[str, Any] | None = None,
+        max_size: int | None = None,
     ) -> None:
         self.namespace = namespace
         self.default_ttl = default_ttl
+        self.max_size = max_size
         self._store: dict[str, tuple[Any, float | None]] = {}
         # Simulated "existing app state" for the read-only session reader.
         self._session_data = session_data or {}
@@ -47,7 +51,12 @@ class MemoryCache:
         if effective_ttl is not None and effective_ttl <= 0:
             return  # a non-positive TTL means "expire immediately": don't store
         expires_at = time.monotonic() + effective_ttl if effective_ttl is not None else None
-        self._store[self._key(key)] = (value, expires_at)
+        full_key = self._key(key)
+        self._store.pop(full_key, None)  # re-insert at the end (most-recent)
+        self._store[full_key] = (value, expires_at)
+        if self.max_size is not None:
+            while len(self._store) > self.max_size:
+                self._store.pop(next(iter(self._store)))  # oldest = FIFO head
 
     async def delete(self, key: str) -> None:
         self._store.pop(self._key(key), None)
