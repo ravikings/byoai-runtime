@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "byoai-runtime"
+version = "0.1.0a1"
+description = "The AI execution runtime for Python. Bring your own infrastructure; ByoAI brings the runtime."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "ByoAI Runtime Contributors" }]
+keywords = ["ai", "llm", "runtime", "pipeline", "fastapi", "rag", "openai", "anthropic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "httpx>=0.25",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.100", "sse-starlette>=1.6"]
+redis = ["redis>=5.0"]
+pgvector = ["asyncpg>=0.29"]
+otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp>=1.20"]
+all = ["byoai-runtime[fastapi,redis,pgvector,otel]"]
+
+[project.urls]
+Homepage = "https://github.com/byoai-runtime/byoai-runtime"
+Repository = "https://github.com/byoai-runtime/byoai-runtime"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/byoai"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# B008: `Depends(...)` in argument defaults is the standard FastAPI idiom.
+ignore = ["B008"]

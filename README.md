@@ -1,2 +1,251 @@
-# byoai-runtime
+# ByoAI Runtime (`byoai-runtime`)
 
+> **Bring Your Own Infrastructure (BYOI). ByoAI Brings the Runtime.**
+
+[![PyPI version](https://badge.fury.io/py/byoai-runtime.svg)](https://badge.fury.io/py/byoai-runtime)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-brightgreen.svg)](https://www.python.org/downloads/)
+[![OpenTelemetry](https://img.shields.io/badge/Observability-OpenTelemetry-purple.svg)](https://opentelemetry.io/)
+
+ByoAI Runtime is an infrastructure-agnostic AI agent engine and workflow execution layer for Python. It connects directly to your existing Redis clusters, vector databases (pgvector, Pinecone, Qdrant), LLMs, and telemetry pipelines **without requiring data migrations, vector re-indexing, database schema alterations, or vendor lock-in.**
+
+---
+
+## ⚡ Why ByoAI Runtime?
+
+Most AI frameworks force engineering teams to adapt their database schemas, re-embed millions of vectors, and rewrite state management logic. **ByoAI Runtime adapts to your existing stack instead.**
+
+* 🔌 **Zero Vector Re-indexing (Schema Mapping):** Connect directly to existing vector tables using declarative column mapping.
+* 🌲 **Cross-Provider AST Filter Parser:** Pass unified JSON filters; ByoAI translates them on the fly into native target dialects (`pgvector` JSONB, Pinecone `$eq`, Qdrant payload filters).
+* 🔒 **Non-Invasive Cache Isolation:** Isolates internal runtime keys (`byoai:*`) while using pattern-mapped readers to read existing chat histories safely.
+* 🛡️ **Resilient Provider Routing & Fallbacks:** Native rate-limit management, retries, and dynamic model failovers (e.g., OpenAI ➔ Azure OpenAI ➔ Ollama).
+* 📊 **Zero-SaaS Telemetry:** Native OpenTelemetry (OTLP) trace emission directly to your existing Grafana, Datadog, or Honeycomb collectors.
+
+---
+
+## 🏗️ Architecture & Execution Loop
+
+ByoAI Runtime executes as an unopinionated, process-level orchestrator sitting above your existing production data layers:
+
+```
+                          ┌──────────────────────────┐
+                          │   runtime.execute()      │
+                          └─────────────┬────────────┘
+                                        │
+           ┌────────────────────────────┼────────────────────────────┐
+           ▼                            ▼                            ▼
+┌──────────────────────┐    ┌──────────────────────┐    ┌──────────────────────┐
+│  Redis Key Reader    │    │  AST Filter Parser   │    │ Dynamic Model Router │
+│ (App Chat Ingestion) │    │ (Schema Mapping DB)  │    │ (Failover / Retry)   │
+└──────────┬───────────┘    └───────────┬──────────┘    └───────────┬──────────┘
+           │                            │                            │
+           ▼                            ▼                            ▼
+   Existing Redis DB            Existing Vector DB           LLM APIs / Inference
+ (No keys overwritten)       (No vector re-indexing)      (Existing API keys)
+```
+
+---
+
+## 🚀 Quickstart
+
+### 1. Installation
+
+```bash
+pip install byoai-runtime
+```
+
+### 2. Execution Example (Production Setup)
+
+```python
+from byoai import Runtime
+
+# Connect to existing infrastructure without altering schemas or keys
+runtime = Runtime(
+    cache={
+        "provider": "redis",
+        "url": "redis://redis.internal:6379",
+        "namespace": "byoai:",  # Isolates ByoAI state
+        "session_reader": {
+            "pattern": "app:users:{user_id}:chat_history", # Ingests existing history
+            "format": "json"
+        }
+    },
+    vector_store={
+        "provider": "pgvector",
+        "dsn": "postgresql://user:pass@localhost:5432/production_db",
+        "table": "document_embeddings",
+        "schema_map": {
+            "id": "doc_id",
+            "embedding": "embedding_v2",
+            "content": "raw_text",
+            "metadata": "payload_json"
+        }
+    },
+    llm={
+        "provider": "openai",
+        "model": "gpt-4o",
+        "fallback": {
+            "provider": "azure_openai",
+            "endpoint": "https://prod.openai.azure.com",
+            "deployment": "gpt-4-prod",
+        }
+    },
+)
+
+# Execute through the runtime (async, from any async framework)
+result = await runtime.execute(
+    "What are our enterprise SLA terms?",
+    user_id="usr_9912",
+    filters={"department": {"$eq": "legal"}}  # Translated automatically to JSONB SQL
+)
+
+print(result.content, result.usage.total_tokens, result.cached)
+```
+
+### 3. Drop into an existing FastAPI app
+
+```python
+from fastapi import Depends, FastAPI
+from byoai import Runtime
+from byoai.integrations.fastapi import attach, get_runtime, stream_response
+
+app = FastAPI()               # your existing app
+attach(app, Runtime(llm={"provider": "openai", "model": "gpt-4o"}))
+
+@app.post("/ask")
+async def ask(body: dict, rt: Runtime = Depends(get_runtime)):
+    result = await rt.execute(body["query"])
+    return {"content": result.content, "usage": result.usage.__dict__}
+
+@app.post("/ask/stream")      # Server-Sent Events token streaming
+async def ask_stream(body: dict, rt: Runtime = Depends(get_runtime)):
+    return stream_response(rt, body["query"])
+```
+
+See `examples/fastapi_app/` for a runnable app with events, caching, and fallback.
+
+---
+
+## 🛠️ Core Capabilities
+
+### 1. Zero-Migration Schema Mapping
+No need to run migration scripts or duplicate tables. Define a `schema_map` during initialization to bridge ByoAI to your existing table structures:
+
+```python
+vector_config = {
+    "provider": "pgvector",
+    "dsn": "...",
+    "table": "enterprise_knowledge",
+    "schema_map": {
+        "id": "uuid",
+        "embedding": "vector_768",
+        "content": "body_text",
+        "metadata": "attributes_json"
+    }
+}
+```
+
+### 2. AST Filter Translation
+Avoid provider-specific query lock-in. Pass standard logical filter expressions and ByoAI compiles them into native query dialects:
+
+```
+                      [ AST Filter Parser ]
+                                │
+       ┌────────────────────────┼────────────────────────┐
+       ▼                        ▼                        ▼
+pgvector (SQL / JSONB)    Pinecone (JSON Dict)     Qdrant (Payload Filter)
+`attributes_json->>'dept'  `{"dept": {"$eq":      `FieldCondition(key="dept",
+ = 'legal'`                "legal"}}`              match=MatchValue("legal"))`
+```
+
+### 3. Non-Invasive State Management
+ByoAI writes operational artifacts (semantic cache, execution traces, intent plans) under its isolated key namespace while reading existing user sessions read-only:
+
+```python
+cache_config = {
+    "provider": "redis",
+    "url": "redis://localhost:6379",
+    "namespace": "byoai:",  # All writes go to byoai:cache:*, byoai:planner:*
+    "session_reader": {
+        "pattern": "session:{user_id}:messages",
+        "format": "json"
+    }
+}
+```
+
+---
+
+## 📊 Framework Comparison
+
+| Architectural Criteria | LangChain / LlamaIndex | LiteLLM / Portkey | **ByoAI Runtime** |
+| :--- | :--- | :--- | :--- |
+| **Primary Focus** | Framework Abstractions | API Gateway / Proxy | **Unopinionated Agent Engine** |
+| **Schema Migration** | ❌ Required / Enforced | N/A | **✅ Zero-Migration (Schema Mapped)** |
+| **Vector Re-indexing** | ❌ Required | N/A | **✅ Direct Query over Existing Vectors** |
+| **AST Metadata Translator** | ❌ Provider-specific | N/A | **✅ Cross-Provider Dialect Translation** |
+| **Existing Redis Reader** | ❌ Overwrites / Requires SDK | ❌ N/A | **✅ Read-only Key Pattern Mapping** |
+| **Observability** | ⚠️ Pushes Proprietary SaaS | ✅ OTel Supported | **✅ OpenTelemetry Native (OTLP)** |
+| **License** | MIT | MIT / Commercial | **Apache 2.0 (Enterprise Patent Shield)** |
+
+---
+
+## 📦 Supported Adapter Ecosystem
+
+### Cache & Memory
+* **Redis** (Standalone, Cluster, Sentinel)
+* **Valkey**
+* **In-Memory** (Dev/Testing)
+
+### Vector Databases
+* **PostgreSQL + pgvector**
+* **Pinecone**
+* **Qdrant**
+* **Milvus**
+* **Weaviate**
+* **Chroma**
+* **Elasticsearch / OpenSearch**
+* **Azure AI Search**
+* **LanceDB**
+
+### LLM Providers
+* **OpenAI**
+* **Anthropic**
+* **Azure OpenAI**
+* **Google Gemini**
+* **Ollama / vLLM / LiteLLM**
+* **OpenRouter** / Any OpenAI-compatible REST endpoint
+
+### Observability
+* **OpenTelemetry** (Datadog, Grafana, Honeycomb, Jaeger, New Relic)
+
+---
+# Development Philosophy
+
+ByoAI welcomes AI-assisted development.
+
+AI tools may be used to accelerate implementation, testing, documentation, and debugging.
+
+However:
+
+- All contributions must be reviewed by maintainers.
+- All code must meet project quality standards.
+- Tests are required for runtime changes.
+- Security-sensitive changes require human review.
+- Contributors remain responsible for submitted code.
+
+---
+
+## 📄 License & Enterprise Security
+
+`byoai-runtime` is distributed under the **[Apache License 2.0](LICENSE)**.
+
+* **Enterprise Safe:** Permissive license with explicit patent grants and trademark protections. Pre-approved for enterprise compliance scanners (Snyk, FOSSA, Mend).
+* **Data Privacy:** Runs strictly in-process within your infrastructure. Zero data is transmitted to external servers beyond your configured model and database providers.
+
+---
+
+## 🌐 Community & Documentation
+
+* **Documentation:** [byoairuntime.io](https://byoairuntime.io)
+* **GitHub Repository:** [github.com/byoai-runtime/byoai-runtime](https://github.com/byoai-runtime/byoai-runtime)
+* **PyPI Package:** [pypi.org/project/byoai-runtime](https://pypi.org/project/byoai-runtime)
