@@ -83,9 +83,14 @@ async def execute_payload(runtime: Runtime, payload: dict[str, Any]) -> dict[str
 
 
 def chunk_to_dict(chunk: Any) -> dict[str, Any]:
-    """One streamed chunk as a JSON-safe dict (delta frame or final frame)."""
+    """One streamed chunk as a JSON-safe dict (delta frame or final frame).
+
+    The final frame carries the same fields as the non-streaming result dict
+    (``cached``, ``provider``, ``model``, ``usage``, ``request_id``) so a
+    streaming consumer isn't missing anything a non-streaming one gets.
+    """
     if chunk.done:
-        frame: dict[str, Any] = {"done": True}
+        frame: dict[str, Any] = {"done": True, "cached": chunk.cached}
         if chunk.usage is not None:
             frame["usage"] = {
                 "input_tokens": chunk.usage.input_tokens,
@@ -94,6 +99,10 @@ def chunk_to_dict(chunk: Any) -> dict[str, Any]:
             }
         if chunk.model:
             frame["model"] = chunk.model
+        if chunk.provider:
+            frame["provider"] = chunk.provider
+        if chunk.request_id:
+            frame["request_id"] = chunk.request_id
         return frame
     return {"delta": chunk.delta}
 

@@ -90,6 +90,29 @@ async def test_stream_frames_shape():
     assert frames[:-1] == [{"delta": "a "}, {"delta": "b "}]
     assert frames[-1]["done"] is True
     assert frames[-1]["usage"]["output_tokens"] == 5
+    # Final frame carries the same fields as the non-streaming result dict —
+    # a streaming consumer isn't missing cached/provider/request_id.
+    assert frames[-1]["provider"] == "fake"
+    assert frames[-1]["cached"] is False
+    assert frames[-1]["request_id"]
+
+
+async def test_stream_frames_short_circuit_marks_cached():
+    from byoai.cache.memory import MemoryCache
+
+    runtime = Runtime(providers=[FakeProvider(reply="x")], cache=MemoryCache())
+    await runtime.execute("same q")  # populates the exact-match cache
+
+    async def guard(ctx, call_next):
+        ctx.model, ctx.provider = "cached-model", "cached-provider"
+        ctx.short_circuit("short-circuited answer", cached=True)
+
+    runtime.use(guard)
+    frames = [frame async for frame in stream_frames(runtime, {"input": "anything"})]
+    assert frames[0] == {"delta": "short-circuited answer"}
+    assert frames[-1]["cached"] is True
+    assert frames[-1]["model"] == "cached-model"
+    assert frames[-1]["provider"] == "cached-provider"
 
 
 async def test_sse_stream_lines():

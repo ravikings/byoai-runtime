@@ -259,7 +259,7 @@ cache_config = {
 One execution, five ways in — all share the same payload/result dialect:
 * **FastAPI** — `byoai.integrations.fastapi` (HTTP, SSE, WebSocket)
 * **Robyn** (Rust-powered) — `byoai.integrations.robyn` (HTTP, SSE, WebSocket)
-* **MCP** — `byoai.integrations.mcp`: expose the runtime as a tool any MCP client (Claude Desktop, another agent) can call
+* **MCP** — `byoai.integrations.mcp`: expose the runtime as a tool any MCP client (Claude Desktop, another agent) can call, over stdio or streamable HTTP — with a streaming tool variant (live token deltas as progress notifications)
 * **Queue workers** — `byoai.workers`: `RuntimeWorker` + `RedisStreamQueue`/`MemoryJobQueue`
 * Or embed `Runtime` directly in any async Python process
 
