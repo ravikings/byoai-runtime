@@ -66,11 +66,25 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 
 ::: byoai.cache.redis.RedisCache
 
+::: byoai.cache.redis.make_redis_client
+
+## Semantic (intent) cache
+
+::: byoai.cache.semantic.SemanticCacheStore
+
+::: byoai.cache.semantic.MemorySemanticCache
+
+::: byoai.cache.semantic.RedisSemanticCache
+
 ## Vector store adapters
 
 ::: byoai.vector.base.VectorStore
 
 ::: byoai.vector.pgvector.PgVectorStore
+
+::: byoai.vector.qdrant.QdrantVectorStore
+
+::: byoai.vector.pinecone.PineconeVectorStore
 
 ## Provider adapters
 
@@ -83,6 +97,30 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 ::: byoai.providers.openai_compat.OpenAICompatProvider
 
 ::: byoai.providers.anthropic.AnthropicProvider
+
+::: byoai.providers.gemini.GeminiProvider
+
+::: byoai.providers.embeddings.OpenAICompatEmbedder
+
+## Pipeline stages
+
+::: byoai.stages.ContextResolver
+
+::: byoai.stages.CacheLookup
+
+::: byoai.stages.SemanticCacheLookup
+
+::: byoai.stages.VectorRetrieve
+
+::: byoai.stages.ProviderCall
+
+## Telemetry (OpenTelemetry)
+
+::: byoai.telemetry.otel.instrument
+
+::: byoai.telemetry.otel.configure_otlp
+
+::: byoai.telemetry.otel.OpenTelemetryMiddleware
 
 ## Background workers
 

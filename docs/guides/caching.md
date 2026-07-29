@@ -39,8 +39,18 @@ runtime = Runtime(
 
 `provider: "valkey"` uses the same adapter — Valkey speaks the Redis protocol.
 
+`mode` selects the deployment topology: `"standalone"` (default, single node or Valkey),
+`"cluster"` (Redis Cluster, `url` pointing at any node), or `"sentinel"` (pass `sentinels` as
+`[(host, port), ...]` plus `service_name`). Extra keyword arguments (`socket_timeout`,
+`ssl`, `ssl_ca_certs`, ...) are forwarded to the underlying `redis-py` client.
+
 You can also pass an already-constructed client instead of a dict, or use the adapter classes
 directly for full control — see the [API reference](../reference/api.md).
+
+## Semantic (intent) caching
+
+For serving *similar*, not just identical, queries from cache — see the dedicated
+[Semantic caching guide](semantic-cache.md).
 
 ## Cache TTL for responses
 

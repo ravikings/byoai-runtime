@@ -56,9 +56,11 @@ nav:
       - FastAPI integration: guides/fastapi.md
       - Robyn integration: guides/robyn.md
       - Caching: guides/caching.md
+      - Semantic (intent) caching: guides/semantic-cache.md
       - Vector stores & filters: guides/vector-stores.md
       - Provider routing & fallback: guides/providers.md
       - Background workers: guides/workers.md
+      - Telemetry (OpenTelemetry): guides/telemetry.md
   - API Reference: reference/api.md
   - Changelog: https://github.com/ravikings/byoai-runtime/blob/main/CHANGELOG.md
   - Contributing: https://github.com/ravikings/byoai-runtime/blob/main/CONTRIBUTING.md

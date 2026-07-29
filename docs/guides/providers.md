@@ -37,10 +37,15 @@ All are `httpx`-based. OpenAI-compatible providers share one adapter
 | --- | --- |
 | `openai` | Default `base_url` is the OpenAI API; reads `OPENAI_API_KEY` if `api_key` isn't set. |
 | `anthropic` | Separate adapter (`byoai.providers.anthropic.AnthropicProvider`) for Anthropic's native API shape. |
+| `gemini` | Separate adapter (`byoai.providers.gemini.GeminiProvider`) for Google's `generateContent` API; reads `GEMINI_API_KEY` or `GOOGLE_API_KEY` if `api_key` isn't set. |
 | `azure_openai` | Requires `endpoint` and `deployment` (or falls back to `AZURE_OPENAI_ENDPOINT`); builds the deployment-scoped URL and sends the key via the `api-key` header. |
 | `ollama` | Defaults `base_url` to `http://localhost:11434/v1`. |
 | `openrouter` | Defaults `base_url` to OpenRouter's API; reads `OPENROUTER_API_KEY` if `api_key` isn't set. |
 | `openai_compatible` / `vllm` / `litellm` | Any OpenAI-compatible REST endpoint — requires `base_url`. |
+
+An unrecognized `provider` is resolved through Python entry points under the `byoai.providers`
+group before raising `ConfigurationError` — see [Vector stores: custom adapters via
+plugins](vector-stores.md#custom-adapters-via-plugins) for how the plugin mechanism works.
 
 ## Tuning retries
 
@@ -65,3 +70,25 @@ transport has already sent partial output downstream, so silently retrying would
 Pass `providers=[...]` (a list of `LLMProvider` instances) instead of `llm=` for full control,
 or combine both — `llm=` providers are tried first. See the [API reference](../reference/api.md)
 for adapter constructor signatures.
+
+## Embeddings
+
+`embedder=` builds a `byoai.providers.embeddings.OpenAICompatEmbedder` — any OpenAI-compatible
+`/embeddings` endpoint (OpenAI, Azure, Ollama, vLLM, ...). It powers
+[vector retrieval](vector-stores.md#rag-retrieval-in-the-pipeline) and the
+[semantic cache](semantic-cache.md); apps may also pass any `async (str) -> list[float]`
+callable of their own instead of a config dict.
+
+```python
+runtime = Runtime(
+    llm={"provider": "openai", "model": "gpt-4o"},
+    embedder={"provider": "openai", "model": "text-embedding-3-small"},
+)
+vector = await runtime.embedder("What are our SLA terms?")
+```
+
+`max_batch_size` chunks large `embed_batch()` calls into concurrent requests transparently — set
+it to the endpoint's per-call input cap (e.g. 2048 for OpenAI) for bulk-ingestion jobs.
+
+An unrecognized embedder `provider` is resolved through the `byoai.embedders` plugin group, same
+as vector stores and LLM providers.

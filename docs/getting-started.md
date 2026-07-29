@@ -11,11 +11,16 @@ Optional integrations are extras — install only what you need:
 ```bash
 pip install "byoai-runtime[fastapi]"   # FastAPI integration
 pip install "byoai-runtime[robyn]"     # Robyn integration
-pip install "byoai-runtime[redis]"     # Redis cache / queue
+pip install "byoai-runtime[redis]"     # Redis cache / queue / shared semantic cache
 pip install "byoai-runtime[pgvector]"  # pgvector vector store
+pip install "byoai-runtime[semantic]"  # in-process semantic (intent) cache
+pip install "byoai-runtime[perf]"      # orjson hot-path JSON codec
 pip install "byoai-runtime[otel]"      # OpenTelemetry export
 pip install "byoai-runtime[all]"       # everything above
 ```
+
+The Qdrant and Pinecone vector stores and the Gemini provider need no extra — they're built on
+the core `httpx` dependency, same as the OpenAI-compatible and Anthropic providers.
 
 ## Minimal example
 
@@ -32,8 +37,8 @@ async def main():
 asyncio.run(main())
 ```
 
-`Runtime` also supports `async with` — it closes provider/cache/vector-store connections
-automatically:
+`Runtime` also supports `async with` — it closes provider/cache/vector-store/embedder
+connections and shuts down any tracer provider it created automatically:
 
 ```python
 async with Runtime(llm={"provider": "openai", "model": "gpt-4o"}) as runtime:
@@ -57,5 +62,9 @@ signatures.
 - Drop the runtime into an existing app: [FastAPI guide](guides/fastapi.md),
   [Robyn guide](guides/robyn.md).
 - Run executions off the request path: [Background workers](guides/workers.md).
+- Serve similar (not just identical) queries from cache: [Semantic caching](guides/semantic-cache.md).
+- Add retrieval-augmented generation: [Vector stores — RAG retrieval in the
+  pipeline](guides/vector-stores.md#rag-retrieval-in-the-pipeline).
+- Trace executions to your existing observability stack: [Telemetry](guides/telemetry.md).
 - Runnable example apps live in [`examples/`](https://github.com/ravikings/byoai-runtime/tree/main/examples)
   in the repository.
