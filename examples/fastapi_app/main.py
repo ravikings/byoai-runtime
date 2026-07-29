@@ -60,10 +60,18 @@ cache_config = (
     else {"provider": "memory"}
 )
 
+telemetry_config = (
+    # Traces to your existing OTLP collector (Grafana/Datadog/Honeycomb/Jaeger).
+    {"provider": "opentelemetry", "endpoint": os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"]}
+    if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    else None
+)
+
 runtime = Runtime(
     llm=llm_config,
     cache=cache_config,
     system_prompt="You are a concise, helpful assistant.",
+    telemetry=telemetry_config,
 )
 
 

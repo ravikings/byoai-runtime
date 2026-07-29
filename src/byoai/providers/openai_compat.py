@@ -8,13 +8,13 @@ no provider SDK dependency.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
+from .. import _json as json
 from ..errors import ProviderError, RateLimitError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
 from .base import parse_retry_after
@@ -126,7 +126,14 @@ class OpenAICompatProvider:
                     data_str = line[len("data:") :].strip()
                     if data_str == "[DONE]":
                         break
-                    data = json.loads(data_str)
+                    try:
+                        data = json.loads(data_str)
+                    except ValueError as exc:
+                        raise ProviderError(
+                            f"{self.name}: malformed stream event: {exc}",
+                            provider=self.name,
+                            retryable=False,
+                        ) from exc
                     model = data.get("model", model)
                     if data.get("usage"):
                         usage = Usage(

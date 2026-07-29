@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
+from .. import _json as json
 from ..errors import ProviderError, RateLimitError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
 from .base import parse_retry_after
@@ -118,7 +118,14 @@ class AnthropicProvider:
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
-                    data = json.loads(line[len("data:") :].strip())
+                    try:
+                        data = json.loads(line[len("data:") :].strip())
+                    except ValueError as exc:
+                        raise ProviderError(
+                            f"{self.name}: malformed stream event: {exc}",
+                            provider=self.name,
+                            retryable=False,
+                        ) from exc
                     kind = data.get("type")
                     if kind == "message_start":
                         message = data.get("message", {})

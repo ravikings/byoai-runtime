@@ -6,9 +6,9 @@ Requires the ``pgvector`` extra: ``pip install byoai-runtime[pgvector]``.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from .. import _json as json
 from ..errors import ConfigurationError, VectorStoreError
 from ..types import Document
 from .base import DEFAULT_SCHEMA_MAP

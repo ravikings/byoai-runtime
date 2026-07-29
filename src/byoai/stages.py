@@ -8,10 +8,10 @@ own stages freely — the runtime does not special-case any of them.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from . import _json as json
 from . import events as ev
 from .cache.base import CacheStore
 from .context import RequestContext

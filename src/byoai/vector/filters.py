@@ -14,10 +14,10 @@ the AST. Adding a provider means adding one compiler, not another parser.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from .. import _json as json
 from ..errors import FilterError
 
 ComparisonOp = Literal["$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$in", "$nin"]

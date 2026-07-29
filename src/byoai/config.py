@@ -99,6 +99,50 @@ def build_provider(config: dict[str, Any]) -> LLMProvider:
     raise ConfigurationError(f"unknown llm provider {provider!r}")
 
 
+_UNSET = object()
+
+
+def configure_telemetry(runtime: Any, config: Any) -> Any:
+    """Wire tracing onto a runtime from declarative config.
+
+    ``{"provider": "opentelemetry", "endpoint": "...", "service_name": "..."}``
+    creates an OTLP exporter to that collector; omit ``endpoint`` to use the
+    process's globally configured OpenTelemetry SDK. A non-dict value is
+    treated as an already-built TracerProvider (mirroring how ``cache=`` and
+    ``vector_store=`` accept pre-built instances).
+
+    Returns the TracerProvider *this call created* (for the runtime to shut
+    down on close), or None when the caller owns the provider's lifecycle.
+    """
+    try:
+        from .telemetry.otel import configure_otlp, instrument
+    except ImportError as exc:
+        raise ConfigurationError(
+            "telemetry requires OpenTelemetry: pip install 'byoai-runtime[otel]'"
+        ) from exc
+
+    if not isinstance(config, dict):
+        instrument(runtime, tracer_provider=config)
+        return None
+
+    config = dict(config)
+    provider = config.pop("provider", "opentelemetry")
+    if provider not in ("opentelemetry", "otel"):
+        raise ConfigurationError(f"unknown telemetry provider {provider!r}")
+    tracer_provider = config.pop("tracer_provider", None)
+    endpoint = config.pop("endpoint", _UNSET)
+    owned_provider = None
+    if tracer_provider is None and endpoint is not _UNSET:
+        if not endpoint:
+            raise ConfigurationError(
+                "telemetry 'endpoint' is empty — set a collector URL or omit the key "
+                "to use the globally configured OpenTelemetry SDK"
+            )
+        tracer_provider = owned_provider = configure_otlp(endpoint=endpoint, **config)
+    instrument(runtime, tracer_provider=tracer_provider)
+    return owned_provider
+
+
 def build_router(config: dict[str, Any]) -> list[LLMProvider]:
     """Flatten a primary + nested ``fallback`` chain into an ordered provider list."""
     providers: list[LLMProvider] = []
