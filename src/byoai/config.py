@@ -85,6 +85,10 @@ def build_semantic_cache(config: dict[str, Any]) -> Any:
         from .cache.semantic import MemorySemanticCache
 
         return MemorySemanticCache(**config)
+    if provider in ("redis", "valkey"):
+        from .cache.semantic import RedisSemanticCache
+
+        return RedisSemanticCache(**config)
     plugin = _load_plugin("byoai.semantic_caches", provider, config)
     if plugin is not None:
         return plugin

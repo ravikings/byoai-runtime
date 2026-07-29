@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from . import _json as json
-from .errors import ByoAIError, ConfigurationError
+from .errors import ByoAIError
 from .runtime import Runtime
 from .transport import execute_payload
 
@@ -102,15 +102,16 @@ class RedisStreamQueue:
         result_ttl: int = 3600,
         prefetch: int = 16,
         client: Any | None = None,
+        mode: str = "standalone",
+        sentinels: list | None = None,
+        service_name: str | None = None,
     ) -> None:
         if client is None:
-            try:
-                import redis.asyncio as aioredis
-            except ImportError as exc:  # pragma: no cover
-                raise ConfigurationError(
-                    "RedisStreamQueue requires redis: pip install 'byoai-runtime[redis]'"
-                ) from exc
-            client = aioredis.from_url(url, decode_responses=True)
+            from .cache.redis import make_redis_client
+
+            client = make_redis_client(
+                url=url, mode=mode, sentinels=sentinels, service_name=service_name
+            )
         self._client = client
         self.stream = stream
         self.group = group
