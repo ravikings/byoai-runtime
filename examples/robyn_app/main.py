@@ -23,11 +23,14 @@ from byoai import Runtime
 from byoai.integrations.robyn import create_app
 
 llm_config: dict = {
-    "provider": os.environ.get("BYOAI_PROVIDER", "openai"),
+    # BYOAI_BASE_URL implies "openai_compatible" unless BYOAI_PROVIDER was set
+    # explicitly (e.g. AnthropicProvider also takes base_url; don't clobber it).
+    "provider": os.environ.get(
+        "BYOAI_PROVIDER", "openai_compatible" if os.environ.get("BYOAI_BASE_URL") else "openai"
+    ),
     "model": os.environ.get("BYOAI_MODEL", "gpt-4o-mini"),
 }
 if os.environ.get("BYOAI_BASE_URL"):
-    llm_config["provider"] = "openai_compatible"
     llm_config["base_url"] = os.environ["BYOAI_BASE_URL"]
 
 runtime = Runtime(llm=llm_config, cache={"provider": "memory"})

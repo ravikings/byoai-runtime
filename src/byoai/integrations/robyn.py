@@ -37,13 +37,27 @@ from ..runtime import Runtime
 from ..transport import execute_payload, parse_payload, sse_stream, ws_reply
 
 
-def attach(app: Robyn, runtime: Runtime, *, prefix: str = "/byoai") -> Runtime:
+def attach(
+    app: Robyn,
+    runtime: Runtime,
+    *,
+    prefix: str = "/byoai",
+    stream_media_type: str = "text/event-stream",
+    stream_headers: dict[str, str] | None = None,
+) -> Runtime:
     """Register ByoAI routes on an existing Robyn app and bind lifecycle.
 
     Adds ``POST {prefix}/execute``, ``POST {prefix}/stream`` (SSE) and a
     ``{prefix}/ws`` WebSocket, plus a shutdown handler closing the runtime's
-    provider/cache/vector connections.
+    provider/cache/vector connections. ``stream_headers`` defaults to
+    disabling proxy buffering (``Cache-Control: no-cache``,
+    ``X-Accel-Buffering: no``) — pass ``{}`` to omit them entirely.
     """
+    effective_stream_headers = (
+        {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        if stream_headers is None
+        else stream_headers
+    )
 
     @app.post(f"{prefix}/execute")
     async def _execute(request):  # Robyn injects its Request
@@ -70,7 +84,9 @@ def attach(app: Robyn, runtime: Runtime, *, prefix: str = "/byoai") -> Runtime:
         except ByoAIError as exc:
             return _error_response(422, str(exc))
         return StreamingResponse(
-            sse_stream(runtime, payload), media_type="text/event-stream"
+            sse_stream(runtime, payload),
+            media_type=stream_media_type,
+            headers=effective_stream_headers,
         )
 
     @app.websocket(f"{prefix}/ws")
@@ -93,14 +109,25 @@ def attach(app: Robyn, runtime: Runtime, *, prefix: str = "/byoai") -> Runtime:
     return runtime
 
 
-def create_app(runtime: Runtime, *, prefix: str = "/byoai") -> Robyn:
-    """A standalone Robyn app serving the runtime (plus ``GET /healthz``)."""
-    app = Robyn(__file__)
-    attach(app, runtime, prefix=prefix)
+def create_app(
+    runtime: Runtime,
+    *,
+    prefix: str = "/byoai",
+    healthz_path: str | None = "/healthz",
+    **attach_kwargs: Any,
+) -> Robyn:
+    """A standalone Robyn app serving the runtime.
 
-    @app.get("/healthz")
-    async def _healthz():
-        return jsonify({"ok": True})
+    Registers ``GET {healthz_path}`` by default; pass ``healthz_path=None``
+    to skip it (e.g. if your host app already defines that route).
+    """
+    app = Robyn(__file__)
+    attach(app, runtime, prefix=prefix, **attach_kwargs)
+
+    if healthz_path is not None:
+        @app.get(healthz_path)
+        async def _healthz():
+            return jsonify({"ok": True})
 
     return app
 

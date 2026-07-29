@@ -143,21 +143,63 @@ def configure_otlp(
     endpoint: str,
     service_name: str = "byoai-runtime",
     headers: dict[str, str] | None = None,
+    protocol: str = "grpc",
+    timeout: float | None = None,
+    compression: str | None = None,
+    resource_attributes: dict[str, Any] | None = None,
+    max_queue_size: int | None = None,
+    schedule_delay_millis: int | None = None,
+    max_export_batch_size: int | None = None,
+    export_timeout_millis: int | None = None,
 ) -> Any:
     """Create an SDK TracerProvider exporting OTLP to an existing collector
     (Grafana Tempo, Datadog agent, Honeycomb, Jaeger, ...). Returns the
-    provider — pass it to :func:`instrument`."""
+    provider — pass it to :func:`instrument`.
+
+    ``protocol`` is ``"grpc"`` (default, port 4317) or ``"http"``/``"http/protobuf"``
+    (port 4318) — many collectors behind corporate ingress only allow the
+    latter. ``compression`` is ``"gzip"`` or ``None``. The ``max_queue_size``/
+    ``schedule_delay_millis``/``max_export_batch_size``/``export_timeout_millis``
+    knobs tune the batch processor; unset ones use the OTel SDK's defaults.
+    ``resource_attributes`` adds to (not replaces) ``service.name`` — e.g.
+    ``{"service.version": "1.2.0", "deployment.environment": "prod"}``.
+    """
+    if protocol not in ("grpc", "http", "http/protobuf"):
+        raise ValueError(f"unknown OTLP protocol {protocol!r} (expected 'grpc' or 'http')")
+    if compression not in (None, "gzip"):
+        raise ValueError(f"unknown OTLP compression {compression!r} (expected 'gzip' or None)")
+
     try:
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    except ImportError as exc:  # pragma: no cover
+
+        if protocol == "grpc":
+            from grpc import Compression as _Compression
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        else:
+            from opentelemetry.exporter.otlp.proto.http import Compression as _Compression
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    except ImportError as exc:
         raise ImportError(
             "OTLP export requires the SDK + exporter: pip install 'byoai-runtime[otel]'"
         ) from exc
-    provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
-    provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, headers=headers))
+
+    compression_value = _Compression.Gzip if compression == "gzip" else None
+    exporter = OTLPSpanExporter(
+        endpoint=endpoint, headers=headers, timeout=timeout, compression=compression_value
     )
+    resource = Resource.create({"service.name": service_name, **(resource_attributes or {})})
+    provider = TracerProvider(resource=resource)
+    batch_kwargs = {
+        k: v
+        for k, v in {
+            "max_queue_size": max_queue_size,
+            "schedule_delay_millis": schedule_delay_millis,
+            "max_export_batch_size": max_export_batch_size,
+            "export_timeout_millis": export_timeout_millis,
+        }.items()
+        if v is not None
+    }
+    provider.add_span_processor(BatchSpanProcessor(exporter, **batch_kwargs))
     return provider

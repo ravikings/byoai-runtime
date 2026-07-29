@@ -14,8 +14,8 @@ from ..types import Message, ProviderResponse, StreamChunk, Usage
 from .base import DEFAULT_RETRYABLE_STATUS, raise_for_status
 
 # 529 = Anthropic's "overloaded" status, retryable like a 503.
-_RETRYABLE_STATUS = DEFAULT_RETRYABLE_STATUS | {529}
-_API_VERSION = "2023-06-01"
+DEFAULT_RETRYABLE_STATUS_ANTHROPIC = DEFAULT_RETRYABLE_STATUS | {529}
+DEFAULT_API_VERSION = "2023-06-01"
 
 
 class AnthropicProvider:
@@ -29,15 +29,24 @@ class AnthropicProvider:
         timeout: float = 60.0,
         max_tokens: int = 4096,
         client: httpx.AsyncClient | None = None,
+        api_version: str = DEFAULT_API_VERSION,
+        default_headers: dict[str, str] | None = None,
+        retryable_status: frozenset[int] | set[int] | None = None,
+        messages_path: str = "/v1/messages",
     ) -> None:
         self.name = name
         self.model = model
         self.max_tokens = max_tokens
+        self._messages_path = messages_path
+        self._retryable_status = (
+            frozenset(retryable_status) if retryable_status is not None
+            else DEFAULT_RETRYABLE_STATUS_ANTHROPIC
+        )
         api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        headers = {"x-api-key": api_key, "anthropic-version": api_version}
+        headers.update(default_headers or {})
         self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
-            headers={"x-api-key": api_key, "anthropic-version": _API_VERSION},
-            timeout=timeout,
+            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,
         )
         self._owns_client = client is None
 
@@ -55,12 +64,12 @@ class AnthropicProvider:
         return payload
 
     def _raise_for_status(self, response: httpx.Response) -> None:
-        raise_for_status(response, provider=self.name, retryable_status=_RETRYABLE_STATUS)
+        raise_for_status(response, provider=self.name, retryable_status=self._retryable_status)
 
     async def complete(self, messages: list[Message], **options: Any) -> ProviderResponse:
         payload = self._payload(messages, options)
         try:
-            response = await self._client.post("/v1/messages", json=payload)
+            response = await self._client.post(self._messages_path, json=payload)
         except httpx.HTTPError as exc:
             raise ProviderError(
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True
@@ -93,7 +102,7 @@ class AnthropicProvider:
         model = payload["model"]
         usage = Usage()
         try:
-            async with self._client.stream("POST", "/v1/messages", json=payload) as response:
+            async with self._client.stream("POST", self._messages_path, json=payload) as response:
                 if response.status_code >= 400:
                     await response.aread()
                     self._raise_for_status(response)

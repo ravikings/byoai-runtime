@@ -34,12 +34,22 @@ class PgVectorStore:
         pool: Any | None = None,
         min_pool_size: int = 1,
         max_pool_size: int = 5,
+        command_timeout: float | None = None,
+        **pool_kwargs: Any,
     ) -> None:
+        """``**pool_kwargs`` (e.g. ``server_settings={"statement_timeout": "..."}``,
+        ``ssl=...``, ``max_inactive_connection_lifetime=...``) are forwarded
+        to ``asyncpg.create_pool`` when ``pool=`` isn't supplied directly."""
         if pool is None and dsn is None:
             raise ConfigurationError("PgVectorStore requires a dsn or an existing pool")
         self._dsn = dsn
         self._pool = pool
-        self._pool_opts = {"min_size": min_pool_size, "max_size": max_pool_size}
+        self._pool_opts = {
+            "min_size": min_pool_size,
+            "max_size": max_pool_size,
+            "command_timeout": command_timeout,
+            **pool_kwargs,
+        }
         self.table = _ident(table)
         self.schema_map = {**DEFAULT_SCHEMA_MAP, **(schema_map or {})}
         for column in self.schema_map.values():
@@ -53,11 +63,7 @@ class PgVectorStore:
                 raise ConfigurationError(
                     "PgVectorStore requires asyncpg: pip install 'byoai-runtime[pgvector]'"
                 ) from exc
-            self._pool = await asyncpg.create_pool(
-                self._dsn,
-                min_size=self._pool_opts["min_size"],
-                max_size=self._pool_opts["max_size"],
-            )
+            self._pool = await asyncpg.create_pool(self._dsn, **self._pool_opts)
         return self._pool
 
     async def search(

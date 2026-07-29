@@ -26,6 +26,10 @@ STATE_STREAMING = "byoai.streaming"
 STATE_CACHE_KEY = "byoai.cache_key"
 STATE_SEMANTIC_EMBEDDING = "byoai.semantic_embedding"
 
+# Single source of truth for the semantic-cache similarity floor; runtime.py
+# reads this default too instead of duplicating the literal.
+DEFAULT_SEMANTIC_THRESHOLD = 0.92
+
 
 class ContextResolver:
     """Normalize ``ctx.input`` into ``ctx.messages``.
@@ -121,35 +125,52 @@ def _coerce_message(item: Any) -> Message | None:
 class CacheLookup:
     """Exact-match response cache. Short-circuits the pipeline on a hit.
 
-    The cache key fingerprints the normalized messages + model, so identical
-    requests hit regardless of transport. The runtime writes the response back
-    (with its configured ``cache_ttl``) after a successful non-streamed,
-    non-cached execution.
+    The cache key fingerprints the normalized messages, model, pipeline,
+    provider options (temperature, top_p, ...) and retrieval filters, so
+    requests that differ only in those fields never collide on the same
+    entry. The runtime writes the response back (with its configured
+    ``cache_ttl``) after a successful non-streamed, non-cached execution.
     """
 
     name = "cache_lookup"
 
-    def __init__(self, cache: CacheStore, *, bus: EventBus | None = None):
+    def __init__(
+        self,
+        cache: CacheStore,
+        *,
+        bus: EventBus | None = None,
+        extra_fingerprint: Callable[[RequestContext], Any] | None = None,
+    ):
         self.cache = cache
         self._bus = bus
+        # Hook for apps needing extra key dimensions (e.g. a tenant id from
+        # ctx.state) without subclassing this stage.
+        self.extra_fingerprint = extra_fingerprint
 
-    @staticmethod
-    def fingerprint(ctx: RequestContext) -> str:
-        basis = json.dumps(
-            {
-                "messages": [m.to_dict() for m in ctx.messages],
-                "model": ctx.model,
-                "pipeline": ctx.pipeline_name,
-            },
-            sort_keys=True,
-            default=str,
-        )
-        return "cache:" + hashlib.sha256(basis.encode()).hexdigest()
+    def fingerprint(self, ctx: RequestContext) -> str:
+        basis: dict[str, Any] = {
+            "messages": [m.to_dict() for m in ctx.messages],
+            "model": ctx.model,
+            "pipeline": ctx.pipeline_name,
+            "provider_options": ctx.state.get("provider_options"),
+            "filters": ctx.state.get("filters"),
+        }
+        if self.extra_fingerprint is not None:
+            basis["extra"] = self.extra_fingerprint(ctx)
+        encoded = json.dumps(basis, sort_keys=True, default=str)
+        return "cache:" + hashlib.sha256(encoded.encode()).hexdigest()
 
     async def execute(self, ctx: RequestContext) -> None:
         if ctx.state.get(STATE_STREAMING):
             return  # streamed responses are not served from the exact-match cache
-        key = self.fingerprint(ctx)
+        try:
+            key = self.fingerprint(ctx)
+        except Exception:
+            # A caller-supplied extra_fingerprint hook can raise (e.g. a
+            # missing ctx.state key); a broken key computation must degrade
+            # to "skip caching for this request", same as any other cache
+            # failure — never fail a request the provider could have answered.
+            return
         ctx.state[STATE_CACHE_KEY] = key
         try:
             hit = await self.cache.get(key)
@@ -193,7 +214,7 @@ class SemanticCacheLookup:
         store: Any,  # SemanticCacheStore
         embedder: Embedder,
         *,
-        threshold: float = 0.92,
+        threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
         bus: EventBus | None = None,
     ) -> None:
         self.store = store
@@ -244,12 +265,22 @@ class VectorRetrieve:
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
         bus: EventBus | None = None,
+        format_document: Callable[[Document], str] | None = None,
+        context_header: str = "Relevant context retrieved for this request:",
+        insert_at: Callable[[RequestContext], int] | None = None,
     ) -> None:
         self.store = store
         self.embedder = embedder
         self.top_k = top_k
         self.filters = filters
         self._bus = bus
+        # Customize the RAG prompt wrapper (citation format, instructions to
+        # the model) without subclassing this stage.
+        self.format_document = format_document or (lambda d: f"[{d.id}] {d.content}")
+        self.context_header = context_header
+        # Default: just before the last message. Override to e.g. always
+        # append at the end, or merge into an existing system message.
+        self.insert_at = insert_at or (lambda ctx: max(len(ctx.messages) - 1, 0))
 
     async def execute(self, ctx: RequestContext) -> None:
         query = _last_user_message(ctx)
@@ -264,13 +295,10 @@ class VectorRetrieve:
         if self._bus:
             await self._bus.emit(ev.VECTOR_RETRIEVED, ctx=ctx, count=len(documents))
         if documents:
-            context_block = "\n\n".join(f"[{d.id}] {d.content}" for d in documents)
+            context_block = "\n\n".join(self.format_document(d) for d in documents)
             ctx.messages.insert(
-                max(len(ctx.messages) - 1, 0),
-                Message(
-                    role="system",
-                    content=f"Relevant context retrieved for this request:\n\n{context_block}",
-                ),
+                self.insert_at(ctx),
+                Message(role="system", content=f"{self.context_header}\n\n{context_block}"),
             )
 
 

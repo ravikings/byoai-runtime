@@ -74,10 +74,16 @@ class RedisCache:
         mode: str = "standalone",
         sentinels: list | None = None,
         service_name: str | None = None,
+        **client_kwargs: Any,
     ) -> None:
+        """``**client_kwargs`` (e.g. ``socket_timeout``, ``socket_connect_timeout``,
+        ``retry_on_timeout``, ``health_check_interval``, ``ssl``, ``ssl_ca_certs``)
+        are forwarded to the underlying redis-py client when ``client=`` isn't
+        supplied directly — see redis-py's connection docs for the full set."""
         if client is None:
             client = make_redis_client(
-                url=url, mode=mode, sentinels=sentinels, service_name=service_name
+                url=url, mode=mode, sentinels=sentinels, service_name=service_name,
+                **client_kwargs,
             )
         self._client = client
         self.namespace = namespace

@@ -253,7 +253,20 @@ cache_config = {
 * **OpenRouter** / Any OpenAI-compatible REST endpoint
 
 ### Observability
-* **OpenTelemetry** (Datadog, Grafana, Honeycomb, Jaeger, New Relic)
+* **OpenTelemetry** (Datadog, Grafana, Honeycomb, Jaeger, New Relic) — gRPC or HTTP OTLP.
+
+### Transports
+One execution, five ways in — all share the same payload/result dialect:
+* **FastAPI** — `byoai.integrations.fastapi` (HTTP, SSE, WebSocket)
+* **Robyn** (Rust-powered) — `byoai.integrations.robyn` (HTTP, SSE, WebSocket)
+* **MCP** — `byoai.integrations.mcp`: expose the runtime as a tool any MCP client (Claude Desktop, another agent) can call
+* **Queue workers** — `byoai.workers`: `RuntimeWorker` + `RedisStreamQueue`/`MemoryJobQueue`
+* Or embed `Runtime` directly in any async Python process
+
+### Configuration
+Every adapter's every setting — timeouts, retry classification, connection
+pooling, TTLs, capacity bounds, batch sizes, and more — is documented in
+**[CONFIGURATION.md](CONFIGURATION.md)**.
 
 ---
 # Development Philosophy

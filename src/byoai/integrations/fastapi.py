@@ -81,24 +81,28 @@ def stream_response(
     input: Any,
     *,
     media_type: str = "text/event-stream",
+    headers: dict[str, str] | None = None,
     **execute_kwargs: Any,
 ) -> StreamingResponse:
     """SSE response streaming ``runtime.stream()`` chunks.
 
     Emits ``data: {"delta": "..."}`` events per token batch and a final
-    ``data: {"done": true, "usage": {...}}`` event.
+    ``data: {"done": true, "usage": {...}}`` event. ``headers`` defaults to
+    disabling proxy buffering (``Cache-Control: no-cache``,
+    ``X-Accel-Buffering: no``) — pass ``{}`` to omit them entirely.
     """
+    effective_headers = (
+        {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        if headers is None
+        else headers
+    )
 
     async def event_source():
         async for chunk in runtime.stream(input, **execute_kwargs):
             if chunk.done or chunk.delta:
                 yield f"data: {json.dumps(chunk_to_dict(chunk))}\n\n"
 
-    return StreamingResponse(
-        event_source(),
-        media_type=media_type,
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return StreamingResponse(event_source(), media_type=media_type, headers=effective_headers)
 
 
 async def serve_websocket(runtime: Runtime, websocket: WebSocket) -> None:
