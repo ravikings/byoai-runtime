@@ -17,6 +17,51 @@ from .. import _json as json
 from ..errors import CacheError, ConfigurationError
 
 
+def make_redis_client(
+    *,
+    url: str = "redis://localhost:6379",
+    mode: str = "standalone",
+    sentinels: list[tuple[str, int]] | list[list] | None = None,
+    service_name: str | None = None,
+    **client_kwargs: Any,
+) -> Any:
+    """Build an async Redis client for the deployment you already run.
+
+    * ``standalone`` (default) — single node or Valkey, via ``url``.
+    * ``cluster`` — Redis Cluster, via ``url`` pointing at any node.
+    * ``sentinel`` — Sentinel-managed master: pass ``sentinels`` as
+      ``[(host, port), ...]`` and the ``service_name``.
+
+    Requires the ``redis`` extra: ``pip install byoai-runtime[redis]``.
+    """
+    try:
+        import redis.asyncio as aioredis
+    except ImportError as exc:  # pragma: no cover
+        raise ConfigurationError(
+            "Redis support requires the redis package: pip install 'byoai-runtime[redis]'"
+        ) from exc
+
+    client_kwargs.setdefault("decode_responses", True)
+    if mode == "standalone":
+        return aioredis.from_url(url, **client_kwargs)
+    if mode == "cluster":
+        from redis.asyncio.cluster import RedisCluster
+
+        return RedisCluster.from_url(url, **client_kwargs)
+    if mode == "sentinel":
+        if not sentinels or not service_name:
+            raise ConfigurationError(
+                "sentinel mode requires 'sentinels' ([(host, port), ...]) and 'service_name'"
+            )
+        from redis.asyncio.sentinel import Sentinel
+
+        sentinel = Sentinel([tuple(s) for s in sentinels], **client_kwargs)
+        return sentinel.master_for(service_name)
+    raise ConfigurationError(
+        f"unknown redis mode {mode!r} (expected standalone, cluster, or sentinel)"
+    )
+
+
 class RedisCache:
     def __init__(
         self,
@@ -26,15 +71,14 @@ class RedisCache:
         session_reader: dict[str, str] | None = None,
         client: Any | None = None,
         default_ttl: int | None = None,
+        mode: str = "standalone",
+        sentinels: list | None = None,
+        service_name: str | None = None,
     ) -> None:
         if client is None:
-            try:
-                import redis.asyncio as aioredis
-            except ImportError as exc:  # pragma: no cover
-                raise ConfigurationError(
-                    "RedisCache requires the redis package: pip install 'byoai-runtime[redis]'"
-                ) from exc
-            client = aioredis.from_url(url, decode_responses=True)
+            client = make_redis_client(
+                url=url, mode=mode, sentinels=sentinels, service_name=service_name
+            )
         self._client = client
         self.namespace = namespace
         self.default_ttl = default_ttl

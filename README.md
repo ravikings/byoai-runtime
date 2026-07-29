@@ -148,6 +148,19 @@ await runtime.execute("Tell me about our enterprise SLAs")    # intent hit (~16m
 Measured ~50× faster on intent hits; lookups stay sub-millisecond to ~30k
 cached answers (`benchmarks/RESULTS.md`).
 
+For production, back the intent cache with your existing Redis so hits are
+**shared across every worker/replica and survive restarts**:
+
+```python
+semantic_cache={"provider": "redis", "url": "redis://redis.internal:6379",
+                "threshold": 0.92, "capacity": 10_000, "ttl": 3600}
+```
+
+Entries live in one `byoai:`-namespaced Redis stream; each worker keeps a
+local numpy mirror and syncs incrementally, so similarity math never leaves
+the process. Redis Cluster and Sentinel are supported everywhere Redis is
+(`"mode": "cluster"` or `"mode": "sentinel"` + `sentinels`/`service_name`).
+
 ---
 
 ## 🛠️ Core Capabilities
