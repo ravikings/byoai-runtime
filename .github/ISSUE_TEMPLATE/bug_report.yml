@@ -1,0 +1,47 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A small, runnable code snippet that reproduces the issue.
+      render: python
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: byoai-runtime version
+      description: Output of `python -c "import byoai; print(byoai.__version__)"`
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+    validations:
+      required: true
+  - type: textarea
+    id: extras
+    attributes:
+      label: Optional dependencies installed
+      description: e.g. `byoai-runtime[fastapi,redis]` — which extras are installed?
+    validations:
+      required: false
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Traceback / logs
+      render: shell
+    validations:
+      required: false

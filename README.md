@@ -2,6 +2,7 @@
 
 > **Bring Your Own Infrastructure (BYOI). ByoAI Brings the Runtime.**
 
+[![CI](https://github.com/ravikings/byoai-runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/ravikings/byoai-runtime/actions/workflows/ci.yml)
 [![PyPI version](https://badge.fury.io/py/byoai-runtime.svg)](https://badge.fury.io/py/byoai-runtime)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-brightgreen.svg)](https://www.python.org/downloads/)
@@ -219,19 +220,12 @@ cache_config = {
 * **OpenTelemetry** (Datadog, Grafana, Honeycomb, Jaeger, New Relic)
 
 ---
-# Development Philosophy
+# Contributing
 
-ByoAI welcomes AI-assisted development.
-
-AI tools may be used to accelerate implementation, testing, documentation, and debugging.
-
-However:
-
-- All contributions must be reviewed by maintainers.
-- All code must meet project quality standards.
-- Tests are required for runtime changes.
-- Security-sensitive changes require human review.
-- Contributors remain responsible for submitted code.
+ByoAI welcomes AI-assisted development as well as human contributions. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, checks, the AI-assisted-development policy,
+and the PR process, and our [Code of Conduct](CODE_OF_CONDUCT.md). To report a vulnerability,
+see [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ---
 
@@ -246,6 +240,9 @@ However:
 
 ## 🌐 Community & Documentation
 
-* **Documentation:** [byoairuntime.io](https://byoairuntime.io)
-* **GitHub Repository:** [github.com/byoai-runtime/byoai-runtime](https://github.com/byoai-runtime/byoai-runtime)
+* **Documentation:** [ravikings.github.io/byoai-runtime](https://ravikings.github.io/byoai-runtime/)
+* **GitHub Repository:** [github.com/ravikings/byoai-runtime](https://github.com/ravikings/byoai-runtime)
 * **PyPI Package:** [pypi.org/project/byoai-runtime](https://pypi.org/project/byoai-runtime)
+* **Changelog:** [CHANGELOG.md](CHANGELOG.md)
+* **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
+* **Security:** [SECURITY.md](SECURITY.md)
