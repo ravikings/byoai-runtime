@@ -6,7 +6,7 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 
-from fastapi import Depends, FastAPI  # noqa: E402
+from fastapi import Depends, FastAPI, WebSocket  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from tests.conftest import FakeProvider  # noqa: E402
 
@@ -50,6 +50,40 @@ def test_sse_stream():
     assert text.strip() == "hello from fake"
     assert events[-1]["done"] is True
     assert events[-1]["usage"]["input_tokens"] == 10
+
+
+def test_websocket_streaming_dialect():
+    from byoai.integrations.fastapi import serve_websocket
+
+    app = FastAPI()
+    attach(app, Runtime(providers=[FakeProvider(reply="ws works")]))
+
+    @app.websocket("/ws")
+    async def ws(websocket: WebSocket):
+        await serve_websocket(get_runtime(websocket), websocket)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as connection:
+            connection.send_text(json.dumps({"input": "hi"}))
+            frames = []
+            while True:
+                frame = json.loads(connection.receive_text())
+                frames.append(frame)
+                if frame.get("done") or frame.get("error"):
+                    break
+    text = "".join(frame.get("delta", "") for frame in frames)
+    assert text.strip() == "ws works"
+    assert frames[-1]["done"] is True
+
+    # a second message on the same connection also works (connection reuse)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as connection:
+            for _ in range(2):
+                connection.send_text(json.dumps({"input": "hi"}))
+                while True:
+                    frame = json.loads(connection.receive_text())
+                    if frame.get("done"):
+                        break
 
 
 def test_missing_attach_raises():
