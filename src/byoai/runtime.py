@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from . import events as ev
@@ -184,7 +184,9 @@ class Runtime:
         session_id: str | None = None,
         user_id: str | None = None,
         model: str | None = None,
+        system_prompt: str | None = None,
         metadata: dict[str, Any] | None = None,
+        provider_metadata: dict[str, Any] | None = None,
         filters: dict[str, Any] | None = None,
         **provider_options: Any,
     ) -> ExecutionResult:
@@ -197,8 +199,18 @@ class Runtime:
             metadata=metadata or {},
         )
         ctx.model = model
+        # None from ContextResolver's own constructor default; "" clears it
+        # for this call. Not to be confused with metadata= above, which is
+        # app-level (ctx.metadata) and never reaches the provider — see
+        # provider_metadata below for that.
+        ctx.system_prompt = system_prompt
         if filters:
             ctx.state["filters"] = filters
+        # provider_metadata= is forwarded as-is into the provider payload
+        # (e.g. Anthropic's top-level `metadata` field, {"user_id": ...} for
+        # audit correlation) — distinct from metadata= above.
+        if provider_metadata is not None:
+            provider_options["metadata"] = provider_metadata
         if provider_options:
             ctx.state["provider_options"] = provider_options
 
@@ -227,6 +239,8 @@ class Runtime:
             model=ctx.model,
             provider=ctx.provider,
             metadata=ctx.metadata,
+            finish_reason=ctx.finish_reason,
+            raw=ctx.raw_response,
         )
 
     async def stream(
@@ -237,10 +251,12 @@ class Runtime:
         session_id: str | None = None,
         user_id: str | None = None,
         model: str | None = None,
+        system_prompt: str | None = None,
         metadata: dict[str, Any] | None = None,
+        provider_metadata: dict[str, Any] | None = None,
         filters: dict[str, Any] | None = None,
         **provider_options: Any,
-    ) -> AsyncIterator[StreamChunk]:
+    ) -> AsyncGenerator[StreamChunk, None]:
         """Run the pipeline in streaming mode and yield token chunks.
 
         The pipeline prepares the context (history, cache policy, retrieval,
@@ -258,9 +274,12 @@ class Runtime:
             metadata=metadata or {},
         )
         ctx.model = model
+        ctx.system_prompt = system_prompt
         ctx.state[STATE_STREAMING] = True
         if filters:
             ctx.state["filters"] = filters
+        if provider_metadata is not None:
+            provider_options["metadata"] = provider_metadata
         if provider_options:
             ctx.state["provider_options"] = provider_options
 
@@ -278,6 +297,7 @@ class Runtime:
             yield StreamChunk(
                 done=True, model=ctx.model, provider=ctx.provider,
                 cached=ctx.cached, request_id=ctx.request_id,
+                finish_reason=ctx.finish_reason,
             )
             await self.events.emit(ev.REQUEST_COMPLETED, ctx=ctx)
             return
@@ -291,6 +311,7 @@ class Runtime:
             if chunk.done:
                 ctx.model = chunk.model or ctx.model
                 ctx.provider = chunk.provider or ctx.provider
+                ctx.finish_reason = chunk.finish_reason
                 if chunk.usage:
                     ctx.usage.add(chunk.usage)
                 # A new chunk (not the provider's raw one) so cached/request_id
@@ -299,6 +320,7 @@ class Runtime:
                 yield StreamChunk(
                     done=True, model=ctx.model, provider=ctx.provider, usage=chunk.usage,
                     cached=ctx.cached, request_id=ctx.request_id,
+                    finish_reason=ctx.finish_reason,
                 )
             else:
                 parts.append(chunk.delta)
@@ -320,6 +342,11 @@ class Runtime:
                     "content": ctx.response,
                     "model": ctx.model,
                     "provider": ctx.provider,
+                    # finish_reason is a plain string, safe to persist. raw is
+                    # deliberately excluded — not JSON-safe for every adapter
+                    # (an SDK object for Bedrock/Vertex) and cache backends
+                    # may serialize this entry (e.g. RedisCache).
+                    "finish_reason": ctx.finish_reason,
                 }
                 try:
                     await self.cache.set(key, entry, ttl=self._cache_ttl)

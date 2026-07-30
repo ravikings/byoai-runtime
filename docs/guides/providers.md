@@ -88,6 +88,48 @@ honored, 5xx → retryable) reuses the same `raise_for_status()` every other ada
 to the SDK's own underlying `httpx.Response` — so retry/fallback behaves identically to every
 other provider.
 
+### Anthropic tool use and content blocks
+
+`Message.content` accepts either plain text or a list of Anthropic content blocks
+(`tool_use`, `tool_result`, `image`, ...) — only `AnthropicProvider` and the Bedrock/Vertex
+adapters handle list-valued content correctly; passing one to Gemini or an OpenAI-compatible
+provider will error or silently mishandle it, so don't mix a block-content message into a
+fallback chain that includes a non-Anthropic provider.
+
+The response side stays plain text on `ExecutionResult.content` (a pure `tool_use` turn comes
+back as an empty string there) — a full response, including any `tool_use` blocks, Anthropic's
+own response id, and prompt-cache token counts, is on `ExecutionResult.raw`. `raw`'s *shape*
+depends on the adapter, so `tool_use` block access differs too: `AnthropicProvider`'s `raw` is
+the parsed JSON `dict` (subscript it); Bedrock/Vertex's `raw` is the `anthropic` SDK's `Message`
+object (a pydantic model — attribute access, not subscript). `ExecutionResult.finish_reason`
+mirrors Anthropic's `stop_reason` directly and is the same plain string either way.
+
+```python
+result = await runtime.execute(messages, tools=[...])
+if result.finish_reason == "tool_use":
+    # AnthropicProvider: result.raw is a dict.
+    blocks = result.raw["content"]
+    tool_calls = [b for b in blocks if b["type"] == "tool_use"]
+    # AnthropicBedrockProvider/AnthropicVertexProvider: result.raw is the anthropic
+    # SDK's Message object instead — attribute access, and content blocks are
+    # pydantic models too:
+    #   blocks = result.raw.content
+    #   tool_calls = [b for b in blocks if b.type == "tool_use"]
+
+    # ... run the tools, then send tool_result blocks back as the next user message
+    # (the dict form works for every adapter as *outgoing* Message.content):
+    messages.append({"role": "assistant", "content": blocks})
+    messages.append({"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tool_calls[0]["id"], "content": "..."},
+    ]})
+```
+
+`result.raw` is a Python-API-only escape hatch — it's not JSON-serializable for Bedrock/Vertex,
+so it's deliberately excluded from the HTTP/SSE/WebSocket transport dialect (`byoai.transport`).
+`finish_reason` (a plain string) IS included there, on both the non-streaming result dict and a
+stream's final frame — `StreamChunk.raw` on individual deltas is adapter-specific and likewise
+excluded from the transport dialect.
+
 ## Tuning retries
 
 ```python

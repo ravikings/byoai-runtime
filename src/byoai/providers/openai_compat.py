@@ -21,6 +21,7 @@ from .base import (
     build_openai_client,
     parse_json_response,
     raise_for_status,
+    require_text_content,
 )
 
 
@@ -53,6 +54,8 @@ class OpenAICompatProvider:
         )
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
+        for m in messages:
+            require_text_content(m, provider=self.name)
         return {
             "model": options.pop("model", self.model),
             "messages": [m.to_dict() for m in messages],

@@ -29,6 +29,10 @@ class RequestContext:
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     session_id: str | None = None
     user_id: str | None = None
+    # Per-call override of the pipeline's default system prompt; None means
+    # "not overridden" (falls back to whatever ContextResolver was
+    # constructed with), "" explicitly clears it for this call.
+    system_prompt: str | None = None
 
     # Populated by stages as execution progresses.
     messages: list[Message] = field(default_factory=list)
@@ -36,6 +40,9 @@ class RequestContext:
     response: str | None = None
     model: str | None = None
     provider: str | None = None
+    finish_reason: str | None = None
+    # The terminal provider call's raw response (see ExecutionResult.raw).
+    raw_response: Any = None
 
     # Accounting / control.
     usage: Usage = field(default_factory=Usage)

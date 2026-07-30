@@ -20,12 +20,16 @@ class FakeProvider:
         reply: str = "hello from fake",
         fail_times: int = 0,
         fail_retryable: bool = True,
+        finish_reason: str | None = None,
+        raw: Any = None,
     ) -> None:
         self.name = name
         self.model = model
         self.reply = reply
         self.fail_times = fail_times
         self.fail_retryable = fail_retryable
+        self.finish_reason = finish_reason
+        self.raw = raw
         self.calls = 0
 
     def _maybe_fail(self) -> None:
@@ -44,6 +48,8 @@ class FakeProvider:
             model=self.model,
             provider=self.name,
             usage=Usage(input_tokens=10, output_tokens=5),
+            finish_reason=self.finish_reason,
+            raw=self.raw,
         )
 
     async def stream(self, messages: list[Message], **options: Any) -> AsyncIterator[StreamChunk]:

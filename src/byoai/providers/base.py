@@ -30,6 +30,8 @@ __all__ = [
     "parse_json_response",
     "build_openai_client",
     "has_auth_header",
+    "build_anthropic_system_field",
+    "require_text_content",
 ]
 
 
@@ -131,6 +133,67 @@ def parse_json_response(response: httpx.Response, *, provider: str) -> dict[str,
             retryable=False,
         )
     return data
+
+
+def require_text_content(message: Message, *, provider: str) -> str:
+    """``Message.content`` also accepts a list of provider content blocks
+    (Anthropic's tool_use/tool_result/image blocks) — only the Anthropic
+    adapters handle that today. Every other adapter needs plain text; call
+    this instead of using ``message.content`` directly so a stray
+    list-valued message fails with a clear ``ConfigurationError`` rather
+    than being forwarded as a malformed (Anthropic-shaped, not
+    provider-shaped) request body.
+    """
+    if not isinstance(message.content, str):
+        from ..errors import ConfigurationError
+
+        raise ConfigurationError(
+            f"{provider} requires plain-text message content, got a list of "
+            f"content blocks on a {message.role!r} message — content blocks "
+            "are only supported by the Anthropic adapters"
+        )
+    return message.content
+
+
+def build_anthropic_system_field(
+    messages: list[Message], *, cache_system: bool
+) -> str | list[dict[str, Any]] | None:
+    """Shared by the httpx-based ``AnthropicProvider`` and the SDK-based
+    Bedrock/Vertex adapters — both build Anthropic's ``system`` request field
+    from the same list of ``Message(role="system", ...)`` entries.
+
+    ``content`` on those messages is either plain text (the common case) or
+    already a list of Anthropic content blocks (a caller who hand-built
+    ``cache_control`` blocks themselves). Mixing the two across multiple
+    system messages has no sane default, so it's rejected outright rather
+    than guessed at.
+    """
+    from ..errors import ConfigurationError
+
+    system_msgs = [m.content for m in messages if m.role == "system"]
+    if not system_msgs:
+        return None
+    has_list = any(isinstance(c, list) for c in system_msgs)
+    has_str = any(isinstance(c, str) for c in system_msgs)
+    if has_list and has_str:
+        raise ConfigurationError(
+            "cannot mix plain-text and pre-built content-block system messages "
+            "in one request — make every system message's content either a "
+            "str or a list[dict] of content blocks, not a mix"
+        )
+    if has_list:
+        # cache_system is ignored here: the caller already built their own
+        # blocks (presumably including any cache_control they wanted), so
+        # this flag — which only auto-wraps a plain-string prompt — has
+        # nothing to add.
+        blocks: list[dict[str, Any]] = []
+        for c in system_msgs:
+            blocks.extend(c)  # type: ignore[arg-type]
+        return blocks
+    joined = "\n\n".join(system_msgs)  # type: ignore[arg-type]
+    if cache_system:
+        return [{"type": "text", "text": joined, "cache_control": {"type": "ephemeral"}}]
+    return joined
 
 
 def build_openai_client(

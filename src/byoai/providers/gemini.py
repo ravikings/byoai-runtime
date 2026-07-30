@@ -12,7 +12,13 @@ from .. import _json as json
 from .._version import USER_AGENT
 from ..errors import ConfigurationError, ProviderError, RateLimitError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, has_auth_header, parse_json_response, raise_for_status
+from .base import (
+    DEFAULT_RETRYABLE_STATUS,
+    has_auth_header,
+    parse_json_response,
+    raise_for_status,
+    require_text_content,
+)
 
 
 class GeminiProvider:
@@ -65,13 +71,15 @@ class GeminiProvider:
         self._client = client
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
-        system_parts = [m.content for m in messages if m.role == "system"]
+        system_parts = [
+            require_text_content(m, provider=self.name) for m in messages if m.role == "system"
+        ]
         # Gemini has two roles: assistant → "model"; user AND tool results →
         # "user" (tool outputs must reach the model, not be dropped).
         contents = [
             {
                 "role": "model" if m.role == "assistant" else "user",
-                "parts": [{"text": m.content}],
+                "parts": [{"text": require_text_content(m, provider=self.name)}],
             }
             for m in messages
             if m.role in ("user", "assistant", "tool")
@@ -80,6 +88,13 @@ class GeminiProvider:
         if system_parts:
             payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
         options.pop("model", None)
+        # metadata= (Runtime.execute()'s provider_metadata=) is Anthropic's
+        # own top-level request field — generateContent has no equivalent and
+        # rejects unrecognized fields outright. Drop it here instead of
+        # blindly forwarding, so a fallback chain that falls through to
+        # Gemini after Anthropic degrades (loses the audit tag) rather than
+        # failing the whole request with a 400.
+        options.pop("metadata", None)
         generation_config = {}
         for byoai_key, gemini_key in (
             ("temperature", "temperature"),

@@ -17,8 +17,15 @@ Role = Literal["system", "user", "assistant", "tool"]
 
 @dataclass
 class Message:
+    """``content`` is either plain text or a list of provider content blocks
+    (e.g. Anthropic ``tool_use``/``tool_result``/``image`` blocks) — only the
+    Anthropic adapters (``providers/anthropic.py``, ``providers/anthropic_cloud.py``)
+    are safe to use with list-valued content today; Gemini/OpenAI-compat expect
+    plain strings and will error or mishandle a list.
+    """
+
     role: Role
-    content: str
+    content: str | list[dict[str, Any]]
     name: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -36,15 +43,25 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    # Anthropic prompt-caching accounting — zero for providers/requests that
+    # don't use it. Not folded into total_tokens (see property below).
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     @property
     def total_tokens(self) -> int:
+        # Deliberately input_tokens + output_tokens only, unchanged by the
+        # cache_* fields above — Anthropic's own input_tokens already
+        # excludes cached/created prefix tokens, so folding them in here
+        # would silently change existing callers' cost math.
         return self.input_tokens + self.output_tokens
 
     def add(self, other: Usage) -> None:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.cost_usd += other.cost_usd
+        self.cache_read_tokens += other.cache_read_tokens
+        self.cache_creation_tokens += other.cache_creation_tokens
 
 
 @dataclass
@@ -75,6 +92,7 @@ class StreamChunk:
     raw: Any = None
     cached: bool = False
     request_id: str | None = None
+    finish_reason: str | None = None
 
 
 @dataclass
@@ -88,6 +106,14 @@ class ExecutionResult:
     model: str | None = None
     provider: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    finish_reason: str | None = None
+    # Python-API-only escape hatch: the provider adapter's raw response
+    # (a dict for the httpx-based adapters, an SDK object for Bedrock/Vertex).
+    # Carries anything a normalized field doesn't — e.g. Anthropic tool_use
+    # blocks, the provider's own response id. Never JSON-serialize this
+    # directly (the SDK-based adapters' raw isn't JSON-safe); transport.py
+    # deliberately excludes it from result_to_dict()/chunk_to_dict().
+    raw: Any = None
 
 
 @dataclass

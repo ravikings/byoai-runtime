@@ -23,7 +23,7 @@ from typing import Any
 
 from ..errors import ConfigurationError, ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, raise_for_status
+from .base import DEFAULT_RETRYABLE_STATUS, build_anthropic_system_field, raise_for_status
 
 # 529 = Anthropic's "overloaded" status, retryable like a 503 — same as the
 # direct-API AnthropicProvider.
@@ -39,12 +39,12 @@ class _AnthropicSDKProviderBase:
     name: str
     model: str
     max_tokens: int
+    cache_system: bool
     _client: Any
     _owns_client: bool
     _retryable_status: frozenset[int]
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
-        system_parts = [m.content for m in messages if m.role == "system"]
         chat = [m.to_dict() for m in messages if m.role != "system"]
         payload: dict[str, Any] = {
             "model": options.pop("model", self.model),
@@ -52,8 +52,9 @@ class _AnthropicSDKProviderBase:
             "messages": chat,
             **options,
         }
-        if system_parts:
-            payload["system"] = "\n\n".join(system_parts)
+        system = build_anthropic_system_field(messages, cache_system=self.cache_system)
+        if system is not None:
+            payload["system"] = system
         return payload
 
     async def complete(self, messages: list[Message], **options: Any) -> ProviderResponse:
@@ -79,6 +80,10 @@ class _AnthropicSDKProviderBase:
             usage=Usage(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
+                cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                cache_creation_tokens=(
+                    getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                ),
             ),
             finish_reason=response.stop_reason,
             raw=response,
@@ -113,7 +118,12 @@ class _AnthropicSDKProviderBase:
             usage=Usage(
                 input_tokens=final.usage.input_tokens,
                 output_tokens=final.usage.output_tokens,
+                cache_read_tokens=getattr(final.usage, "cache_read_input_tokens", 0) or 0,
+                cache_creation_tokens=(
+                    getattr(final.usage, "cache_creation_input_tokens", 0) or 0
+                ),
             ),
+            finish_reason=final.stop_reason,
         )
 
     async def close(self) -> None:
@@ -144,10 +154,12 @@ class AnthropicBedrockProvider(_AnthropicSDKProviderBase):
         default_headers: dict[str, str] | None = None,
         retryable_status: frozenset[int] | set[int] | None = None,
         client: Any | None = None,
+        cache_system: bool = False,
     ) -> None:
         self.name = name
         self.model = model
         self.max_tokens = max_tokens
+        self.cache_system = cache_system
         self._retryable_status = (
             frozenset(retryable_status)
             if retryable_status is not None
@@ -210,10 +222,12 @@ class AnthropicVertexProvider(_AnthropicSDKProviderBase):
         default_headers: dict[str, str] | None = None,
         retryable_status: frozenset[int] | set[int] | None = None,
         client: Any | None = None,
+        cache_system: bool = False,
     ) -> None:
         self.name = name
         self.model = model
         self.max_tokens = max_tokens
+        self.cache_system = cache_system
         self._retryable_status = (
             frozenset(retryable_status)
             if retryable_status is not None

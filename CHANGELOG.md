@@ -23,6 +23,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer silently disables the check.
 
 ### Added
+- `byoai.integrations.flask` (`attach`/`get_runtime`/`execute`/`stream_response`) — Flask's
+  WSGI/sync model meets `Runtime`'s asyncio-native providers via a persistent background
+  event-loop thread, so route handlers stay plain `def` with no `flask[async]`/asgiref
+  dependency. Requires the new `flask` extra. See `docs/guides/flask.md` for the gunicorn
+  `--preload` fork-safety constraint this bridge is subject to.
+- `Runtime.execute()`/`.stream()` gained `system_prompt=` (per-call override of the
+  constructor default — `""` clears it for that call, `None` falls back) and
+  `provider_metadata=` (forwarded into the provider's own request payload, e.g. Anthropic's
+  `metadata.user_id` — distinct from the existing app-level `metadata=`, which never reaches
+  the provider).
+- `Message.content` now accepts a list of provider content blocks in addition to plain text,
+  and `ExecutionResult` gained `finish_reason`/`raw` fields, so Anthropic `tool_use` responses,
+  the provider's own response id, and prompt-cache token counts are reachable instead of
+  silently discarded. Only the Anthropic/Bedrock/Vertex adapters handle list-valued content
+  correctly today — see `docs/guides/providers.md`'s new "Anthropic tool use and content
+  blocks" section.
+- `AnthropicProvider`/`AnthropicBedrockProvider`/`AnthropicVertexProvider` gained
+  `cache_system=` (wraps a plain-string system prompt in a `cache_control: {"type":
+  "ephemeral"}` block for Anthropic's server-side prompt caching) and now parse
+  `cache_read_input_tokens`/`cache_creation_input_tokens` into the new
+  `Usage.cache_read_tokens`/`.cache_creation_tokens` fields. Along the way, fixed a
+  pre-existing bug shared by both adapters' system-prompt joining: a system message whose
+  content was a list raised an uncaught `TypeError` instead of a clean error.
 - `providers=` and `vector_store=` now accept a bare async function directly — no class required
   — auto-wrapped in `FunctionProvider`/`FunctionVectorStore`, matching the existing bare-callable
   pattern for `embedder=` and `Pipeline.add()`. See CONTRIBUTING.md's "bring your own function"
