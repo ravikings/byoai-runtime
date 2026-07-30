@@ -173,11 +173,27 @@ class FunctionProvider:
         except Exception as exc:  # noqa: BLE001 - any wrapped-function failure must
             # become a ProviderError, same as the built-in adapters wrap httpx.HTTPError,
             # so ProviderRouter's `except ProviderError` retry/fallback actually applies.
-            raise ProviderError(f"{self.name}: {exc}", provider=self.name, retryable=True) from exc
+            # Not retryable by default (unlike a transport error) — we don't know the
+            # cause, and most causes (a bug, bad baked-in credentials) aren't transient;
+            # a function that DOES want retry should raise ProviderError(retryable=True)
+            # itself, which the `except ProviderError: raise` above passes through untouched.
+            raise ProviderError(
+                f"{self.name}: {exc}", provider=self.name, retryable=False
+            ) from exc
         if isinstance(result, ProviderResponse):
             return result
+        if not isinstance(result, str):
+            # A wrapped function that returns None (e.g. a branch falling through
+            # without an explicit return) must not be silently stringified into the
+            # literal text "None" and delivered as if it were a real answer.
+            raise ProviderError(
+                f"{self.name}: expected a str or ProviderResponse, got "
+                f"{type(result).__name__}",
+                provider=self.name,
+                retryable=False,
+            )
         return ProviderResponse(
-            content=str(result), model=options.get("model", self.model), provider=self.name
+            content=result, model=options.get("model", self.model), provider=self.name
         )
 
     async def stream(
@@ -205,12 +221,22 @@ class FunctionProvider:
                 if isinstance(item, StreamChunk):
                     saw_done = saw_done or item.done
                     yield item
+                elif isinstance(item, str):
+                    yield StreamChunk(delta=item, model=model, provider=self.name)
                 else:
-                    yield StreamChunk(delta=str(item), model=model, provider=self.name)
+                    # Same "don't silently stringify a bug" rule as complete().
+                    raise ProviderError(
+                        f"{self.name}: stream_fn yielded {type(item).__name__}, expected "
+                        f"str or StreamChunk",
+                        provider=self.name,
+                        retryable=False,
+                    )
         except ProviderError:
             raise
         except Exception as exc:  # noqa: BLE001 - see complete()
-            raise ProviderError(f"{self.name}: {exc}", provider=self.name, retryable=True) from exc
+            raise ProviderError(
+                f"{self.name}: {exc}", provider=self.name, retryable=False
+            ) from exc
         if not saw_done:
             yield StreamChunk(done=True, model=model, provider=self.name)
 

@@ -10,7 +10,7 @@ import pytest
 from tests.conftest import FakeProvider
 
 from byoai import Runtime
-from byoai.errors import AllProvidersFailed, ProviderError
+from byoai.errors import AllProvidersFailed, ProviderError, VectorStoreError
 from byoai.providers.base import FunctionProvider
 from byoai.providers.router import ProviderRouter
 from byoai.types import Document, Message, ProviderResponse, StreamChunk, Usage
@@ -102,6 +102,51 @@ async def test_bare_provider_function_all_fail_raises_all_providers_failed():
     assert all(isinstance(e, ProviderError) for e in excinfo.value.errors)
 
 
+async def test_bare_provider_function_exception_defaults_non_retryable():
+    # Unlike a transport error (httpx.HTTPError), we don't know the cause of an
+    # arbitrary exception from a wrapped function — most causes (a bug, bad
+    # credentials baked into the closure) aren't transient, so retrying by
+    # default would just add pointless backoff sleep on every failing call.
+    calls = {"n": 0}
+
+    async def flaky_gateway(messages, **options):
+        calls["n"] += 1
+        raise ConnectionError("dns lookup failed")
+
+    router = ProviderRouter([flaky_gateway])
+    with pytest.raises(AllProvidersFailed) as excinfo:
+        await router.complete(MESSAGES)
+    assert excinfo.value.errors[0].retryable is False
+    assert calls["n"] == 1  # no retries attempted
+
+
+async def test_bare_provider_function_returning_none_raises_instead_of_stringifying():
+    # Regression: a buggy wrapped function that falls through without an
+    # explicit `return` yields None, which used to become the literal text
+    # "None" delivered to the caller as if it were a real answer.
+    async def buggy_gateway(messages, **options):
+        if False:  # pragma: no cover - unreachable, simulates a missed branch
+            return "unreachable"
+
+    provider = FunctionProvider(buggy_gateway)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ProviderError, match="NoneType"):
+        await provider.complete(MESSAGES)
+
+
+async def test_function_provider_stream_fn_yielding_none_raises_instead_of_stringifying():
+    async def fn(messages, **options):
+        return "unused"
+
+    async def buggy_stream(messages, **options):
+        yield "ok"
+        yield None
+
+    provider = FunctionProvider(fn, stream_fn=buggy_stream)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ProviderError, match="NoneType"):
+        async for _ in provider.stream(MESSAGES):
+            pass
+
+
 async def test_function_provider_stream_fn_raising_plain_exception_is_wrapped():
     async def fn(messages, **options):
         return "unused"
@@ -141,6 +186,7 @@ async def test_function_provider_stream_fn_full_chunks_no_duplicate_done():
     provider = FunctionProvider(fn, stream_fn=stream_fn)
     chunks = [c async for c in provider.stream(MESSAGES)]
     assert sum(1 for c in chunks if c.done) == 1
+    assert chunks[-1].usage is not None
     assert chunks[-1].usage.total_tokens == 2
 
 
@@ -164,6 +210,7 @@ async def test_bare_vector_store_function():
         return [Document(id="1", content="found it", metadata={"top_k": top_k})]
 
     runtime = Runtime(providers=[FunctionProvider(_dummy_provider)], vector_store=my_search)
+    assert runtime.vector_store is not None
     docs = await runtime.vector_store.search([0.1, 0.2], top_k=3)
     await runtime.close()
     assert docs[0].content == "found it"
@@ -178,6 +225,30 @@ async def test_function_vector_store_direct():
     assert store.name == "custom-store"
     assert await store.search([0.1], top_k=1) == []
     await store.close()  # must not raise
+
+
+async def test_function_vector_store_wraps_raw_exception():
+    # Regression: a raw exception from the wrapped search function used to
+    # propagate as its own type instead of a catchable VectorStoreError.
+    async def flaky_search(embedding, *, top_k, filters=None):
+        raise ConnectionError("index unreachable")
+
+    store = FunctionVectorStore(flaky_search)
+    with pytest.raises(VectorStoreError, match="index unreachable"):
+        await store.search([0.1], top_k=1)
+
+
+async def test_function_vector_store_returning_none_raises_instead_of_crashing_downstream():
+    # Regression: a buggy search function returning None (e.g. a missed
+    # `return`) used to propagate as `ctx.documents = None`, crashing any
+    # downstream code (e.g. `len(documents)`) that assumes a list.
+    async def buggy_search(embedding, *, top_k, filters=None):
+        if False:  # pragma: no cover - unreachable, simulates a missed branch
+            return []
+
+    store = FunctionVectorStore(buggy_search)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(VectorStoreError, match="NoneType"):
+        await store.search([0.1], top_k=1)
 
 
 async def _dummy_provider(messages, **options):

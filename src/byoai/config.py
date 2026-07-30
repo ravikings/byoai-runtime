@@ -139,6 +139,14 @@ def build_provider(config: dict[str, Any]) -> LLMProvider:
         from .providers.gemini import GeminiProvider
 
         return GeminiProvider(name=provider, **config)
+    if provider == "bedrock":
+        from .providers.anthropic_cloud import AnthropicBedrockProvider
+
+        return AnthropicBedrockProvider(name=provider, **config)
+    if provider == "vertex":
+        from .providers.anthropic_cloud import AnthropicVertexProvider
+
+        return AnthropicVertexProvider(name=provider, **config)
 
     from .providers.openai_compat import OpenAICompatProvider
 

@@ -42,6 +42,8 @@ All are `httpx`-based. OpenAI-compatible providers share one adapter
 | `ollama` | Defaults `base_url` to `http://localhost:11434/v1`. |
 | `openrouter` | Defaults `base_url` to OpenRouter's API; reads `OPENROUTER_API_KEY` if `api_key` isn't set. |
 | `openai_compatible` / `vllm` / `litellm` | Any OpenAI-compatible REST endpoint — requires `base_url`. |
+| `bedrock` | Anthropic on AWS Bedrock — the one adapter that isn't `httpx`-only; see [below](#anthropic-on-aws-bedrock-and-google-vertex). |
+| `vertex` | Anthropic on Google Vertex AI — same exception; see [below](#anthropic-on-aws-bedrock-and-google-vertex). |
 
 An unrecognized `provider` is resolved through Python entry points under the `byoai.providers`
 group before raising `ConfigurationError` — see [Vector stores: custom adapters via
@@ -49,9 +51,41 @@ plugins](vector-stores.md#custom-adapters-via-plugins) for how the plugin mechan
 
 Every adapter accepts `retryable_status=` to override which HTTP status codes the
 [retry policy](#tuning-retries) treats as transient (default
-`{408, 409, 500, 502, 503, 504}`, plus `529` for Anthropic), and a path override
+`{408, 409, 500, 502, 503, 504}`, plus `529` for Anthropic/Bedrock/Vertex), and a path override
 (`chat_path=`, `messages_path=`, or `embeddings_path=` depending on the adapter) for gateways
 that mount the API at a non-standard route.
+
+### Anthropic on AWS Bedrock and Google Vertex
+
+Unlike every other adapter, `bedrock` and `vertex` depend on the `anthropic` SDK rather than
+being hand-rolled `httpx` — Bedrock auth is AWS SigV4 request signing, Vertex auth is GCP OAuth
+service-account tokens, and neither is reasonable to hand-roll. Requires the `bedrock` or
+`vertex` extra: `pip install "byoai-runtime[bedrock]"` / `"byoai-runtime[vertex]"`.
+
+```python
+# model is whatever Bedrock model ID your account has access to in that region —
+# check the AWS Bedrock console/docs for the current ID, these change over time.
+runtime = Runtime(llm={"provider": "bedrock", "model": "<bedrock-model-id>",
+                        "aws_region": "us-east-1"})
+```
+
+```python
+# model is whatever Vertex model ID/version your project has access to —
+# check the Vertex AI Model Garden for the current ID.
+runtime = Runtime(llm={"provider": "vertex", "model": "<vertex-model-id>",
+                        "project_id": "my-gcp-project", "region": "us-east5"})
+```
+
+Only `aws_region` (Bedrock) or `project_id`+`region` (Vertex) are required — each also falls
+back to the same environment variables the SDK itself conventionally uses
+(`AWS_REGION`/`AWS_DEFAULT_REGION`; `ANTHROPIC_VERTEX_PROJECT_ID`/`GOOGLE_CLOUD_PROJECT` and
+`ANTHROPIC_VERTEX_REGION`/`CLOUD_ML_REGION`). Credentials themselves come from the standard AWS
+chain / Application Default Credentials unless passed explicitly
+(`aws_access_key`/`aws_secret_key`/`aws_session_token`/`aws_profile`, or
+`access_token`/`credentials`). Error classification (429 → `RateLimitError` with `Retry-After`
+honored, 5xx → retryable) reuses the same `raise_for_status()` every other adapter uses, applied
+to the SDK's own underlying `httpx.Response` — so retry/fallback behaves identically to every
+other provider.
 
 ## Tuning retries
 

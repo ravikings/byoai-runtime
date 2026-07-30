@@ -247,7 +247,7 @@ cache_config = {
 
 ### LLM Providers
 * **OpenAI**
-* **Anthropic**
+* **Anthropic** (direct API, AWS Bedrock, or Google Vertex AI)
 * **Azure OpenAI**
 * **Google Gemini**
 * **Ollama / vLLM / LiteLLM**

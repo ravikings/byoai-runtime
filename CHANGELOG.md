@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — auto-wrapped in `FunctionProvider`/`FunctionVectorStore`, matching the existing bare-callable
   pattern for `embedder=` and `Pipeline.add()`. See CONTRIBUTING.md's "bring your own function"
   design principle for which extension points get this treatment and which don't.
+- `AnthropicBedrockProvider`/`AnthropicVertexProvider` (`llm={"provider": "bedrock"/"vertex", ...}`)
+  — Anthropic models via AWS Bedrock or Google Vertex AI. Requires the new `bedrock`/`vertex`
+  extras (depends on the `anthropic` SDK for AWS SigV4/GCP OAuth signing — the one deliberate
+  exception to every other adapter's httpx-only, no-SDK design). Error classification reuses
+  `raise_for_status()` against the SDK's own `httpx.Response`, so retry/fallback behaves
+  identically to every other provider.
 
 ## [0.1.0a1] - 2026-07-29
 

@@ -88,6 +88,31 @@ Declarative: `llm={"provider": "openai"|"ollama"|"openrouter"|"openai_compatible
 
 Declarative: `llm={"provider": "anthropic", ...}`.
 
+### `AnthropicBedrockProvider` / `AnthropicVertexProvider`
+
+Unlike every other adapter, these depend on the `anthropic` SDK (`bedrock`/`vertex` extras) —
+Bedrock's AWS SigV4 signing and Vertex's GCP OAuth service-account auth aren't reasonable to
+hand-roll with raw `httpx`. Message translation and error classification (`raise_for_status()`
+against the SDK's own `httpx.Response`) stay identical to every other provider.
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `model` | required | |
+| `name` | `"bedrock"` / `"vertex"` | |
+| `max_tokens` | `4096` | |
+| `client` | `None` | Pre-built `AsyncAnthropicBedrock`/`AsyncAnthropicVertex` — bypasses every other constructor param below. |
+| `retryable_status` | `None` → `DEFAULT_RETRYABLE_STATUS | {529}` | |
+| **Bedrock only** | | |
+| `aws_region` | `None` → `$AWS_REGION` or `$AWS_DEFAULT_REGION` | Required (directly or via env). |
+| `aws_access_key`, `aws_secret_key`, `aws_session_token`, `aws_profile` | `None` | Falls back to the standard AWS credential chain (env vars, `~/.aws`, instance/task role) when all unset. |
+| **Vertex only** | | |
+| `project_id` | `None` → `$ANTHROPIC_VERTEX_PROJECT_ID` or `$GOOGLE_CLOUD_PROJECT` | Required (directly or via env). |
+| `region` | `None` → `$ANTHROPIC_VERTEX_REGION` or `$CLOUD_ML_REGION` | Required (directly or via env). |
+| `access_token`, `credentials` | `None` | Falls back to Application Default Credentials when unset. |
+
+Declarative: `llm={"provider": "bedrock", "model": "...", "aws_region": "..."}` /
+`llm={"provider": "vertex", "model": "...", "project_id": "...", "region": "..."}`.
+
 ### `GeminiProvider`
 
 | Param | Default | Notes |

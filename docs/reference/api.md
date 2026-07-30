@@ -102,6 +102,10 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 
 ::: byoai.providers.anthropic.AnthropicProvider
 
+::: byoai.providers.anthropic_cloud.AnthropicBedrockProvider
+
+::: byoai.providers.anthropic_cloud.AnthropicVertexProvider
+
 ::: byoai.providers.gemini.GeminiProvider
 
 ::: byoai.providers.embeddings.OpenAICompatEmbedder

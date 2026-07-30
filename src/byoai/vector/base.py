@@ -69,7 +69,23 @@ class FunctionVectorStore:
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
     ) -> list[Document]:
-        return await self._fn(embedding, top_k=top_k, filters=filters)
+        from ..errors import VectorStoreError
+
+        try:
+            result = await self._fn(embedding, top_k=top_k, filters=filters)
+        except VectorStoreError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - every adapter failure must be a
+            # typed ByoAIError, same as FunctionProvider wraps a bare function's failures.
+            raise VectorStoreError(f"{self.name}: search failed: {exc}") from exc
+        if not isinstance(result, list):
+            # A wrapped function that returns None (e.g. a branch falling through
+            # without an explicit return) must not propagate as `ctx.documents = None`
+            # and crash downstream call sites that assume a list.
+            raise VectorStoreError(
+                f"{self.name}: expected a list[Document], got {type(result).__name__}"
+            )
+        return result
 
     async def close(self) -> None:
         pass  # the wrapped function owns whatever client/resources it uses

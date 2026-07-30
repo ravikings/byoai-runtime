@@ -17,6 +17,8 @@ pip install "byoai-runtime[pgvector]"  # pgvector vector store
 pip install "byoai-runtime[semantic]"  # in-process semantic (intent) cache
 pip install "byoai-runtime[perf]"      # orjson hot-path JSON codec
 pip install "byoai-runtime[otel]"      # OpenTelemetry export
+pip install "byoai-runtime[bedrock]"   # Anthropic on AWS Bedrock
+pip install "byoai-runtime[vertex]"    # Anthropic on Google Vertex AI
 pip install "byoai-runtime[all]"       # everything above
 ```
 
@@ -47,13 +49,20 @@ export OPENAI_API_KEY=sk-...
 runtime = Runtime(llm={"provider": "openai", "model": "gpt-4o"})
 ```
 
-These six are the *only* environment variables the runtime reads automatically. Everything
-else — Redis `url`, pgvector `dsn`, Qdrant/Pinecone `url`/`host`, the OTel collector
-`endpoint` — has no env-var fallback and must be passed explicitly in the config dict. If you
-want those sourced from the environment too, read them yourself
-(`os.environ["REDIS_URL"]`, or a `.env` file loaded with something like
-[`python-dotenv`](https://pypi.org/project/python-dotenv/) — the runtime doesn't load `.env`
-files on its own) and pass the values in.
+`provider: "bedrock"` and `provider: "vertex"` are the exception to "API key" above — they take
+no API key at all (AWS/GCP credentials come from the standard chain / Application Default
+Credentials), but their required *deployment location* also falls back to env vars:
+`aws_region` from `AWS_REGION`/`AWS_DEFAULT_REGION`; `project_id`/`region` from
+`ANTHROPIC_VERTEX_PROJECT_ID`/`GOOGLE_CLOUD_PROJECT` and
+`ANTHROPIC_VERTEX_REGION`/`CLOUD_ML_REGION`. See [Providers: Anthropic on AWS Bedrock and Google
+Vertex](guides/providers.md#anthropic-on-aws-bedrock-and-google-vertex).
+
+Beyond these, the runtime reads no other environment variables automatically. Redis `url`,
+pgvector `dsn`, Qdrant/Pinecone `url`/`host`, the OTel collector `endpoint` — all have no env-var
+fallback and must be passed explicitly in the config dict. If you want those sourced from the
+environment too, read them yourself (`os.environ["REDIS_URL"]`, or a `.env` file loaded with
+something like [`python-dotenv`](https://pypi.org/project/python-dotenv/) — the runtime doesn't
+load `.env` files on its own) and pass the values in.
 
 ## Minimal example
 
