@@ -26,7 +26,7 @@ Result shape (non-streaming):
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from . import _json as json
@@ -117,7 +117,7 @@ async def stream_frames(
             yield chunk_to_dict(chunk)
 
 
-async def sse_stream(runtime: Runtime, payload: dict[str, Any]) -> AsyncIterator[str]:
+async def sse_stream(runtime: Runtime, payload: dict[str, Any]) -> AsyncGenerator[str, None]:
     """Stream an execution as Server-Sent-Events lines.
 
     Runtime errors raised mid-stream (after headers are on the wire) become a
@@ -132,7 +132,7 @@ async def sse_stream(runtime: Runtime, payload: dict[str, Any]) -> AsyncIterator
         yield f"data: {json.dumps({'error': str(exc), 'done': True})}\n\n"
 
 
-async def ws_reply(runtime: Runtime, raw_message: str) -> AsyncIterator[str]:
+async def ws_reply(runtime: Runtime, raw_message: str) -> AsyncGenerator[str, None]:
     """Answer one WebSocket text message with a stream of JSON frame strings.
 
     Shared by every WebSocket transport so the message dialect (delta frames,

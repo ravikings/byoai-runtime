@@ -85,7 +85,11 @@ class RedisCache:
                 url=url, mode=mode, sentinels=sentinels, service_name=service_name,
                 **client_kwargs,
             )
-        self._client = client
+        # Explicitly typed (not just inferred): the `client is None` branch above
+        # reassigns the same declared-Optional parameter, and pyright doesn't
+        # narrow a reassigned `Any | None` parameter across the branch merge —
+        # without this it treats every `self._client.foo()` below as Optional.
+        self._client: Any = client
         self.namespace = namespace
         self.default_ttl = default_ttl
         session_reader = session_reader or {}

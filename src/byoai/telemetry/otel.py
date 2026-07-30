@@ -197,13 +197,23 @@ def configure_otlp(
             "OTLP export requires the SDK + exporter: pip install 'byoai-runtime[otel]'"
         ) from exc
 
-    compression_value = _Compression.Gzip if compression == "gzip" else None
+    # _Compression/OTLPSpanExporter resolve to one of two distinct classes
+    # (grpc vs http) depending on `protocol`, which pyright can't narrow from a
+    # runtime string check — it merges both branches' imports into a union and
+    # then can't satisfy either constructor's specific `compression` enum type.
+    # Both branches are otherwise identical calls, so widen to Any rather than
+    # duplicate the exporter construction per branch.
+    compression_value: Any = _Compression.Gzip if compression == "gzip" else None
     exporter = OTLPSpanExporter(
         endpoint=endpoint, headers=headers, timeout=timeout, compression=compression_value
     )
     resource = Resource.create({"service.name": service_name, **(resource_attributes or {})})
     provider = TracerProvider(resource=resource)
-    batch_kwargs = {
+    # Built from a plain dict[str, int], so pyright checks its value type
+    # against every keyword BatchSpanProcessor accepts when unpacked —
+    # including the unrelated `meter_provider: MeterProvider | None` — rather
+    # than only the four keys this dict can actually contain.
+    batch_kwargs: dict[str, Any] = {
         k: v
         for k, v in {
             "max_queue_size": max_queue_size,

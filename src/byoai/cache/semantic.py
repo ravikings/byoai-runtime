@@ -114,9 +114,14 @@ class MemorySemanticCache:
         self, embedding: list[float], *, threshold: float
     ) -> tuple[str, float] | None:
         if self._count == 0 or self._matrix is None:
-            return None
+            return None  # fast path: skip normalizing/locking for an empty cache
         vector = self._normalize(embedding)
         async with self._mutex:
+            # Re-checked under the lock: a concurrent close() queued behind an
+            # in-flight offloaded find() could have cleared the state between
+            # the fast-path check above and acquiring the lock here.
+            if self._count == 0 or self._matrix is None:
+                return None
             if self._count >= _OFFLOAD_MIN_ROWS:
                 return await asyncio.to_thread(self._find_best, vector, threshold)
             return self._find_best(vector, threshold)
@@ -133,11 +138,15 @@ class MemorySemanticCache:
         return (response, score) if response is not None else None
 
     async def close(self) -> None:
-        self._matrix = None
-        self._responses = [None] * self.capacity
-        self._expires = self._np.zeros(self.capacity, dtype=self._np.float64)
-        self._count = 0
-        self._next = 0  # keep the write cursor inside the scanned window on reuse
+        # Under the mutex: an offloaded find() releases the event loop while
+        # its worker thread reads the matrix, and a concurrent close() tearing
+        # the state down mid-read would crash that in-flight lookup.
+        async with self._mutex:
+            self._matrix = None
+            self._responses = [None] * self.capacity
+            self._expires = self._np.zeros(self.capacity, dtype=self._np.float64)
+            self._count = 0
+            self._next = 0  # keep the write cursor inside the scanned window on reuse
 
 
 class RedisSemanticCache:
@@ -177,7 +186,8 @@ class RedisSemanticCache:
                 url=url, mode=mode, sentinels=sentinels, service_name=service_name,
                 **client_kwargs,
             )
-        self._client = client
+        # Explicitly typed: see the matching comment in cache/redis.py.
+        self._client: Any = client
         self.stream = stream
         # False = exact XTRIM MAXLEN (costlier) instead of "~" approximate
         # trimming — for deployments that need an exact capacity bound.

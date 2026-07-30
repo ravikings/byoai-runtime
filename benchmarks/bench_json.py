@@ -32,10 +32,11 @@ async def main() -> None:
     ctx = RequestContext(input="what are our enterprise SLA terms, in detail?")
     await resolver.execute(ctx)
     ctx.model = "gpt-4o"
+    cache_lookup = CacheLookup(MemoryCache())
     n = 200_000
     start = time.perf_counter()
     for _ in range(n):
-        CacheLookup.fingerprint(ctx)
+        cache_lookup.fingerprint(ctx)
     print(f"cache fingerprint            {rate(n, time.perf_counter() - start)}")
 
     # -- raw dumps/loads of a typical frame -----------------------------------

@@ -161,7 +161,8 @@ async def test_stream_yields_tokens_and_final_usage():
     text = "".join(c.delta for c in chunks if not c.done)
     assert text.strip() == "hello from fake"
     assert chunks[-1].done is True
-    assert chunks[-1].usage.total_tokens == 15
+    final_usage = chunks[-1].usage
+    assert final_usage is not None and final_usage.total_tokens == 15
 
 
 async def test_stream_short_circuit_yields_single_chunk():

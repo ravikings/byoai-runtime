@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from typing import cast
+
 import pytest
 from tests.conftest import FakeProvider
 
@@ -46,20 +49,23 @@ async def test_store_capacity_evicts_oldest():
     await store.add([0.0, 1.0], "two")
     await store.add([0.7071, 0.7071], "three")  # evicts "one"
     assert await store.find([1.0, 0.0], threshold=0.99) is None
-    assert (await store.find([0.0, 1.0], threshold=0.99))[0] == "two"
+    hit = await store.find([0.0, 1.0], threshold=0.99)
+    assert hit is not None and hit[0] == "two"
 
 
 async def test_store_ttl_expiry():
     store = MemorySemanticCache(capacity=10, ttl=1)
     await store.add([1.0, 0.0], "fresh")
-    assert (await store.find([1.0, 0.0], threshold=0.99))[0] == "fresh"
+    hit = await store.find([1.0, 0.0], threshold=0.99)
+    assert hit is not None and hit[0] == "fresh"
     store._expires[:] = 0.0  # force-expire without sleeping
     assert await store.find([1.0, 0.0], threshold=0.99) is None
 
 
 async def test_intent_hit_serves_similar_query_without_provider_call():
     runtime = make_runtime()
-    provider = runtime.router.providers[0]
+    assert runtime.router is not None
+    provider = cast(FakeProvider, runtime.router.providers[0])
 
     first = await runtime.execute("What are our SLA terms?")
     assert first.cached is False
@@ -90,7 +96,8 @@ async def test_intent_events_emitted():
 
 async def test_streamed_response_feeds_intent_cache():
     runtime = make_runtime()
-    provider = runtime.router.providers[0]
+    assert runtime.router is not None
+    provider = cast(FakeProvider, runtime.router.providers[0])
     _ = [c async for c in runtime.stream("What are our SLA terms?")]
     assert provider.calls == 1
     # similar query now hits the semantic cache, served as one chunk
@@ -160,6 +167,30 @@ async def test_store_reuse_after_close():
     await store.add([1.0, 0.0], "fresh")
     hit = await store.find([1.0, 0.0], threshold=0.99)
     assert hit is not None and hit[0] == "fresh"
+
+
+async def test_find_survives_close_winning_a_concurrent_race():
+    # Regression: find()'s pre-lock "is there anything to search" check can
+    # go stale if a concurrent close() clears state before find() gets the
+    # lock — without a re-check under the lock, find() would then read a
+    # None matrix and crash instead of returning a clean miss.
+    store = MemorySemanticCache(capacity=10)
+    await store.add([1.0, 0.0], "answer")
+
+    # Hold the mutex ourselves so close() and find() both queue behind it,
+    # in a controlled order (asyncio.Lock is FIFO).
+    await store._mutex.acquire()
+    try:
+        close_task = asyncio.create_task(store.close())
+        await asyncio.sleep(0)  # let close() start waiting on the mutex first
+        find_task = asyncio.create_task(store.find([1.0, 0.0], threshold=0.5))
+        await asyncio.sleep(0)  # let find() queue behind close()
+    finally:
+        store._mutex.release()
+
+    await close_task
+    result = await find_task  # must degrade to a clean miss, not crash
+    assert result is None
 
 
 async def test_semantic_cache_requires_embedder():

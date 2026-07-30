@@ -22,7 +22,14 @@ jobs:
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           # The version is single-sourced in src/byoai/_version.py (pyproject
           # declares it dynamic); read it from there without importing.
-          PKG_VERSION="$(python -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('src/byoai/_version.py').read()).group(1))")"
+          PKG_VERSION="$(python - <<'PY'
+          import re, sys
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', open("src/byoai/_version.py").read())
+          if match is None:
+              sys.exit("could not find __version__ in src/byoai/_version.py")
+          print(match.group(1))
+          PY
+          )"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::Release tag '${GITHUB_REF_NAME}' (version '${TAG_VERSION}') does not match src/byoai/_version.py version '${PKG_VERSION}'"
             exit 1

@@ -32,6 +32,8 @@ async def test_execute_span_with_attributes_and_stage_children():
 
     spans = {span.name: span for span in exporter.get_finished_spans()}
     root = spans["byoai.execute"]
+    assert root.context is not None  # always set for a span that finished normally
+    assert root.attributes is not None  # always set: OpenTelemetryMiddleware sets byoai.cached
     assert root.attributes["byoai.cached"] is False
     assert root.attributes["gen_ai.system"] == "fake"
     assert root.attributes["gen_ai.response.model"] == "fake-1"
@@ -43,7 +45,9 @@ async def test_execute_span_with_attributes_and_stage_children():
     assert "byoai.stage.context_resolver" in stage_spans
     assert "byoai.stage.provider_call" in stage_spans
     for name in stage_spans:
-        assert spans[name].parent.span_id == root.context.span_id
+        parent = spans[name].parent
+        assert parent is not None  # every stage span is a child of the root span
+        assert parent.span_id == root.context.span_id
 
 
 async def test_provider_lifecycle_span_events():
@@ -57,6 +61,7 @@ async def test_provider_lifecycle_span_events():
     assert "provider.started" in event_names
     assert "provider.completed" in event_names
     completed = next(e for e in stage.events if e.name == "provider.completed")
+    assert completed.attributes is not None  # on_provider_event always passes attributes
     assert completed.attributes["gen_ai.usage.input_tokens"] == 10
     assert completed.attributes["gen_ai.system"] == "fake"
 
@@ -66,6 +71,7 @@ async def test_cache_hit_recorded():
     await runtime.execute("same q")
     await runtime.execute("same q")
     roots = [s for s in exporter.get_finished_spans() if s.name == "byoai.execute"]
+    assert roots[0].attributes is not None and roots[1].attributes is not None
     assert roots[0].attributes["byoai.cached"] is False
     assert roots[1].attributes["byoai.cached"] is True
     assert roots[0].attributes["byoai.cost_usd"] == 0.0  # $0 is recorded, not omitted

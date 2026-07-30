@@ -167,3 +167,37 @@ async def test_anthropic_requires_api_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(ConfigurationError):
         AnthropicProvider(model="c")
+
+
+async def test_anthropic_allows_keyless_gateway_via_default_headers(monkeypatch):
+    from byoai.providers.anthropic import AnthropicProvider
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # A gateway that authenticates out-of-band (mTLS, network policy) or under
+    # its own header must still be constructable without an Anthropic key.
+    provider = AnthropicProvider(
+        model="c", default_headers={"Authorization": "Bearer gateway-token"}
+    )
+    assert "x-api-key" not in provider._client.headers
+    await provider.close()
+
+
+async def test_anthropic_unrelated_default_header_does_not_bypass_key_check(monkeypatch):
+    from byoai.errors import ConfigurationError
+    from byoai.providers.anthropic import AnthropicProvider
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # An unrelated header (e.g. tracing) carries no auth intent — it must not
+    # silently disable the fail-fast the way a real auth header does above.
+    with pytest.raises(ConfigurationError):
+        AnthropicProvider(model="c", default_headers={"X-Trace-Id": "abc"})
+
+
+async def test_gemini_unrelated_default_header_does_not_bypass_key_check(monkeypatch):
+    from byoai.errors import ConfigurationError
+    from byoai.providers.gemini import GeminiProvider
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with pytest.raises(ConfigurationError):
+        GeminiProvider(model="c", default_headers={"X-Trace-Id": "abc"})

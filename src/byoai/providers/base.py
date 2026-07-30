@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -28,7 +29,24 @@ __all__ = [
     "raise_for_status",
     "parse_json_response",
     "build_openai_client",
+    "has_auth_header",
 ]
+
+
+def has_auth_header(headers: dict[str, str] | None, *names: str) -> bool:
+    """True if any of ``names`` appears as a key in ``headers``, ignoring case
+    (HTTP header names are case-insensitive, but a plain ``dict`` isn't).
+
+    Used by adapters' construction-time API-key fail-fast check: any *other*
+    header (e.g. a tracing header) shouldn't silently disable it, but a
+    caller-supplied auth header — this adapter's own (however capitalized) or
+    a generic ``Authorization`` — means they're deliberately handling auth
+    themselves (a gateway under mTLS/network policy, a different scheme).
+    """
+    if not headers:
+        return False
+    lowered = {key.lower() for key in headers}
+    return any(name.lower() in lowered for name in names)
 
 
 def parse_retry_after(response: httpx.Response) -> float | None:
@@ -47,6 +65,10 @@ def parse_retry_after(response: httpx.Response) -> float | None:
         return None
     if when is None:
         return None
+    if when.tzinfo is None:
+        # RFC 9110's obsolete asctime form carries no zone; it means UTC, but a
+        # naive datetime's .timestamp() would assume the local system zone.
+        when = when.replace(tzinfo=timezone.utc)
     return max(0.0, when.timestamp() - time.time())
 
 

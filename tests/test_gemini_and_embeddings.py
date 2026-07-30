@@ -80,7 +80,8 @@ async def test_gemini_stream():
     provider = make_gemini(handler)
     chunks = [c async for c in provider.stream(MESSAGES)]
     assert "".join(c.delta for c in chunks if not c.done) == "hello"
-    assert chunks[-1].done and chunks[-1].usage.total_tokens == 6
+    final_usage = chunks[-1].usage
+    assert chunks[-1].done and final_usage is not None and final_usage.total_tokens == 6
 
 
 def make_embedder(handler) -> OpenAICompatEmbedder:

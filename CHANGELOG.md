@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- CI now gates on `pyright` (previously `continue-on-error`, tracked as a known gap). Fixed the
+  ~60 pre-existing type errors this surfaced — mostly Optional-narrowing gaps around
+  reassigned-parameter patterns in the Redis-backed adapters (`cache/redis.py`,
+  `cache/semantic.py`, `workers.py`), `hasattr`-based cross-version duck typing in the
+  FastAPI/MCP integrations' shutdown-hook wiring, and Optional-attribute access in test
+  assertions against OpenTelemetry's SDK types. Along the way, `benchmarks/bench_json.py`'s
+  cache-fingerprint benchmark was calling an instance method unbound and crashed if actually
+  run — now constructs a real `CacheLookup` and measures the intended path.
+- `AnthropicProvider`/`GeminiProvider`'s construction-time API-key fail-fast now only backs off
+  for a caller-supplied auth header (this adapter's own, any capitalization, or a generic
+  `Authorization`) in `default_headers=` — an unrelated header (e.g. a tracing header) no
+  longer silently disables the check.
+
 ### Added
 - `providers=` and `vector_store=` now accept a bare async function directly — no class required
   — auto-wrapped in `FunctionProvider`/`FunctionVectorStore`, matching the existing bare-callable
@@ -43,9 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Robyn integration maps runtime errors to meaningful HTTP statuses instead of a blanket
   422: `400` malformed payload, `404` unknown pipeline, `429` provider rate limit (echoing
   `Retry-After`), `502` provider failure; other runtime errors keep `422`.
-- `AnthropicProvider` and `GeminiProvider` raise `ConfigurationError` at construction when no
-  API key is resolvable (argument, environment, or `default_headers`), instead of sending a
-  blank credential and failing later with a provider-side 401.
+- `AnthropicProvider` and `GeminiProvider` raise `ConfigurationError` at construction when
+  neither an API key (argument or environment) nor any `default_headers` are supplied, instead
+  of sending a credential-less request and failing later with a provider-side 401. Passing
+  `default_headers=` disables the check, for gateways that authenticate out-of-band or under a
+  different header. When no key resolves, the credential header is omitted rather than sent
+  blank.
 - `Retry-After` headers in RFC 9110 HTTP-date form are now honored as backoff hints
   (previously only the delay-seconds form was).
 - The pgvector filter compiler binds metadata field names as query parameters instead of

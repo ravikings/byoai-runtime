@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
 
-from fastapi import Depends, FastAPI, WebSocket  # noqa: E402
+from fastapi import Depends, FastAPI, Request, WebSocket  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from tests.conftest import FakeProvider  # noqa: E402
 
@@ -60,7 +61,9 @@ def test_websocket_streaming_dialect():
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
-        await serve_websocket(get_runtime(websocket), websocket)
+        # get_runtime only reads request.app.state, which WebSocket also
+        # exposes; cast documents that it's used outside its Depends() contract.
+        await serve_websocket(get_runtime(cast(Request, websocket)), websocket)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as connection:

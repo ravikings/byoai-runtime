@@ -27,6 +27,7 @@ async def test_worker_processes_jobs_and_pushes_results():
     assert sorted(queue.acked) == sorted(ids)
     for job_id in ids:
         result = await queue.read_result(job_id)
+        assert result is not None
         assert result["content"] == "hello from fake"
         assert result["usage"]["input_tokens"] == 10
 
@@ -43,8 +44,10 @@ async def test_worker_bad_job_gets_error_result_not_crash():
     assert worker.processed == 1
     assert worker.failed == 1
     bad_result = await queue.read_result(bad)
+    assert bad_result is not None
     assert "error" in bad_result and bad_result["error_type"] == "ConfigurationError"
     good_result = await queue.read_result(good)
+    assert good_result is not None
     assert good_result["content"] == "hello from fake"
     assert len(queue.acked) == 2  # failures are acked too; retry is queue policy
 

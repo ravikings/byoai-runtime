@@ -129,7 +129,8 @@ class RedisStreamQueue:
                 url=url, mode=mode, sentinels=sentinels, service_name=service_name,
                 **client_kwargs,
             )
-        self._client = client
+        # Explicitly typed: see the matching comment in cache/redis.py.
+        self._client: Any = client
         self.stream = stream
         self.group = group
         self.consumer = consumer or f"worker-{uuid.uuid4().hex[:8]}"

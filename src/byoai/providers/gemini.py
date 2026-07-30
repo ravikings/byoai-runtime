@@ -10,9 +10,9 @@ import httpx
 
 from .. import _json as json
 from .._version import USER_AGENT
-from ..errors import ConfigurationError, ProviderError
+from ..errors import ConfigurationError, ProviderError, RateLimitError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, parse_json_response, raise_for_status
+from .base import DEFAULT_RETRYABLE_STATUS, has_auth_header, parse_json_response, raise_for_status
 
 
 class GeminiProvider:
@@ -41,14 +41,23 @@ class GeminiProvider:
                 or os.environ.get("GEMINI_API_KEY")
                 or os.environ.get("GOOGLE_API_KEY")
             )
-            if not api_key and "x-goog-api-key" not in (default_headers or {}):
-                # Fail fast at construction rather than sending a blank
-                # credential and surfacing a confusing 401 at request time.
+            if not api_key and not has_auth_header(
+                default_headers, "x-goog-api-key", "authorization"
+            ):
+                # Fail fast at construction rather than sending a credential-less
+                # request and surfacing a confusing 401 at request time. A
+                # default_headers= carrying its own auth header (this adapter's,
+                # however capitalized, or a generic Authorization) disables this
+                # check: a gateway may authenticate under a different scheme —
+                # but an unrelated header (e.g. a tracing header) must not.
                 raise ConfigurationError(
                     "GeminiProvider needs an API key: pass api_key= or set the "
-                    "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable"
+                    "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable "
+                    "(or supply your own auth via default_headers=)"
                 )
-            headers = {"x-goog-api-key": api_key or "", "User-Agent": USER_AGENT}
+            headers = {"User-Agent": USER_AGENT}
+            if api_key:
+                headers["x-goog-api-key"] = api_key
             headers.update(default_headers or {})
             client = httpx.AsyncClient(
                 base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,
@@ -169,6 +178,13 @@ class GeminiProvider:
                             if isinstance(error, dict)
                             else str(error)
                         )
+                        if code == 429:
+                            # Same invariant as raise_for_status: rate limits
+                            # are always retryable.
+                            raise RateLimitError(
+                                f"{self.name}: rate limited mid-stream: {detail}",
+                                provider=self.name,
+                            )
                         raise ProviderError(
                             f"{self.name}: stream error event: {detail}",
                             provider=self.name,

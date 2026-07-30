@@ -25,12 +25,7 @@ jobs:
           cache: "pip"
       - run: pip install -e ".[all,dev,docs]"
       - run: ruff check .
-      # TODO: drop continue-on-error once the pre-existing type errors this
-      # surfaces (Optional-access in tests/, ASGI type mismatches in
-      # integrations/fastapi.py + robyn.py) are fixed; tracked as a gap, not
-      # ignored.
       - run: pyright
-        continue-on-error: true
       # Catches broken nav/links/mkdocstrings refs at PR time — docs.yml only
       # runs on push to main, which is too late to stop a bad deploy.
       - run: mkdocs build --strict

@@ -30,7 +30,12 @@ try:
     from mcp.server import MCPServer as _MCPServerCls
 except ImportError:
     try:
-        from mcp.server.fastmcp import FastMCP as _MCPServerCls  # SDK <2.0
+        # SDK <2.0; not present in the >=2.0 layout pyright resolves against
+        # in this environment, so this fallback path can't be statically
+        # verified — that's expected, it's only ever reached on an old SDK.
+        from mcp.server.fastmcp import (  # pyright: ignore[reportMissingImports]
+            FastMCP as _MCPServerCls,
+        )
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
             "byoai.integrations.mcp requires the mcp package: "
@@ -44,7 +49,10 @@ try:
     from mcp.server.mcpserver import Context as _ContextCls  # SDK >=2.0
 except ImportError:
     try:
-        from mcp.server.fastmcp import Context as _ContextCls  # SDK <2.0
+        # SDK <2.0; see the matching comment on the FastMCP fallback above.
+        from mcp.server.fastmcp import (  # pyright: ignore[reportMissingImports]
+            Context as _ContextCls,
+        )
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
             "byoai.integrations.mcp requires the mcp package: "
@@ -227,7 +235,11 @@ def attach(
     mcp_app = server.streamable_http_app(streamable_http_path="/")
     app.mount(path, mcp_app)
 
-    target = next(
+    # add_event_handler is gone from the Starlette/FastAPI app class itself in
+    # current versions but survives (deprecated) on FastAPI's own APIRouter —
+    # hasattr-based duck typing across that version split, so `target` can't
+    # be given a real static type here.
+    target: Any = next(
         (t for t in (app, getattr(app, "router", None)) if hasattr(t, "add_event_handler")),
         None,
     )

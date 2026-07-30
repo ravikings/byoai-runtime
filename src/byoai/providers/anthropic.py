@@ -12,7 +12,7 @@ from .. import _json as json
 from .._version import USER_AGENT
 from ..errors import ConfigurationError, ProviderError, RateLimitError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, parse_json_response, raise_for_status
+from .base import DEFAULT_RETRYABLE_STATUS, has_auth_header, parse_json_response, raise_for_status
 
 # 529 = Anthropic's "overloaded" status, retryable like a 503.
 DEFAULT_RETRYABLE_STATUS_ANTHROPIC = DEFAULT_RETRYABLE_STATUS | {529}
@@ -46,18 +46,21 @@ class AnthropicProvider:
         self._owns_client = client is None
         if client is None:
             api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-            if not api_key and "x-api-key" not in (default_headers or {}):
-                # Fail fast at construction rather than sending a blank
-                # credential and surfacing a confusing 401 at request time.
+            if not api_key and not has_auth_header(default_headers, "x-api-key", "authorization"):
+                # Fail fast at construction rather than sending a credential-less
+                # request and surfacing a confusing 401 at request time. A
+                # default_headers= carrying its own auth header (this adapter's,
+                # however capitalized, or a generic Authorization) disables this
+                # check: a gateway may authenticate under a different scheme —
+                # but an unrelated header (e.g. a tracing header) must not.
                 raise ConfigurationError(
                     "AnthropicProvider needs an API key: pass api_key= or set "
-                    "the ANTHROPIC_API_KEY environment variable"
+                    "the ANTHROPIC_API_KEY environment variable (or supply your "
+                    "own auth via default_headers=)"
                 )
-            headers = {
-                "x-api-key": api_key or "",
-                "anthropic-version": api_version,
-                "User-Agent": USER_AGENT,
-            }
+            headers = {"anthropic-version": api_version, "User-Agent": USER_AGENT}
+            if api_key:
+                headers["x-api-key"] = api_key
             headers.update(default_headers or {})
             client = httpx.AsyncClient(
                 base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,

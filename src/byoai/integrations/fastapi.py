@@ -59,14 +59,26 @@ def attach(app: FastAPI, runtime: Runtime) -> Runtime:
     an ``on_shutdown`` callback rather than replacing the lifespan.
     """
     setattr(app.state, _STATE_ATTR, runtime)
-    # Starlette >=1.0 exposes add_event_handler on the router only.
-    target = app if hasattr(app, "add_event_handler") else app.router
+    # add_event_handler is gone from the FastAPI/Starlette app class itself in
+    # current versions but survives (deprecated) on FastAPI's own APIRouter —
+    # hasattr-based duck typing across that version split, so `target` can't
+    # be given a real static type here.
+    target: Any = app if hasattr(app, "add_event_handler") else app.router
     target.add_event_handler("shutdown", runtime.close)
     return runtime
 
 
 def get_runtime(request: Request) -> Runtime:
-    """FastAPI dependency: ``runtime: Runtime = Depends(get_runtime)``."""
+    """FastAPI dependency: ``runtime: Runtime = Depends(get_runtime)``.
+
+    Also works with a ``WebSocket`` passed directly (not through ``Depends``)
+    since both expose ``.app.state`` — useful for fetching the runtime inside
+    a websocket route before calling :func:`serve_websocket`. Typed as
+    ``Request`` rather than ``Request | WebSocket`` because FastAPI's
+    dependency-injection machinery cannot build a response field for a Union
+    here; callers using the websocket form should pass it through as-is (it
+    works at runtime) or ``cast`` it for their own type-checking.
+    """
     runtime = getattr(request.app.state, _STATE_ATTR, None)
     if runtime is None:
         raise ConfigurationError(
