@@ -158,6 +158,149 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Azure OpenAI preset passes `api-version` as a real query parameter. It was previously
   baked into `base_url`, where httpx's path concatenation placed the request path after the
   query string.
+- `byoai.integrations.flask`'s bridge no longer hangs a request thread forever on shutdown, and
+  finalizes every in-flight/abandoned stream instead of leaking the provider connection behind
+  it. `_FlaskBridge.run()`/`run_stream()` block on a future with no timeout; `close()` used to
+  just stop the background event loop without cancelling any in-flight one, so a request thread
+  mid-stream at the moment of a graceful shutdown (e.g. gunicorn's SIGTERM) waited on a future
+  that would never resolve. `close()` now cancels every pending future first — `run_coroutine_
+  threadsafe`'s returned future stays in `concurrent.futures`' `PENDING` state throughout, so
+  `cancel()` succeeds synchronously and unblocks the waiting thread immediately regardless of
+  what the underlying coroutine was doing — and `run()`'s "check closed, then register" and
+  `close()`'s "mark closed, then snapshot pending" now share one lock, closing a TOCTOU window
+  where a future scheduled right after `close()`'s snapshot could still hang forever once the
+  loop's thread has exited. Every `run_stream()` session is now tracked for its whole lifetime,
+  not just while it happens to have a live future, so `close()` also finds and finalizes a
+  stream that's idle *between* chunks — the common case, since most of a real SSE stream's
+  lifetime has no future in flight for `close()` to cancel at all — finalized exactly once
+  regardless of whether `run_stream()`'s own cleanup or `close()`'s shutdown sweep gets there
+  first; that cleanup is only bounded by a timeout when actually racing shutdown, so an ordinary
+  exit (natural exhaustion, an early client disconnect) still lets a legitimately slow provider
+  teardown run to completion instead of being cut off by a fixed cap. A cancelled in-flight
+  future's own task cancellation already finalizes its generator as it unwinds, so `run_stream()`
+  no longer *also* tries to close it a second time in that case — racing a brand-new close
+  attempt against a task that may still be mid-unwind on the same generator raised `RuntimeError:
+  aclose(): asynchronous generator is already running`, silently swallowed into a warning log.
+  `close()`'s idle-stream sweep now finalizes every remaining stream concurrently (scheduling
+  every `aclose()` up front, then waiting on them together) instead of one at a time — N streams
+  each needing their own real time to close serialized into roughly N times that total instead
+  of the single slowest one, and split whatever budget was left unevenly, starving out whichever
+  stream went last. `close()`'s budget is now split rather than each phase getting its own full
+  separate `timeout` (stacked, that previously multiplied `close(timeout=5.0)`'s worst case to
+  roughly 3-4x the requested timeout — a process supervisor's SIGKILL grace period is typically
+  sized for the requested timeout, so `close()` could get killed mid-shutdown before `runtime.
+  aclose()` ever ran, leaking the provider's connections instead of the graceful close this
+  exists to guarantee) — but also not a single deadline every phase shares (streams get whatever
+  was left, however little): a starved `runtime.aclose()` doesn't just skip cleanly, the timeout
+  firing cancels it *mid-teardown*, which can leave the provider's httpx client in a worse,
+  half-torn-down state than either "closed" or "never touched." Streams get at most half the
+  budget, `runtime.aclose()` a guaranteed floor of the other half — but not a *fixed* half
+  regardless: if stream cleanup finishes early (the common case — most shutdowns have no active
+  streams at all), `runtime.aclose()` gets that unused time back too, rather than a runtime
+  teardown that legitimately needs more than a fixed half (but less than the full requested
+  timeout) being prematurely cancelled for no reason. `close()` also no longer depends on
+  `run_stream()`'s own (separate-thread) cleanup having already removed a cancelled stream from
+  consideration by the time `close()` reads it for the idle-stream sweep — cancelling a
+  `run_coroutine_threadsafe` future only *requests* the underlying task's cancellation
+  asynchronously (it doesn't run inline), so that removal could lag behind `close()`'s read,
+  letting the sweep schedule a second, racing `aclose()` on a generator whose cancellation was
+  still unwinding through it — the exact `RuntimeError: aclose(): asynchronous generator is
+  already running` class of bug two entries up, reintroduced by a different path. `close()` now
+  excludes a cancelled stream from its own sweep synchronously, in the same step that cancels its
+  future, rather than relying on that other thread to get there first. The final `thread.join()`
+  now also draws from what's left of the overall requested timeout instead of getting its own
+  fresh full budget on top — stacked with the streams/`runtime.aclose()` split, that pushed
+  `close()`'s total worst case to roughly 1.5x the requested timeout, silently undermining the
+  bound the split above exists to guarantee. A `run_stream()` call reaching cleanup after
+  `close()` has already fully finished (loop stopped, thread joined) now fails immediately
+  instead of blocking the calling thread for a full cleanup timeout waiting on a callback nothing
+  will ever run; an *ordinary* (non-shutdown) cleanup's wait is no longer literally unbounded
+  either, closing a narrow TOCTOU window (a concurrent `close()` stopping the loop between this
+  method's liveness check and its scheduling call) that could otherwise hang a request thread
+  forever instead of just very rarely, very slowly — bounded generously enough (minutes) that no
+  realistic teardown is cut off early. A future cancelled for a reason unrelated to the bridge
+  closing (not via `close()`) no longer gets misreported as "bridge is closed" — and
+  `stream_response()`'s SSE loop now also catches that same raw (unrelated) cancellation (which
+  its `ByoAIError`-only guard previously let escape unhandled instead of ending the stream with
+  the same clean terminal error frame a runtime error gets), falling back to a "request
+  cancelled" description since `str(CancelledError())` is always empty and an `{"error": "",
+  "done": true}` frame told the client nothing. `run()` explicitly closes a caller's coroutine
+  instead of dropping it unawaited when the bridge is already closed, avoiding a "coroutine was
+  never awaited" warning at GC time.
+- `ContextResolver`'s session-history coercion no longer turns `content: null` on an assistant
+  turn (the standard shape for a tool-call-only turn in stored OpenAI/Anthropic history) into
+  the literal text `"None"`. That turn — and the `"tool"` message(s) immediately following it,
+  now-unanswerable tool_result replies to a turn that no longer exists — are dropped from history
+  entirely; a still-considered `""` instead wasn't safe either, since Anthropic's API rejects any
+  non-final message with empty content outright, and the tool call itself isn't representable in
+  this coercion anyway, so a turn with no visible text has nothing worth keeping. (The detection
+  itself is scoped to a dict that actually has a `content` key set to `null` — a dict with no
+  `content` key at all, a malformed/legacy history entry, is a different, unrelated shape and must
+  not also delete a well-formed `"tool"` reply that happens to follow it.)
+
+  Dropping that turn — or `max_history_messages` truncation landing between an assistant turn and
+  its tool replies, or between any two turns of an otherwise-unremarkable alternating conversation
+  — can leave two consecutive same-role messages, or a truncated history that starts on
+  `"assistant"`/`"tool"` instead of `"user"`. Every provider enforcing strict alternation (e.g.
+  Anthropic, which also requires the first message to be role `"user"`) rejects either outright,
+  the same class of whole-request failure this fix exists to prevent, just reached through
+  different paths. Fixed on two fronts: truncated history now has *any* leading non-`"user"`
+  message(s) dropped, not only a leading `"tool"` reply; and two same-role messages are merged
+  into one (content concatenated; a differing `name` is dropped, `metadata` dicts merged) — but
+  only at the exact seam left behind by an actual dropped turn, never just because two adjacent
+  messages happen to share a role. That scoping matters on its own: merging *any* adjacent
+  same-role pair in the final message list, regardless of why they were adjacent, would silently
+  collapse a caller's own intentionally-distinct same-role turns (e.g. `ctx.input` supplied
+  directly as a list of `Message`s, a documented, supported shape) into one, discarding per-turn
+  content and attribution the caller never asked to have merged. Merging metadata dicts no longer
+  crashes with `TypeError` when a `Message`'s `metadata` is explicitly `None` instead of the
+  default empty dict (the field's declared type doesn't actually stop a caller from constructing
+  one that way). Whether history's last message is eligible for the one cross-list merge seam
+  (see above) is now computed as a direct byproduct of the same single pass that decides every
+  other merge in the list, instead of a second, separately maintained scan over the raw history —
+  the two had different ideas of which trailing items were "skippable" (only a `"tool"` reply vs.
+  anything that doesn't coerce to a message at all), so a malformed trailing entry after a dropped
+  turn could make the second scan miss a merge the first pass correctly still owed, reopening the
+  same-role-messages failure this all exists to prevent. `_coerce_message`'s content=null drop
+  also now applies to a tool-call-only turn supplied as an already-constructed `Message` object,
+  not just the role/content dict shape — the `Message` branch previously returned any instance
+  completely unchanged, so a caller reconstructing history as `Message` objects directly (rather
+  than dicts) could still send an invalid `content: null` assistant turn straight to the provider.
+- `close()`'s cancellation loop now checks `future.cancel()`'s own return value before marking
+  its owning stream's handle done and excluding it from the idle-stream sweep, instead of doing
+  so unconditionally. `cancel()` is a no-op (returns `False`) if the future already completed
+  normally — e.g. the provider yielded its next chunk right as shutdown began — and marking the
+  handle done regardless made `_finalize_stream` silently skip a stream that in fact still needed
+  a real `aclose()`, leaking it and the provider connection behind it. Only a future actually
+  interrupted by this cancel call is now excluded synchronously here; every other handle still
+  reaches the idle-stream sweep, where it's properly finalized. `run_stream()`'s `finally` block
+  also now reads `self._closed` under the same lock guarding every other access to it, rather than
+  unlocked, before picking the finalization timeout. Its shutdown-racing cleanup call now also
+  uses the timeout `close()` was actually invoked with instead of a hardcoded `5.0` — a tight
+  `close(timeout=0.3)` (e.g. a short preStop grace period) no longer leaves a request thread's own
+  cleanup free to block up to 5 seconds regardless of what the caller asked for, which risked a
+  process supervisor's SIGKILL grace period (typically sized for the requested timeout) expiring
+  mid-cleanup. `close()` also no longer relies on a single `_active_streams` snapshot taken some
+  time after its `pending` snapshot: a stream that was idle (and thus invisible to the `pending`
+  snapshot) at the instant `close()` began could still race into actively closing itself — e.g. an
+  early client disconnect, or the WSGI layer finally pulling the next chunk — in the window between
+  the two snapshots, landing in `run_stream()`'s own finally block and scheduling a *new*,
+  not-yet-tracked cleanup future close() had no way to know about. `close()` now re-checks for any
+  such newly-registered future once more right after its idle-stream sweep and waits for it too,
+  instead of proceeding straight to stopping the loop and potentially abandoning that cleanup
+  mid-flight.
+- The synchronous `execute()` helper now catches `concurrent.futures.CancelledError` the same way
+  `stream_response()` already does, wrapping it in `ByoAIError` instead of letting the raw
+  `concurrent.futures` exception escape a Flask view's usual `except ByoAIError:` handling as an
+  unhandled 500 — `close()` actively cancelling in-flight futures made this a live, not just
+  theoretical, race.
+- `stream_response()`'s SSE loop no longer mislabels a genuine (non-cancellation) `ByoAIError`
+  that happens to carry no message (e.g. a bring-your-own-function provider raising `ByoAIError()`
+  bare) as `"request cancelled"`. That fallback text — needed because `str(CancelledError())` is
+  always empty — now only applies to an actual `concurrent.futures.CancelledError`; any other
+  empty-message error falls back to its exception class name instead, so a client-side handler
+  branching on the cancellation message doesn't get misled into thinking a request was cancelled
+  when it wasn't.
 
 ## [0.1.0a1] - 2026-07-29
 

@@ -66,13 +66,30 @@ class ContextResolver:
         prompt = ctx.system_prompt if ctx.system_prompt is not None else self.system_prompt
         if prompt:
             messages.append(Message(role="system", content=prompt))
-        messages.extend(await self._history(ctx))
-        messages.extend(self._normalize(ctx.input))
+        history, history_trailing_drop = await self._history(ctx)
+        messages.extend(history)
+        # The seam between history and this call's own input is the one
+        # place a merge can be needed *across* two independently-built
+        # lists: history's last message can be a drop survivor (see
+        # _history()) with nothing left in history itself to merge into —
+        # exactly what history_trailing_drop signals. Every other
+        # adjacency (within history, within input) is already resolved by
+        # _coerce_messages() itself, at the exact point a drop happens —
+        # not here, and not unconditionally: two same-role messages with
+        # no drop between them (e.g. a caller directly supplying
+        # ctx.input=[Message(user, name="a"), Message(user, name="b")], a
+        # documented, supported input shape) are left alone rather than
+        # silently merged just because they happen to share a role.
+        _append_messages(messages, self._normalize(ctx.input), pending_merge=history_trailing_drop)
         ctx.messages = messages
 
-    async def _history(self, ctx: RequestContext) -> list[Message]:
+    async def _history(self, ctx: RequestContext) -> tuple[list[Message], bool]:
+        """Returns ``(messages, trailing_drop)`` — ``trailing_drop`` is
+        True when the last returned message is a tool-call-turn drop
+        survivor with nothing left in this history to merge into (see
+        ``execute()``, which is the one place that needs it)."""
         if self.cache is None or self.max_history_messages <= 0:
-            return []
+            return [], False
         params: dict[str, str] = {}
         if self.session_params is not None:
             params = self.session_params(ctx)
@@ -81,15 +98,20 @@ class ContextResolver:
         elif ctx.session_id:
             params = {"session_id": ctx.session_id}
         if not params:
-            return []
+            return [], False
         try:
             history = await self.cache.read_session(**params)
         except (CacheError, KeyError):
-            return []
+            return [], False
         if not isinstance(history, list):
-            return []
-        out = [m for m in (_coerce_message(item) for item in history) if m is not None]
-        return out[-self.max_history_messages :]
+            return [], False
+        out, out_trailing_drop = _coerce_messages(history)
+        # Slicing only ever removes from the *front* (same for
+        # _drop_until_valid_start below), so the last coerced message —
+        # and thus whether it's a drop survivor — is unaffected by either.
+        sliced = _drop_until_valid_start(out[-self.max_history_messages :])
+        trailing_drop = bool(sliced) and out_trailing_drop
+        return sliced, trailing_drop
 
     def _normalize(self, raw: Any) -> list[Message]:
         if isinstance(raw, str):
@@ -97,14 +119,12 @@ class ContextResolver:
         if isinstance(raw, Message):
             return [raw]
         if isinstance(raw, list):
-            out = [m for m in (_coerce_message(item) for item in raw) if m is not None]
+            out, _ = _coerce_messages(raw)
             if out:
                 return out
         if isinstance(raw, dict):
             if isinstance(raw.get("messages"), list):
-                out = [
-                    m for m in (_coerce_message(item) for item in raw["messages"]) if m is not None
-                ]
+                out, _ = _coerce_messages(raw["messages"])
                 if out:
                     return out
             for key in ("query", "input", "prompt"):
@@ -117,19 +137,205 @@ class ContextResolver:
 
 def _coerce_message(item: Any) -> Message | None:
     if isinstance(item, Message):
+        # Same drop as the dict branch below, for a caller that hands us
+        # an already-constructed Message instead of a role/content dict
+        # (e.g. reconstructing history as Message objects directly) — a
+        # tool-call-only turn's content=None must not sail through
+        # unchecked just because it skipped the dict-coercion path.
+        if item.content is None and item.role == "assistant":
+            return None
         return item
     if isinstance(item, dict) and "content" in item:
         role = item.get("role", "user")
         if role in ("system", "user", "assistant", "tool"):
             content = item["content"]
-            # str/list pass through untouched (list = provider content
-            # blocks, e.g. Anthropic tool_use/tool_result); anything else
-            # (a stray int/bool from a hand-written history dict) is
-            # stringified rather than rejected.
+            # None on an assistant turn (the standard shape for a
+            # tool-call-only turn in stored OpenAI/Anthropic history) drops
+            # the message entirely rather than sending it. Turning it into
+            # the literal text "None" would fabricate something the model
+            # never said; turning it into "" isn't safe either —
+            # Anthropic's API rejects any non-final message with empty
+            # content outright, failing the whole request. The tool call
+            # itself isn't representable here anyway (this dict shape only
+            # carries role/content), so a turn with no visible text has
+            # nothing worth keeping. See _coerce_messages() for why the
+            # "tool" replies to a dropped turn like this one also need to
+            # go — that requires list-level context this function doesn't
+            # have.
+            if content is None and role == "assistant":
+                return None
             if not isinstance(content, (str, list)):
                 content = str(content)
             return Message(role=role, content=content)
     return None
+
+
+def _item_role(item: Any) -> Any:
+    """The role of a raw history/input item, whichever of the two shapes
+    ``_coerce_message`` accepts it's in — a plain ``Message`` or a
+    role/content dict — so callers that need to look ahead/behind at
+    surrounding items (``_coerce_messages``'s "tool" reply skip below,
+    ``_is_dropped_tool_call_turn``) don't need to duplicate that check.
+    """
+    if isinstance(item, Message):
+        return item.role
+    if isinstance(item, dict):
+        return item.get("role", "user")
+    return None
+
+
+def _is_dropped_tool_call_turn(item: Any) -> bool:
+    if isinstance(item, Message):
+        return item.role == "assistant" and item.content is None
+    # "content" in item, not just item.get("content") is None: a dict with
+    # no "content" key at all (a malformed/legacy entry _coerce_message
+    # already drops on its own, via the same "content" in item guard) must
+    # not be mistaken for a tool-call-only turn — that would additionally,
+    # incorrectly, delete a legitimate "tool" reply immediately following
+    # it.
+    return (
+        isinstance(item, dict)
+        and item.get("role", "user") == "assistant"
+        and "content" in item
+        and item.get("content") is None
+    )
+
+
+def _merge_content(
+    a: str | list[dict[str, Any]], b: str | list[dict[str, Any]]
+) -> str | list[dict[str, Any]]:
+    if isinstance(a, str) and isinstance(b, str):
+        return f"{a}\n\n{b}"
+    a_blocks = a if isinstance(a, list) else [{"type": "text", "text": a}]
+    b_blocks = b if isinstance(b, list) else [{"type": "text", "text": b}]
+    return [*a_blocks, *b_blocks]
+
+
+def _merge_name(a: str | None, b: str | None) -> str | None:
+    # Unlike content, two disagreeing names can't be concatenated into
+    # something meaningful — keep it only when both sides actually agree
+    # (including both being unset); otherwise drop it rather than
+    # arbitrarily keeping one side's value over the other's.
+    return a if a == b else None
+
+
+def _merge_metadata(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, Any]:
+    # metadata is app-defined bookkeeping never sent to a provider (see
+    # Message.to_dict()) — a plain dict merge (b's keys win on conflict)
+    # keeps everything from both sides instead of the all-or-nothing
+    # choice content/name require. `Message.metadata`'s type is
+    # `dict[str, Any]` with a default_factory of `dict`, but nothing
+    # actually stops a caller from constructing one with `metadata=None`
+    # explicitly — treat that the same as an empty dict rather than
+    # crashing on `{**None, ...}`.
+    return {**(a or {}), **(b or {})}
+
+
+def _merge_messages(a: Message, b: Message) -> Message:
+    return Message(
+        role=a.role,
+        content=_merge_content(a.content, b.content),
+        name=_merge_name(a.name, b.name),
+        metadata=_merge_metadata(a.metadata, b.metadata),
+    )
+
+
+def _append_messages(dest: list[Message], new: list[Message], *, pending_merge: bool) -> None:
+    """Append ``new`` onto ``dest``, merging the seam into one message
+    instead of two when ``pending_merge`` says the seam needs it — see
+    ``_coerce_messages()`` (within one list) and ``ContextResolver.
+    execute()`` (across the history/input boundary) for the two call
+    sites and what makes each one's seam eligible. Never merges just
+    because two adjacent messages happen to share a role: unlike the
+    dropped-turn case this exists for, that's a common, legitimate shape
+    (e.g. a caller-supplied ``ctx.input`` list with two intentionally
+    distinct same-role turns) that must be left alone, not silently
+    collapsed into one.
+    """
+    if (
+        pending_merge
+        and dest
+        and new
+        and dest[-1].role == new[0].role
+        and dest[-1].role in ("user", "assistant")
+    ):
+        dest[-1] = _merge_messages(dest[-1], new[0])
+        dest.extend(new[1:])
+    else:
+        dest.extend(new)
+
+
+def _coerce_messages(items: list[Any]) -> tuple[list[Message], bool]:
+    """Map ``_coerce_message`` over ``items``, but list-aware in two ways:
+
+    * Dropping an assistant tool-call-only turn (``content: None``) also
+      drops the "tool" messages immediately following it. Those are that
+      turn's tool_result replies — every provider requires a tool_result
+      to immediately follow the assistant tool_use turn it responds to,
+      so once that turn is gone, keeping its replies would send a still-
+      invalid request, just failing on the next message instead of this
+      one.
+    * If the message immediately before a dropped turn and the message
+      immediately after it (once its "tool" replies are skipped too)
+      share a role, they're merged into one instead of left as two
+      consecutive same-role messages — which a provider enforcing strict
+      user/assistant alternation (e.g. Anthropic) rejects outright. This
+      merge is scoped to exactly this seam (see ``_append_messages()``):
+      it never touches an adjacency that isn't immediately downstream of
+      an actual drop, so a caller's own intentionally-adjacent same-role
+      messages elsewhere in ``items`` are left untouched.
+
+    Returns ``(messages, trailing_drop)`` — ``trailing_drop`` is True when
+    the loop ends still "owing" a merge (the tail of ``items`` was a
+    dropped turn, or its skipped "tool" replies, with no further message
+    in ``items`` to merge into). Computed here, as a direct byproduct of
+    the same single pass that decides every *other* merge in this list,
+    rather than by a second, separate scan over ``items`` with its own,
+    easy-to-drift-out-of-sync idea of what counts as "skippable" — see
+    ``_history()``, the one caller that uses this flag, for why it's
+    needed at all (the one merge seam this function can't resolve on its
+    own: this list's last message against whatever a caller appends right
+    after it).
+    """
+    out: list[Message] = []
+    skip_tool_replies = False
+    pending_merge = False
+    for item in items:
+        if skip_tool_replies:
+            if _item_role(item) == "tool":
+                continue
+            skip_tool_replies = False
+        if _is_dropped_tool_call_turn(item):
+            skip_tool_replies = True
+            pending_merge = True
+            continue
+        message = _coerce_message(item)
+        if message is None:
+            continue
+        _append_messages(out, [message], pending_merge=pending_merge)
+        pending_merge = False
+    return out, pending_merge
+
+
+def _drop_until_valid_start(messages: list[Message]) -> list[Message]:
+    """Drop messages from the front of a truncated history slice until
+    the first remaining message has role ``"user"`` (or the list is
+    exhausted).
+
+    ``_history()`` truncates coerced history to its last
+    ``max_history_messages`` entries *after* ``_coerce_messages()`` has
+    already run — so a fixed-size window over an alternating conversation
+    can start on any role, not just cut a tool_use/tool_result pair (the
+    narrowest case): a plain, otherwise-unremarkable alternating history
+    can just as easily be windowed to start on "assistant". Every
+    provider enforcing strict alternation (e.g. Anthropic requires the
+    first message to be role="user") rejects anything else at the front,
+    so both "tool" and "assistant" need dropping here, not just "tool".
+    """
+    start = 0
+    while start < len(messages) and messages[start].role != "user":
+        start += 1
+    return messages[start:]
 
 
 class CacheLookup:
