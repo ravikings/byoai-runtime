@@ -46,7 +46,12 @@ def build_cache(config: dict[str, Any]) -> CacheStore:
 
         return RedisCache(**config)
     if provider in ("memory", "inmemory"):
-        config.pop("url", None)
+        if "url" in config:
+            raise ConfigurationError(
+                "cache provider is 'memory' but 'url' was given — MemoryCache has no "
+                "backing connection, so this is silently ignored; drop 'url' or switch "
+                "provider to 'redis'/'valkey'"
+            )
         return MemoryCache(**config)
     plugin = _load_plugin("byoai.caches", provider, config)
     if plugin is not None:
@@ -159,7 +164,12 @@ def build_provider(config: dict[str, Any]) -> LLMProvider:
         api_version = config.pop("api_version", "2024-06-01")
         if not endpoint or not deployment:
             raise ConfigurationError("azure_openai requires 'endpoint' and 'deployment'")
-        api_key = config.pop("api_key", None) or os.environ.get("AZURE_OPENAI_API_KEY", "")
+        api_key = config.pop("api_key", None) or os.environ.get("AZURE_OPENAI_API_KEY")
+        if not api_key:
+            raise ConfigurationError(
+                "azure_openai requires 'api_key' (or $AZURE_OPENAI_API_KEY) — omitting it "
+                "doesn't skip auth, it sends an empty 'api-key' header and fails at request time"
+            )
         config.setdefault("model", deployment)
         return OpenAICompatProvider(
             name="azure_openai",

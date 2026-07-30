@@ -20,7 +20,7 @@ class MemoryCache:
         self,
         *,
         namespace: str = "byoai:",
-        default_ttl: int | None = None,
+        default_ttl: int | None = 3600,
         session_reader: dict[str, str] | None = None,
         session_data: dict[str, Any] | None = None,
         max_size: int | None = None,

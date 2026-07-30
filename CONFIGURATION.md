@@ -23,13 +23,19 @@ nothing here is required to keep working code working.
 | `llm` | `None` | Dict: `{"provider": ..., "model": ..., "fallback": {...}}`. See [Providers](#providers). |
 | `providers` | `None` | Pre-built `LLMProvider` list instead of/in addition to `llm=`. |
 | `cache` | `None` | Dict or `CacheStore` instance. See [Cache](#cache-exact-match). |
-| `vector_store` | `None` | Dict or `VectorStore` instance. See [Vector stores](#vector-stores). |
+| `vector_store` | `None` | Dict or `VectorStore` instance. See [Vector stores](#vector-stores). Building it alone doesn't add retrieval to the default pipeline — see [RAG retrieval in the pipeline](guides/vector-stores.md#rag-retrieval-in-the-pipeline) for wiring in `VectorRetrieve`. |
 | `semantic_cache` | `None` | Dict or `SemanticCacheStore` instance. See [Semantic cache](#semantic-intent-cache). Requires `embedder=`. |
 | `embedder` | `None` | Dict or async `(str) -> list[float]` callable. Powers `semantic_cache` and `vector_store` retrieval. |
 | `retry_policy` | `None` | A `RetryPolicy` shared by the whole provider fallback chain. See [RetryPolicy](#retrypolicy--providerrouter). |
+| `selection` | `"ordered"` | Which provider goes first each call — `"ordered"` \| `"round_robin"` \| a callable `(providers) -> providers`. See [RetryPolicy / ProviderRouter](#retrypolicy--providerrouter). |
 | `system_prompt` | `None` | Prepended as a system message on every request (via `ContextResolver`). |
-| `cache_ttl` | `3600` | Seconds; write-back TTL for the exact-match cache. `None` = no expiry, `<=0` = don't cache. |
 | `telemetry` | `None` | Dict (`{"provider": "opentelemetry", "endpoint": ...}`), a pre-built `TracerProvider`, or `None`. See [Telemetry](#telemetry-opentelemetry). |
+
+Exact-match cache write-back TTL is *not* a `Runtime` knob — it's controlled entirely by the
+cache itself: `cache={"default_ttl": 3600}` (or the equivalent constructor arg on a pre-built
+`CacheStore` instance). Earlier versions had a separate `Runtime(cache_ttl=...)` param that
+always overrode `default_ttl` regardless of what the cache was configured with; it's been
+removed so there's exactly one place TTL is set. See [Cache](#cache-exact-match).
 
 `Runtime.execute()` / `Runtime.stream()` per-call kwargs: `pipeline`,
 `session_id`, `user_id`, `model` (override), `system_prompt` (override —
@@ -181,6 +187,18 @@ chains up to 10 tiers deep — a fixed safety rail (not a config knob) against
 infinite/mistaken fallback loops; construct `providers=[...]` directly with
 `ProviderRouter` if you genuinely need more.
 
+`selection=` (also `ProviderRouter(selection=...)`) picks the order providers
+are tried each call — a fallback walks whatever `selection` returned in full
+on failure, so the two presets below (pure reordering) never skip a
+provider; a custom callable that also filters (e.g. dropping providers it
+considers unhealthy) does exclude them for that call, by its own choice:
+
+| Value | Behavior |
+| --- | --- |
+| `"ordered"` (default) | Always try `providers` in the order given — identical to the router's original fixed-primary/fallback behavior. |
+| `"round_robin"` | Rotates the starting provider each call, so load spreads across providers instead of always preferring the first. |
+| `(providers) -> providers` | A bare callable — returns the providers to try, in order, for this call (e.g. weighted selection); may also filter, at the cost of the "nothing skipped" guarantee above. |
+
 ---
 
 ## Cache (exact-match)
@@ -190,10 +208,11 @@ infinite/mistaken fallback loops; construct `providers=[...]` directly with
 | Param | Default | Notes |
 | --- | --- | --- |
 | `namespace` | `"byoai:"` | Key prefix. |
-| `default_ttl` | `None` (no expiry) | Seconds; explicit `ttl=` per-call overrides. |
+| `default_ttl` | `3600` | Seconds; explicit `ttl=` per-call overrides. `None` disables expiry — the only place TTL is set (there is no separate `Runtime`-level TTL knob). |
 | `session_reader` | `None` | `{"pattern": "app:{user_id}:history"}` — read-only key-pattern mapping onto existing app state. |
 | `session_data` | `None` | Dev/test stand-in for the "existing app state" `session_reader` reads. |
 | `max_size` | `None` (unbounded) | Caps entry count; oldest (by last write) evicted first. |
+| `url` | — | Not a `MemoryCache` param — passing it (e.g. left over from switching `provider` from `"redis"` to `"memory"`) raises `ConfigurationError` instead of being silently ignored. |
 
 ### `RedisCache` / Redis-backed everything
 
@@ -205,8 +224,8 @@ the shared factory behind `RedisCache`, `RedisSemanticCache`, and
 | --- | --- | --- |
 | `url` | `redis://localhost:6379` | |
 | `mode` | `"standalone"` | `"standalone"` \| `"cluster"` \| `"sentinel"`. |
-| `sentinels` | `None` | Required for `mode="sentinel"`: `[(host, port), ...]`. |
-| `service_name` | `None` | Required for `mode="sentinel"`. |
+| `sentinels` | `None` | Required for `mode="sentinel"`: `[(host, port), ...]`. Passing it with any other `mode` raises `ConfigurationError` instead of silently connecting without it. |
+| `service_name` | `None` | Required for `mode="sentinel"`. Same fail-fast as `sentinels` above. |
 | `client` | `None` | Pre-built client — bypasses `url`/`mode`/`sentinels`/`service_name`/`**client_kwargs`. |
 | `**client_kwargs` | — | Forwarded to redis-py: `socket_timeout`, `socket_connect_timeout`, `retry_on_timeout`, `health_check_interval`, `ssl`, `ssl_ca_certs`, etc. |
 
@@ -226,6 +245,7 @@ protocol-compatible — same adapter, same knobs).
 | --- | --- | --- |
 | `capacity` | `10_000` | Ring buffer size; oldest entries evicted on overflow. |
 | `ttl` | `3600` | Seconds; `None` = no expiry, `<=0` = don't store. |
+| `metric` | `"cosine"` | `"cosine"` \| `"dot"` \| `"euclidean"` \| a callable `(matrix, vector) -> scores`. `"cosine"` normalizes vectors at insert/query time; the others use raw vectors. The `threshold` guidance below (0.85-0.95+) assumes `"cosine"`. |
 
 ### `RedisSemanticCache` — shared across workers, survives restarts
 
@@ -237,13 +257,14 @@ All `RedisCache` connection params (`url`/`mode`/`sentinels`/`service_name`/
 | `stream` | `"byoai:semcache"` | The backing Redis Stream key. |
 | `capacity` | `10_000` | Both the local numpy mirror's size and the stream's `XTRIM MAXLEN` bound. |
 | `ttl` | `3600` | Same semantics as `MemorySemanticCache`. |
+| `metric` | `"cosine"` | Same as `MemorySemanticCache.metric` — forwarded to its local mirror, which does the actual scoring. |
 | `approximate_trim` | `True` | `False` = exact `XTRIM MAXLEN` (costlier) instead of `~` approximate trimming. |
 
 `SemanticCacheLookup` stage (what `Runtime` wires up):
 
 | Param | Default | Notes |
 | --- | --- | --- |
-| `threshold` | `0.92` (`stages.DEFAULT_SEMANTIC_THRESHOLD`) | Cosine similarity floor. Also settable via `semantic_cache={"threshold": ...}`. 0.95+ conservative, <0.85 risks off-topic hits. |
+| `threshold` | `0.92` (`stages.DEFAULT_SEMANTIC_THRESHOLD`) | Similarity floor (assumes the default `"cosine"` metric; other metrics need a different scale — see `metric` above). Also settable via `semantic_cache={"threshold": ...}`. 0.95+ conservative, <0.85 risks off-topic hits. |
 
 Declarative: `semantic_cache={"provider": "memory"|"redis"|"valkey", "threshold": 0.92, ...}`.
 
@@ -258,6 +279,7 @@ Declarative: `semantic_cache={"provider": "memory"|"redis"|"valkey", "threshold"
 | `dsn` | `None` | Required unless `pool=` given. |
 | `table` | required | Existing table name (validated as a safe SQL identifier). |
 | `schema_map` | `DEFAULT_SCHEMA_MAP` | `{"id": ..., "embedding": ..., "content": ..., "metadata": ...}` — zero-migration column mapping. |
+| `metric` | `"cosine"` | `"cosine"` (`<=>`) \| `"l2"` (`<->`) \| `"inner_product"` (`<#>`) — must match the table's actual index operator class (`vector_cosine_ops`/`vector_l2_ops`/`vector_ip_ops`) or pgvector silently falls back to a sequential scan. `Document.score` is always "higher = more similar" regardless. |
 | `pool` | `None` | Pre-built `asyncpg.Pool` — bypasses `dsn`/pool sizing/`**pool_kwargs`. |
 | `min_pool_size` / `max_pool_size` | `1` / `5` | |
 | `command_timeout` | `None` | Per-query timeout in seconds. |

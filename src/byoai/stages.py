@@ -344,8 +344,8 @@ class CacheLookup:
     The cache key fingerprints the normalized messages, model, pipeline,
     provider options (temperature, top_p, ...) and retrieval filters, so
     requests that differ only in those fields never collide on the same
-    entry. The runtime writes the response back (with its configured
-    ``cache_ttl``) after a successful non-streamed, non-cached execution.
+    entry. The runtime writes the response back (with the cache's own
+    ``default_ttl``) after a successful non-streamed, non-cached execution.
     """
 
     name = "cache_lookup"

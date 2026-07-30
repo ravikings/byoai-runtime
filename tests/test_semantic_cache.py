@@ -43,6 +43,43 @@ async def test_store_find_respects_threshold():
     assert await store.find([0.0, 1.0, 0.0], threshold=0.9) is None
 
 
+async def test_store_metric_dot_no_normalization():
+    # "dot" skips L2-normalization, so magnitude matters: a same-direction
+    # vector with 10x the magnitude scores 10x higher, not ~1.0 like cosine.
+    store = MemorySemanticCache(capacity=10, metric="dot")
+    await store.add([1.0, 0.0], "small")
+    hit = await store.find([10.0, 0.0], threshold=5.0)
+    assert hit is not None and hit[0] == "small" and hit[1] == pytest.approx(10.0)
+
+
+async def test_store_metric_euclidean_prefers_nearest():
+    store = MemorySemanticCache(capacity=10, metric="euclidean")
+    await store.add([0.0, 0.0], "near")
+    await store.add([10.0, 10.0], "far")
+    hit = await store.find([1.0, 0.0], threshold=-5.0)
+    assert hit is not None and hit[0] == "near"
+
+
+async def test_store_metric_unknown_name_rejected():
+    with pytest.raises(ConfigurationError):
+        MemorySemanticCache(metric="manhattan")  # type: ignore[arg-type]
+
+
+async def test_store_metric_custom_callable():
+    calls = []
+
+    def score_first_dim_only(matrix, vector):
+        calls.append(True)
+        return matrix[:, 0]
+
+    store = MemorySemanticCache(capacity=10, metric=score_first_dim_only)
+    await store.add([1.0, 99.0], "a")
+    await store.add([0.0, 0.0], "b")
+    hit = await store.find([0.0, 0.0], threshold=0.5)
+    assert hit is not None and hit[0] == "a"
+    assert calls
+
+
 async def test_store_capacity_evicts_oldest():
     store = MemorySemanticCache(capacity=2)
     await store.add([1.0, 0.0], "one")
@@ -219,6 +256,27 @@ async def test_semantic_cache_requires_embedder():
             providers=[FakeProvider()],
             semantic_cache={"provider": "memory"},
         )
+
+
+async def test_semantic_cache_non_cosine_metric_requires_explicit_threshold():
+    # DEFAULT_SEMANTIC_THRESHOLD (0.92) is calibrated for cosine; silently
+    # falling back to it under e.g. "euclidean" (whose scores are <= 0)
+    # would make every lookup miss forever with no signal to the caller.
+    with pytest.raises(ConfigurationError):
+        Runtime(
+            providers=[FakeProvider()],
+            semantic_cache={"provider": "memory", "metric": "euclidean"},
+            embedder=toy_embedder,
+        )
+
+
+async def test_semantic_cache_non_cosine_metric_with_explicit_threshold_is_fine():
+    runtime = Runtime(
+        providers=[FakeProvider()],
+        semantic_cache={"provider": "memory", "metric": "euclidean", "threshold": -1.0},
+        embedder=toy_embedder,
+    )
+    assert runtime.semantic_cache is not None
 
 
 async def test_exact_cache_still_wins_before_semantic():

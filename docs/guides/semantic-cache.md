@@ -5,13 +5,13 @@ The shared Redis-backed store additionally requires `redis`: `pip install "byoai
 
 The exact-match [response cache](caching.md) only short-circuits byte-identical requests.
 `semantic_cache=` adds a second cache stage that embeds the query and matches it against
-previously answered queries by cosine similarity — `"What are our SLA terms?"` can be served
-from the cached answer to `"Tell me about our enterprise SLAs"` without an LLM call.
+previously answered queries by similarity (cosine by default) — `"What are our SLA terms?"` can
+be served from the cached answer to `"Tell me about our enterprise SLAs"` without an LLM call.
 
 Economics: one embedding call (roughly 5-50ms, ~$0.00002) replaces one LLM call (hundreds of
 milliseconds to seconds, 100-1000× the cost) whenever intent matches closely enough. `threshold`
 tunes that tolerance — 0.95+ is conservative; below ~0.85 risks serving answers to genuinely
-different questions.
+different questions (this guidance assumes the default `"cosine"` metric — see below).
 
 `semantic_cache=` requires an `embedder=` — see the [Providers guide](providers.md#embeddings).
 
@@ -25,10 +25,29 @@ runtime = Runtime(
 )
 ```
 
-`byoai.cache.semantic.MemorySemanticCache` is numpy-accelerated brute-force cosine similarity
-over normalized vectors — exact (not approximate), fast up to roughly 100k entries. It's a fixed
-ring buffer: `capacity` bounds memory, oldest entries evict first. `ttl` is wall-clock seconds
-per entry (`None` disables expiry).
+`byoai.cache.semantic.MemorySemanticCache` is numpy-accelerated brute-force similarity search —
+exact (not approximate), fast up to roughly 100k entries. It's a fixed ring buffer: `capacity`
+bounds memory, oldest entries evict first. `ttl` is wall-clock seconds per entry (`None` disables
+expiry).
+
+### Similarity metric
+
+`metric=` picks how a query embedding is scored against cached ones:
+
+```python
+semantic_cache={"provider": "memory", "metric": "cosine"}  # default
+```
+
+* `"cosine"` (default) — normalized similarity, range `[-1, 1]`. The `threshold` guidance above
+  (0.85-0.95+) is calibrated for this metric.
+* `"dot"` — raw inner product, no normalization. Vector magnitude affects the score, so pick this
+  only if your embedding model's magnitude is itself meaningful.
+* `"euclidean"` — negative squared distance (higher = closer), unbounded range.
+* any callable `(matrix, vector) -> scores`, one score per cached row, higher = more similar — for
+  a custom metric. It receives raw, non-normalized vectors, and whatever range it returns is the
+  range `threshold` gets compared against.
+
+`RedisSemanticCache` takes the same `metric=` and forwards it to its local mirror (below).
 
 ## Shared across workers (Redis)
 

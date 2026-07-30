@@ -3,17 +3,21 @@ identical ones.
 
 The exact-match cache short-circuits only byte-identical requests. The
 semantic cache embeds the query and matches it against previously answered
-queries by cosine similarity — "What are our SLA terms?" can be served from
-the cached answer to "Tell me about our enterprise SLAs" without an LLM call.
+queries by similarity (cosine by default) — "What are our SLA terms?" can be
+served from the cached answer to "Tell me about our enterprise SLAs" without
+an LLM call.
 
 Economics: one embedding call (~5-50ms, ~$0.00002) replaces one LLM call
 (hundreds of ms to seconds, 100-1000× the cost) whenever intent matches.
 Tune ``threshold`` to your tolerance — 0.95+ is conservative, below ~0.85
-risks serving answers to genuinely different questions.
+risks serving answers to genuinely different questions (guidance assumes the
+default ``"cosine"`` metric; see ``metric=`` below for other scales).
 
 :class:`MemorySemanticCache` is per-process, numpy-accelerated brute-force
-cosine over normalized vectors — exact (not approximate), fast to ~100k
-entries. Requires the ``semantic`` extra: ``pip install byoai-runtime[semantic]``.
+similarity search — exact (not approximate), fast to ~100k entries. The
+scoring itself is pluggable via ``metric=``: presets ``"cosine"`` (default),
+``"dot"``, ``"euclidean"``, or a bare callable ``(matrix, vector) -> scores``.
+Requires the ``semantic`` extra: ``pip install byoai-runtime[semantic]``.
 """
 
 from __future__ import annotations
@@ -22,8 +26,9 @@ import asyncio
 import base64
 import struct
 import time
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
+from .._config_resolve import resolve_preset
 from ..errors import CacheError, ConfigurationError
 
 # Below this row count the matrix-vector product is cheaper than a thread
@@ -31,13 +36,50 @@ from ..errors import CacheError, ConfigurationError
 # concurrent request on the worker.
 _OFFLOAD_MIN_ROWS = 4096
 
+MetricName = Literal["cosine", "dot", "euclidean"]
+# (matrix (n, dim), vector (dim,)) -> scores (n,), higher = more similar.
+SimilarityFn = Callable[[Any, Any], Any]
+
+
+def _l2_normalize(vector: Any) -> Any:
+    import numpy  # already a hard dependency by the time any metric fn runs
+
+    norm = float(numpy.linalg.norm(vector))
+    if norm == 0.0:
+        raise ConfigurationError(
+            "cannot cache a zero-magnitude embedding under the 'cosine' metric"
+        )
+    return vector / norm
+
+
+def _identity(vector: Any) -> Any:
+    return vector
+
+
+def _inner_product(matrix: Any, vector: Any) -> Any:
+    return matrix @ vector
+
+
+def _negative_squared_euclidean(matrix: Any, vector: Any) -> Any:
+    diff = matrix - vector
+    return -(diff * diff).sum(axis=1)
+
+
+# name -> (normalize-on-insert/query, score matrix against query vector)
+_METRICS: dict[str, tuple[Callable[[Any], Any], SimilarityFn]] = {
+    "cosine": (_l2_normalize, _inner_product),
+    "dot": (_identity, _inner_product),
+    "euclidean": (_identity, _negative_squared_euclidean),
+}
+
 
 @runtime_checkable
 class SemanticCacheStore(Protocol):
     async def find(
         self, embedding: list[float], *, threshold: float
     ) -> tuple[str, float] | None:
-        """Best cached response with cosine similarity >= threshold, as
+        """Best cached response scoring >= threshold under the store's
+        configured ``metric`` (cosine similarity by default), as
         ``(response, score)``; None on miss."""
         ...
 
@@ -49,11 +91,31 @@ class SemanticCacheStore(Protocol):
 class MemorySemanticCache:
     """Ring-buffer semantic cache: fixed ``capacity``, oldest entries evicted.
 
-    Vectors are L2-normalized on insert so similarity is a single matrix-vector
-    product. TTL is wall-clock seconds per entry (None = no expiry).
+    TTL is wall-clock seconds per entry (None = no expiry). ``metric`` selects
+    how a query vector is scored against stored ones — a preset name or a
+    bare callable:
+
+    * ``"cosine"`` (default) — cosine similarity, range [-1, 1]. Vectors are
+      L2-normalized at insert and query time so a hit is a single
+      matrix-vector product. The module docstring's ``threshold`` guidance
+      (0.85-0.95+) assumes this metric.
+    * ``"dot"`` — raw inner product, no normalization. Useful when an
+      embedding model's vector magnitude is itself meaningful.
+    * ``"euclidean"`` — negative squared Euclidean distance (higher = closer,
+      unbounded range), no normalization.
+    * a bare callable ``(matrix, vector) -> scores``, one score per stored
+      row, higher = more similar — receives raw (non-normalized) vectors.
+      Whatever range your callable produces is the range ``threshold`` gets
+      compared against.
     """
 
-    def __init__(self, *, capacity: int = 10_000, ttl: int | None = 3600) -> None:
+    def __init__(
+        self,
+        *,
+        capacity: int = 10_000,
+        ttl: int | None = 3600,
+        metric: MetricName | SimilarityFn = "cosine",
+    ) -> None:
         try:
             import numpy
         except ImportError as exc:  # pragma: no cover
@@ -63,6 +125,17 @@ class MemorySemanticCache:
         self._np = numpy
         self.capacity = capacity
         self.ttl = ttl
+        self.metric = metric
+        if callable(metric):
+            self._normalize_vector: Callable[[Any], Any] = _identity
+            self._score: SimilarityFn = metric
+        else:
+            self._normalize_vector, self._score = resolve_preset(
+                metric,
+                _METRICS,
+                kind="metric",
+                callable_signature="(matrix, vector) -> scores",
+            )
         self._matrix: Any = None  # (capacity, dim) float32, rows normalized
         self._responses: list[str | None] = [None] * capacity
         self._expires: Any = numpy.zeros(capacity, dtype=numpy.float64)
@@ -74,10 +147,7 @@ class MemorySemanticCache:
 
     def _normalize(self, embedding: list[float]) -> Any:
         vector = self._np.asarray(embedding, dtype=self._np.float32)
-        norm = float(self._np.linalg.norm(vector))
-        if norm == 0.0:
-            raise ConfigurationError("cannot cache a zero-magnitude embedding")
-        return vector / norm
+        return self._normalize_vector(vector)
 
     async def add(
         self,
@@ -127,12 +197,17 @@ class MemorySemanticCache:
             return self._find_best(vector, threshold)
 
     def _find_best(self, vector: Any, threshold: float) -> tuple[str, float] | None:
-        live = self._matrix[: self._count] @ vector  # cosine, rows pre-normalized
+        live = self._score(self._matrix[: self._count], vector)
         alive = self._expires[: self._count] > time.monotonic()
-        live = self._np.where(alive, live, -1.0)
+        # -inf (not a metric-specific sentinel like cosine's -1.0) so a dead
+        # row can never outscore a live one under an unbounded metric such as
+        # "euclidean" or a custom callable. NaN is masked out the same way —
+        # a custom metric callable that divides by zero or underflows must
+        # not let NaN win argmax and get served as a bogus cache hit.
+        live = self._np.where(alive & ~self._np.isnan(live), live, -self._np.inf)
         best = int(self._np.argmax(live))
         score = float(live[best])
-        if score < threshold:
+        if not score >= threshold:  # rejects NaN too, unlike `score < threshold`
             return None
         response = self._responses[best]
         return (response, score) if response is not None else None
@@ -160,7 +235,9 @@ class RedisSemanticCache:
     survive restarts, while similarity math stays local and fast.
 
     ``XTRIM MAXLEN ~capacity`` bounds the stream; expiry is enforced at
-    lookup time via each entry's wall-clock deadline.
+    lookup time via each entry's wall-clock deadline. ``metric`` selects the
+    similarity scoring — same presets/callable escape hatch as
+    :class:`MemorySemanticCache`, which does the actual scoring here.
 
     Requires the ``redis`` and ``semantic`` extras.
     """
@@ -172,6 +249,7 @@ class RedisSemanticCache:
         stream: str = "byoai:semcache",
         capacity: int = 10_000,
         ttl: int | None = 3600,
+        metric: MetricName | SimilarityFn = "cosine",
         client: Any | None = None,
         mode: str = "standalone",
         sentinels: list | None = None,
@@ -194,7 +272,8 @@ class RedisSemanticCache:
         self.approximate_trim = approximate_trim
         self.capacity = capacity
         self.ttl = ttl
-        self._mirror = MemorySemanticCache(capacity=capacity, ttl=ttl)
+        self.metric = metric
+        self._mirror = MemorySemanticCache(capacity=capacity, ttl=ttl, metric=metric)
         self._last_id = "0-0"
 
     @staticmethod

@@ -79,6 +79,22 @@ async def test_cache_hit_on_second_call():
     assert events == ["cache.miss", "cache.hit"]
 
 
+async def test_write_back_respects_cache_own_default_ttl_not_a_runtime_override():
+    # Runtime used to accept a sibling cache_ttl= constructor arg and always pass
+    # it as an explicit ttl= on write-back, silently overriding whatever
+    # default_ttl the cache itself was configured with. default_ttl=0 means
+    # "expire immediately, don't store" — if Runtime still forced its own ttl=
+    # here, this entry would get cached anyway and the second call would hit.
+    cache = MemoryCache(default_ttl=0)
+    provider = FakeProvider()
+    runtime = Runtime(providers=[provider], cache=cache)
+
+    await runtime.execute("same question")
+    await runtime.execute("same question")
+
+    assert provider.calls == 2  # never cached — cache's own default_ttl governed the write
+
+
 async def test_cache_hit_preserves_finish_reason():
     # Regression: a cache hit used to always return finish_reason=None on
     # ExecutionResult even when the original (cached) response had one (e.g.

@@ -256,3 +256,43 @@ async def test_pinecone_include_values_and_sparse_vector():
     assert captured["includeValues"] is True
     assert captured["sparseVector"] == {"indices": [0], "values": [1.0]}
     assert docs[0].embedding == [0.1, 0.2]
+
+
+# --- conflicting/misplaced config: fail loud, not silently ignored ----------
+
+
+def test_build_cache_memory_with_url_raises_instead_of_dropping_it():
+    from byoai.config import build_cache
+    from byoai.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError):
+        build_cache({"provider": "memory", "url": "redis://leftover-from-a-provider-switch"})
+
+
+def test_pgvector_pool_kwargs_colliding_with_typed_args_raises():
+    from byoai.errors import ConfigurationError
+    from byoai.vector.pgvector import PgVectorStore
+
+    with pytest.raises(ConfigurationError):
+        PgVectorStore(dsn="postgresql://x", table="docs", min_size=10)
+
+
+def test_redis_sentinels_given_without_sentinel_mode_raises():
+    from byoai.cache.redis import make_redis_client
+    from byoai.errors import ConfigurationError
+
+    with pytest.raises(ConfigurationError):
+        make_redis_client(sentinels=[("host", 26379)], service_name="mymaster")
+
+
+def test_azure_openai_without_api_key_raises(monkeypatch):
+    from byoai.config import build_provider
+    from byoai.errors import ConfigurationError
+
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    with pytest.raises(ConfigurationError):
+        build_provider({
+            "provider": "azure_openai",
+            "endpoint": "https://x.openai.azure.com",
+            "deployment": "gpt-4o",
+        })

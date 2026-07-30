@@ -55,8 +55,15 @@ For serving *similar*, not just identical, queries from cache — see the dedica
 
 ## Cache TTL for responses
 
-`Runtime(..., cache_ttl=3600)` controls how long a written-back response cache entry lives
-(seconds; `None` disables expiry). A cache outage on write-back never fails the request — the
-`CacheError` is caught and silently discarded, by design, so a cache blip can't take down
-execution. (There is currently no logging of the discarded error — don't rely on application
-logs to surface a failing cache write-back.)
+There's no separate `Runtime`-level TTL knob — a written-back response cache entry lives for
+however long the cache itself is configured to keep entries: `cache={"default_ttl": 3600}`
+(seconds; `None` disables expiry), or the matching constructor arg if you're passing a pre-built
+`CacheStore` instance directly. Setting it in exactly one place avoids the previous split where a
+`Runtime(cache_ttl=...)` default silently overrode whatever `default_ttl` the cache was already
+configured with. `MemoryCache`/`RedisCache` both default `default_ttl` to `3600` on their own, so
+leaving it unset still expires entries after an hour rather than caching forever — pass
+`default_ttl=None` explicitly if you actually want entries to never expire.
+
+A cache outage on write-back never fails the request — the `CacheError` is caught and logged
+(`logger.warning`, not silently discarded) so a cache blip can't take down execution but is still
+visible in application logs.
