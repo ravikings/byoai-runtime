@@ -55,7 +55,28 @@ ByoAI Runtime executes as an unopinionated, process-level orchestrator sitting a
 pip install byoai-runtime
 ```
 
-### 2. Execution Example (Production Setup)
+### 2. Hello world
+
+```python
+import asyncio
+from byoai import Runtime
+
+async def main():
+    runtime = Runtime(llm={"provider": "openai", "model": "gpt-4o"})  # reads $OPENAI_API_KEY
+    result = await runtime.execute("What are our enterprise SLA terms?")
+    print(result.content, result.usage.total_tokens, result.cached)
+    await runtime.close()
+
+asyncio.run(main())
+```
+
+No cache, no vector store, no telemetry — just a provider. Everything else in this README is
+opt-in: add `cache=`/`vector_store=`/`semantic_cache=`/`telemetry=` only for what you need, when
+you need it. The next example shows all of them wired up against real infrastructure. See
+[Getting Started](https://ravikings.github.io/byoai-runtime/getting-started/) for environment
+variables, `system_prompt=`, and `async with Runtime(...)`.
+
+### 3. Execution Example (Production Setup)
 
 ```python
 from byoai import Runtime
@@ -107,7 +128,7 @@ result = await runtime.execute(
 print(result.content, result.usage.total_tokens, result.cached)
 ```
 
-### 3. Drop into an existing FastAPI app
+### 4. Drop into an existing FastAPI app
 
 ```python
 from fastapi import Depends, FastAPI
@@ -129,7 +150,7 @@ async def ask_stream(body: dict, rt: Runtime = Depends(get_runtime)):
 
 See `examples/fastapi_app/` for a runnable app with events, caching, and fallback.
 
-### 4. Semantic (intent) caching
+### 5. Semantic (intent) caching
 
 Serve *similar* questions from cache — not just identical ones. One embedding
 call (~15ms) replaces the whole LLM round-trip when intent matches:

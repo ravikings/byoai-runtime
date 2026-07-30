@@ -63,6 +63,7 @@ nav:
       - Provider routing & fallback: guides/providers.md
       - Background workers: guides/workers.md
       - Telemetry (OpenTelemetry): guides/telemetry.md
+      - Testing: guides/testing.md
   - API Reference: reference/api.md
   - Configuration Reference: https://github.com/ravikings/byoai-runtime/blob/main/CONFIGURATION.md
   - Changelog: https://github.com/ravikings/byoai-runtime/blob/main/CHANGELOG.md

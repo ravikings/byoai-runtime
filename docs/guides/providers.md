@@ -269,7 +269,8 @@ deltas (a trailing `done` chunk is synthesized for you) or full `StreamChunk` ob
 control over the final chunk's usage.
 
 `vector_store=` has the same bare-callable support (`FunctionVectorStore`) — see
-[Vector stores](vector-stores.md#bring-your-own-function).
+[Vector stores](vector-stores.md#bring-your-own-function). The same mechanism doubles as a test
+double for an app built on `Runtime` — see [Testing](testing.md).
 
 ## Embeddings
 
