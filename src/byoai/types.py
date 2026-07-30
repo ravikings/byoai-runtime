@@ -77,8 +77,34 @@ class ProviderResponse:
 
 
 @dataclass
+class ToolCallDelta:
+    """One incremental fragment of a streamed tool-use block (Anthropic's
+    ``content_block_start``/``content_block_delta`` events for a ``tool_use``
+    content block; the OpenAI-shaped equivalent is a ``tool_calls[].function``
+    delta).
+
+    ``id``/``name`` are set once, on the chunk marking the block's start
+    (``partial_json`` is empty there); every following chunk for the same
+    ``index`` carries the next raw JSON-fragment in ``partial_json`` and
+    leaves ``id``/``name`` unset. Concatenate ``partial_json`` across chunks
+    sharing the same ``index`` and ``json.loads()`` once the block closes —
+    byoai deliberately does not re-parse the growing fragment into a live
+    snapshot on every chunk.
+    """
+
+    index: int
+    id: str | None = None
+    name: str | None = None
+    partial_json: str = ""
+
+
+@dataclass
 class StreamChunk:
     """One streamed increment. ``delta`` is the new text; ``done`` marks the end.
+
+    ``tool_call`` is set instead of ``delta`` when the increment is a
+    streamed tool-use argument fragment rather than text — the two are
+    mutually exclusive per chunk.
 
     ``cached``/``request_id`` are only ever set on the final ``done`` chunk
     Runtime.stream() yields (mirroring ExecutionResult), never on individual
@@ -93,6 +119,7 @@ class StreamChunk:
     cached: bool = False
     request_id: str | None = None
     finish_reason: str | None = None
+    tool_call: ToolCallDelta | None = None
 
 
 @dataclass

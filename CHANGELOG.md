@@ -39,6 +39,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently discarded. Only the Anthropic/Bedrock/Vertex adapters handle list-valued content
   correctly today — see `docs/guides/providers.md`'s new "Anthropic tool use and content
   blocks" section.
+- `StreamChunk` gained `tool_call` (a new `ToolCallDelta`: `index`/`id`/`name` on a tool-use
+  block's start, `partial_json` fragments on each following chunk). Previously `stream()` only
+  handled `text_delta` events, so a forced-`tool_choice` streaming call — whose only content
+  *is* tool-use JSON — silently produced nothing. Fixed in `AnthropicProvider` (SSE parsing)
+  and `AnthropicBedrockProvider`/`AnthropicVertexProvider` (switched from the SDK's
+  `stream.text_stream`, which has the same text-only blind spot, to iterating its raw events
+  directly). `Runtime.stream()`'s final chunk and `ctx.raw_response` now also carry the
+  provider's full raw response (id, complete content blocks) — previously only `execute()`
+  exposed this, leaving a streaming caller nothing to hang audit logging or a tool call's final
+  parsed arguments on. Every transport carries `tool_call` in its frames too — `transport.
+  stream_frames()` (used by `sse_stream()`/`ws_reply()`, so Robyn/MCP/WebSocket inherit the fix)
+  and the FastAPI and Flask integrations' own SSE loops (`stream_response()` in each — they
+  don't route through `stream_frames()`) all filtered on `chunk.done or chunk.delta`, which is
+  false for a chunk whose only content is a `tool_call` (`delta` defaults to `""`); all three
+  now also check `chunk.tool_call is not None`.
+- `OpenAICompatProvider.stream()` had the same `tool_call` gap — `delta.tool_calls` was dropped
+  entirely, so a forced-`tool_choice` call yielded nothing there either — now fixed the same way,
+  reusing `ToolCallDelta`. Streaming also never captured `finish_reason` at all (unlike
+  `complete()`, which always had it); the final chunk's `raw` now assembles a full
+  `choices[0].message` (accumulated content plus any tool calls) the same way the Anthropic
+  fix above does. `GeminiProvider.stream()` had the narrower version of the same
+  `finish_reason` gap and is fixed too.
+- A handful of adjacent correctness fixes surfaced while building the above: `CacheLookup`'s
+  exact-match fingerprint no longer includes `provider_metadata=` (it's audit-only correlation
+  data, e.g. `user_id`, that never changes what answer comes back — including it meant any app
+  tagging calls with a per-request id silently never got a cache hit); `OpenAICompatProvider`
+  now strips `metadata=` before sending the request body, matching `GeminiProvider`, since
+  several OpenAI-compatible backends this adapter fronts (Azure, vLLM, ...) reject unrecognized
+  fields; a malformed/truncated `tool_use` JSON fragment now raises a `ProviderError` instead of
+  silently becoming `input=None` in `raw`; `build_anthropic_system_field` no longer sends
+  `system: []` (which Anthropic's API rejects) when every system message's content was an empty
+  block list; a tool-only streamed turn (all `tool_call` chunks, no text) no longer writes an
+  empty-string response into the semantic cache — `Runtime.stream()`'s accumulated `ctx.response`
+  ends up `""` rather than `None` for a turn like that, and the write-back guard now excludes
+  both, so a later semantically-similar query reaches the provider again instead of being served
+  a cached blank answer; `AnthropicProvider.stream()`'s reconstructed `raw["content"]` now merges
+  `thinking_delta`/`signature_delta` events too (extended-thinking blocks), not just
+  `text_delta`/`input_json_delta` — a thinking block used to come back empty since only its
+  `content_block_start` copy was kept and later deltas were dropped, corrupting the round-trip
+  Anthropic requires when thinking and tool_use are interleaved (the reconstructed thinking
+  content is internal to `raw` only, never surfaced via `StreamChunk.delta`, since it isn't the
+  visible answer); and `require_text_content()` (Gemini/OpenAI-compat rejecting Anthropic-shaped
+  list content) now raises `ProviderError` instead of `ConfigurationError` — the latter escaped
+  `ProviderRouter`'s `except ProviderError` fallback handling entirely, so a message carrying
+  prior-turn `tool_use`/`tool_result` blocks (this same PR's own feature) hard-failed a fallback
+  chain instead of trying the next provider.
 - `AnthropicProvider`/`AnthropicBedrockProvider`/`AnthropicVertexProvider` gained
   `cache_system=` (wraps a plain-string system prompt in a `cache_control: {"type":
   "ephemeral"}` block for Anthropic's server-side prompt caching) and now parse

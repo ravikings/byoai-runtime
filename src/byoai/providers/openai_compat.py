@@ -15,13 +15,14 @@ import httpx
 
 from .. import _json as json
 from ..errors import ProviderError
-from ..types import Message, ProviderResponse, StreamChunk, Usage
+from ..types import Message, ProviderResponse, StreamChunk, ToolCallDelta, Usage
 from .base import (
     DEFAULT_RETRYABLE_STATUS,
     build_openai_client,
     parse_json_response,
     raise_for_status,
     require_text_content,
+    strip_provider_metadata,
 )
 
 
@@ -56,6 +57,7 @@ class OpenAICompatProvider:
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
         for m in messages:
             require_text_content(m, provider=self.name)
+        strip_provider_metadata(options)
         return {
             "model": options.pop("model", self.model),
             "messages": [m.to_dict() for m in messages],
@@ -103,6 +105,15 @@ class OpenAICompatProvider:
         payload = self._payload(messages, options)
         payload["stream"] = True
         payload.setdefault("stream_options", {"include_usage": True})
+        response_id: str | None = None
+        finish_reason: str | None = None
+        content_parts: list[str] = []
+        # index -> {"id", "type", "function": {"name", "arguments"}} so the
+        # final done chunk's raw= can carry a full assembled message, mirroring
+        # complete()'s raw=data. function.arguments stays the accumulated JSON
+        # *string* (not re-parsed) — OpenAI's own non-streaming response keeps
+        # it a string too, unlike Anthropic which parses tool_use.input.
+        tool_calls: dict[int, dict[str, Any]] = {}
         try:
             async with self._client.stream(
                 "POST", self._chat_path, json=payload
@@ -141,19 +152,76 @@ class OpenAICompatProvider:
                             retryable=False,
                         )
                     model = data.get("model", model)
+                    response_id = data.get("id", response_id)
                     if data.get("usage"):
                         usage = Usage(
                             input_tokens=data["usage"].get("prompt_tokens", 0),
                             output_tokens=data["usage"].get("completion_tokens", 0),
                         )
                     choices = data.get("choices") or []
-                    if choices:
-                        delta = choices[0].get("delta", {}).get("content")
-                        if delta:
-                            yield StreamChunk(
-                                delta=delta, model=model, provider=self.name, raw=data
-                            )
-                yield StreamChunk(done=True, model=model, provider=self.name, usage=usage)
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    delta = choice.get("delta") or {}
+                    text = delta.get("content")
+                    if text:
+                        content_parts.append(text)
+                        yield StreamChunk(
+                            delta=text, model=model, provider=self.name, raw=data
+                        )
+                    # tool_calls was previously dropped entirely — a forced
+                    # tool_choice call (whose only content is this) yielded
+                    # zero content chunks through stream().
+                    for tc in delta.get("tool_calls") or []:
+                        index = tc.get("index", 0)
+                        block = tool_calls.setdefault(
+                            index,
+                            {
+                                "id": None,
+                                "type": "function",
+                                "function": {"name": None, "arguments": ""},
+                            },
+                        )
+                        if tc.get("id"):
+                            block["id"] = tc["id"]
+                        if tc.get("type"):
+                            block["type"] = tc["type"]
+                        fn = tc.get("function") or {}
+                        name = fn.get("name")
+                        if name:
+                            block["function"]["name"] = name
+                        fragment = fn.get("arguments") or ""
+                        block["function"]["arguments"] += fragment
+                        yield StreamChunk(
+                            tool_call=ToolCallDelta(
+                                index=index, id=tc.get("id"), name=name, partial_json=fragment
+                            ),
+                            model=model,
+                            provider=self.name,
+                            raw=data,
+                        )
+                message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "".join(content_parts) or None,
+                }
+                if tool_calls:
+                    message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+                yield StreamChunk(
+                    done=True,
+                    model=model,
+                    provider=self.name,
+                    usage=usage,
+                    finish_reason=finish_reason,
+                    raw={
+                        "id": response_id,
+                        "object": "chat.completion",
+                        "model": model,
+                        "choices": [
+                            {"index": 0, "message": message, "finish_reason": finish_reason}
+                        ],
+                    },
+                )
         except httpx.HTTPError as exc:
             raise ProviderError(
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True

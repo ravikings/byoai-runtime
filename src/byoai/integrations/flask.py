@@ -59,7 +59,7 @@ except ImportError as exc:  # pragma: no cover
 
 from ..errors import ByoAIError, ConfigurationError
 from ..runtime import Runtime
-from ..transport import chunk_to_dict
+from ..transport import chunk_to_dict, has_content
 from ..types import ExecutionResult
 
 logger = logging.getLogger(__name__)
@@ -210,7 +210,7 @@ def stream_response(
         agen = bridge.runtime.stream(input, **execute_kwargs)
         try:
             for chunk in bridge.run_stream(agen):
-                if chunk.done or chunk.delta:
+                if has_content(chunk):
                     yield f"data: {json.dumps(chunk_to_dict(chunk))}\n\n"
         except ByoAIError as exc:
             # Headers are already on the wire; emit the same terminal error

@@ -38,15 +38,18 @@ nothing here is required to keep working code working.
 (`temperature`, `top_p`, ...) — forwarded to the provider and included in the
 exact-match cache fingerprint.
 
-`provider_metadata` is a separate kwarg, forwarded as-is into the provider's
-own request payload (e.g. Anthropic's top-level `metadata` field —
-`{"user_id": ...}` for audit correlation on Anthropic's side). Don't confuse
-it with `metadata=`, which is app-level (`ExecutionResult.metadata`) and
-never reaches the provider. It's Anthropic-shaped, so `GeminiProvider`
-(the only adapter with no `metadata` concept of its own) drops it rather
-than forwarding it — a fallback from Anthropic to Gemini degrades (loses the
-audit tag) instead of failing outright. Other Anthropic-family adapters
-(Bedrock/Vertex) and the OpenAI-compatible adapter forward it as-is.
+`provider_metadata` is a separate kwarg, forwarded into the provider's own
+request payload as Anthropic's top-level `metadata` field (`{"user_id": ...}`
+for audit correlation on Anthropic's side). Don't confuse it with
+`metadata=`, which is app-level (`ExecutionResult.metadata`) and never
+reaches the provider. It's Anthropic-shaped, so every non-Anthropic adapter
+(`GeminiProvider`, `OpenAICompatProvider` — neither has a `metadata` concept
+of its own) drops it rather than forwarding it: a fallback from Anthropic to
+one of these degrades (loses the audit tag) instead of failing outright. Only
+the other Anthropic-family adapters (Bedrock/Vertex) forward it as-is. It's
+also excluded from the exact-match cache fingerprint (unlike the rest of
+`provider_options`) since it never changes what answer comes back — tagging
+otherwise-identical calls with a different `user_id` doesn't defeat caching.
 
 ---
 

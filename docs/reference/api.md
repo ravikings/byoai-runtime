@@ -152,6 +152,16 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 
 ::: byoai.integrations.fastapi.serve_websocket
 
+## Flask integration
+
+::: byoai.integrations.flask.attach
+
+::: byoai.integrations.flask.get_runtime
+
+::: byoai.integrations.flask.execute
+
+::: byoai.integrations.flask.stream_response
+
 ## Robyn integration
 
 ::: byoai.integrations.robyn.attach

@@ -13,9 +13,23 @@ from byoai import Runtime  # noqa: E402
 from byoai.integrations.flask import attach, execute, get_runtime, stream_response  # noqa: E402
 
 
-def make_app() -> Flask:
+@pytest.fixture
+def flask_apps():
+    """Tracks every Flask app attach()ed during a test so its bridge (and the
+    background event-loop thread it owns) gets closed on teardown — otherwise
+    each test leaks a live thread for the rest of the pytest process."""
+    apps: list[Flask] = []
+    yield apps
+    for app in apps:
+        bridge = app.extensions.get("byoai")
+        if bridge is not None:
+            bridge.close()
+
+
+def make_app(track: list[Flask], *, providers=None) -> Flask:
     app = Flask(__name__)
-    attach(app, Runtime(providers=[FakeProvider()]))
+    attach(app, Runtime(providers=providers or [FakeProvider()]))
+    track.append(app)
 
     @app.post("/ask")
     def ask():
@@ -29,16 +43,16 @@ def make_app() -> Flask:
     return app
 
 
-def test_ask_roundtrip():
-    app = make_app()
+def test_ask_roundtrip(flask_apps):
+    app = make_app(flask_apps)
     client = app.test_client()
     response = client.post("/ask", json={"query": "hi"})
     assert response.status_code == 200
     assert response.get_json() == {"content": "hello from fake", "cached": False}
 
 
-def test_sse_stream():
-    app = make_app()
+def test_sse_stream(flask_apps):
+    app = make_app(flask_apps)
     client = app.test_client()
     response = client.post("/ask/stream", json={"query": "hi"})
     assert response.status_code == 200
@@ -52,8 +66,29 @@ def test_sse_stream():
     assert events[-1]["done"] is True
 
 
-def test_attach_twice_on_same_app_returns_same_runtime_and_no_second_bridge():
+def test_sse_stream_carries_tool_call_chunks(flask_apps):
+    # Regression: stream_response()'s SSE filter (`if chunk.done or
+    # chunk.delta:`) silently dropped every tool_call chunk, since one has
+    # delta="" (falsy) and done=False — a forced tool_choice call streamed
+    # over this Flask route got zero tool_call frames.
+    from tests.conftest import ToolCallingProvider
+
+    app = make_app(flask_apps, providers=[ToolCallingProvider()])
+    client = app.test_client()
+    response = client.post("/ask/stream", json={"query": "hi"})
+    body = response.get_data(as_text=True)
+    lines = [line for line in body.split("\n\n") if line.startswith("data:")]
+    events = [json.loads(line[len("data:") :]) for line in lines]
+    tool_events = [e for e in events if "tool_call" in e]
+    assert tool_events == [
+        {"delta": "", "tool_call": {"index": 0, "id": "toolu_1", "name": "answer"}},
+        {"delta": "", "tool_call": {"index": 0, "partial_json": '{"a": 1}'}},
+    ]
+
+
+def test_attach_twice_on_same_app_returns_same_runtime_and_no_second_bridge(flask_apps):
     app = Flask(__name__)
+    flask_apps.append(app)
     runtime = Runtime(providers=[FakeProvider()])
     returned_first = attach(app, runtime)
     bridge_first = app.extensions["byoai"]
@@ -89,12 +124,13 @@ class _ClosableFakeProvider(FakeProvider):
         self.closed = True
 
 
-def test_attach_twice_closes_the_redundant_second_runtime():
+def test_attach_twice_closes_the_redundant_second_runtime(flask_apps):
     # Regression: a second attach() call on an already-attached app returned
     # the existing runtime (correct — asserted above) but silently leaked the
     # redundant second Runtime, which already opened a real client/connection
     # in __init__. attach() now closes it instead.
     app = Flask(__name__)
+    flask_apps.append(app)
     runtime = Runtime(providers=[FakeProvider()])
     attach(app, runtime)
 
@@ -106,7 +142,7 @@ def test_attach_twice_closes_the_redundant_second_runtime():
     assert redundant_provider.closed is True
 
 
-def test_run_stream_closes_underlying_async_generator_on_early_exit():
+def test_run_stream_closes_underlying_async_generator_on_early_exit(flask_apps):
     # Regression: _FlaskBridge.run_stream used to leave the async generator
     # (and the provider stream/connection behind it) unclosed on any exit
     # other than natural exhaustion — e.g. an early client disconnect, where
@@ -128,6 +164,7 @@ def test_run_stream_closes_underlying_async_generator_on_early_exit():
             closed["v"] = True
 
     app = Flask(__name__)
+    flask_apps.append(app)
     runtime = attach(app, Runtime(providers=[FakeProvider()]))
     bridge = app.extensions["byoai"]
     assert isinstance(bridge, _FlaskBridge)

@@ -97,6 +97,25 @@ async def test_cache_hit_preserves_finish_reason():
     assert second.finish_reason == "tool_use"
 
 
+async def test_cache_hit_ignores_differing_provider_metadata():
+    # Regression: provider_metadata= (e.g. {"user_id": ...} for audit
+    # correlation) landed in ctx.state["provider_options"]["metadata"], which
+    # CacheLookup.fingerprint() hashed wholesale — so two otherwise-identical
+    # requests differing only in a per-request audit tag never hit the exact-
+    # match cache, even though provider_metadata never affects what answer
+    # comes back.
+    cache = MemoryCache()
+    provider = FakeProvider()
+    runtime = Runtime(providers=[provider], cache=cache)
+
+    first = await runtime.execute("same query", provider_metadata={"user_id": "u1"})
+    second = await runtime.execute("same query", provider_metadata={"user_id": "u2"})
+
+    assert first.cached is False
+    assert second.cached is True
+    assert provider.calls == 1
+
+
 async def test_lifecycle_events_emitted():
     runtime = make_runtime()
     seen: list[str] = []
@@ -193,6 +212,30 @@ async def test_stream_short_circuit_yields_single_chunk():
     runtime.use(guard)
     chunks = [chunk async for chunk in runtime.stream("hi")]
     assert [c.delta for c in chunks if not c.done] == ["nope"]
+
+
+async def test_stream_propagates_raw_to_final_chunk_and_context():
+    # Regression: Runtime.stream()'s final chunk never carried raw= (unlike
+    # ExecutionResult.raw for execute()), so a REQUEST_COMPLETED subscriber
+    # doing audit logging had no provider response id / full content to read.
+    provider = FakeProvider(raw={"id": "resp_1", "stop_reason": "tool_use"})
+    runtime = Runtime(providers=[provider])
+    seen_ctx = {}
+    runtime.on("request.completed", lambda event, payload: seen_ctx.update(ctx=payload["ctx"]))
+
+    chunks = [chunk async for chunk in runtime.stream("hi")]
+    assert chunks[-1].raw == {"id": "resp_1", "stop_reason": "tool_use"}
+    assert seen_ctx["ctx"].raw_response == {"id": "resp_1", "stop_reason": "tool_use"}
+
+
+async def test_stream_forwards_tool_call_chunks_untouched():
+    from tests.conftest import ToolCallingProvider
+
+    runtime = Runtime(providers=[ToolCallingProvider()])
+    chunks = [chunk async for chunk in runtime.stream("hi")]
+    tool_calls = [c.tool_call for c in chunks if c.tool_call is not None]
+    assert [tc.partial_json for tc in tool_calls] == ["", '{"a": 1}']
+    assert tool_calls[0].id == "toolu_1"
 
 
 async def test_streaming_not_cached_but_execute_is():

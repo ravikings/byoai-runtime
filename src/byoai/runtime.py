@@ -312,15 +312,20 @@ class Runtime:
                 ctx.model = chunk.model or ctx.model
                 ctx.provider = chunk.provider or ctx.provider
                 ctx.finish_reason = chunk.finish_reason
+                ctx.raw_response = chunk.raw
                 if chunk.usage:
                     ctx.usage.add(chunk.usage)
                 # A new chunk (not the provider's raw one) so cached/request_id
                 # — which the provider adapter has no knowledge of — ride the
                 # final frame too, matching ExecutionResult's full result shape.
+                # raw carries forward (e.g. the provider's own response id, full
+                # tool_use content) so REQUEST_COMPLETED subscribers — audit
+                # logging, usage recording — have the same escape hatch
+                # execute() gives via ExecutionResult.raw.
                 yield StreamChunk(
                     done=True, model=ctx.model, provider=ctx.provider, usage=chunk.usage,
                     cached=ctx.cached, request_id=ctx.request_id,
-                    finish_reason=ctx.finish_reason,
+                    finish_reason=ctx.finish_reason, raw=chunk.raw,
                 )
             else:
                 parts.append(chunk.delta)
@@ -333,7 +338,12 @@ class Runtime:
         await self.events.emit(ev.REQUEST_COMPLETED, ctx=ctx)
 
     async def _write_back_cache(self, ctx: RequestContext) -> None:
-        if ctx.cached or ctx.response is None:
+        # A tool-only turn (all content is tool_call chunks, whose delta is
+        # always "") leaves ctx.response == "" rather than None — must be
+        # excluded the same as None, or a semantically-similar later query
+        # gets served this blank string as a cache hit instead of the real
+        # answer/tool call.
+        if ctx.cached or not ctx.response:
             return
         if self.cache is not None:
             key = ctx.state.get(STATE_CACHE_KEY)
