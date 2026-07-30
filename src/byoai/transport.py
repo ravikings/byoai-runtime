@@ -121,7 +121,27 @@ def chunk_to_dict(chunk: Any) -> dict[str, Any]:
         if chunk.finish_reason:
             frame["finish_reason"] = chunk.finish_reason
         return frame
+    if chunk.tool_call is not None:
+        frame = {"delta": chunk.delta, "tool_call": {"index": chunk.tool_call.index}}
+        if chunk.tool_call.id is not None:
+            frame["tool_call"]["id"] = chunk.tool_call.id
+        if chunk.tool_call.name is not None:
+            frame["tool_call"]["name"] = chunk.tool_call.name
+        if chunk.tool_call.partial_json:
+            frame["tool_call"]["partial_json"] = chunk.tool_call.partial_json
+        return frame
     return {"delta": chunk.delta}
+
+
+def has_content(chunk: Any) -> bool:
+    """Whether a StreamChunk carries anything worth emitting as a frame —
+    shared by every transport's SSE loop (this module's own ``stream_frames``,
+    plus the FastAPI/Flask integrations' hand-rolled loops, which stream from
+    ``runtime.stream()`` directly instead of a payload dict and so can't call
+    ``stream_frames`` itself) so a new StreamChunk field never needs updating
+    in more than one place to reach every transport.
+    """
+    return chunk.done or bool(chunk.delta) or chunk.tool_call is not None
 
 
 async def stream_frames(
@@ -130,7 +150,7 @@ async def stream_frames(
     """Stream an execution as JSON-safe frames (transport adds its own framing)."""
     input_value, kwargs = parse_payload(payload)
     async for chunk in runtime.stream(input_value, **kwargs):
-        if chunk.done or chunk.delta:
+        if has_content(chunk):
             yield chunk_to_dict(chunk)
 
 

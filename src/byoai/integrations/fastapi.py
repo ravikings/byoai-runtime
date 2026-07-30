@@ -46,7 +46,7 @@ except ImportError as exc:  # pragma: no cover
 
 from ..errors import ByoAIError, ConfigurationError
 from ..runtime import Runtime
-from ..transport import chunk_to_dict, ws_reply
+from ..transport import chunk_to_dict, has_content, ws_reply
 
 _STATE_ATTR = "byoai"
 
@@ -112,7 +112,7 @@ def stream_response(
     async def event_source():
         try:
             async for chunk in runtime.stream(input, **execute_kwargs):
-                if chunk.done or chunk.delta:
+                if has_content(chunk):
                     yield f"data: {json.dumps(chunk_to_dict(chunk))}\n\n"
         except ByoAIError as exc:
             # Headers are already on the wire; a torn connection would leave the

@@ -11,7 +11,7 @@ import httpx
 from .. import _json as json
 from .._version import USER_AGENT
 from ..errors import ConfigurationError, ProviderError, RateLimitError
-from ..types import Message, ProviderResponse, StreamChunk, Usage
+from ..types import Message, ProviderResponse, StreamChunk, ToolCallDelta, Usage
 from .base import (
     DEFAULT_RETRYABLE_STATUS,
     build_anthropic_system_field,
@@ -134,6 +134,14 @@ class AnthropicProvider:
         model = payload["model"]
         usage = Usage()
         finish_reason: str | None = None
+        response_id: str | None = None
+        # Per-content-block accumulator (index -> block dict), so the final
+        # done chunk's raw= can carry a full response shape — id, every
+        # content block (text and tool_use, the latter's input fully
+        # re-parsed from its accumulated partial_json) — mirroring complete()'s
+        # raw=data instead of leaving streaming callers with nothing to hang
+        # a tool call's final arguments or an audit log's response id on.
+        blocks: dict[int, dict[str, Any]] = {}
         try:
             async with self._client.stream("POST", self._messages_path, json=payload) as response:
                 if response.status_code >= 400:
@@ -154,18 +162,73 @@ class AnthropicProvider:
                     if kind == "message_start":
                         message = data.get("message", {})
                         model = message.get("model", model)
+                        response_id = message.get("id")
                         message_usage = message.get("usage", {})
                         usage.input_tokens = message_usage.get("input_tokens", 0)
                         usage.cache_read_tokens = message_usage.get("cache_read_input_tokens", 0)
                         usage.cache_creation_tokens = message_usage.get(
                             "cache_creation_input_tokens", 0
                         )
+                    elif kind == "content_block_start":
+                        index = data.get("index", 0)
+                        block = data.get("content_block") or {}
+                        blocks[index] = dict(block)
+                        if block.get("type") == "text":
+                            blocks[index]["_text_parts"] = []
+                        elif block.get("type") == "thinking":
+                            blocks[index]["_thinking_parts"] = []
+                            blocks[index]["_signature_parts"] = []
+                        elif block.get("type") == "tool_use":
+                            blocks[index]["_partial_json"] = ""
+                            yield StreamChunk(
+                                tool_call=ToolCallDelta(
+                                    index=index, id=block.get("id"), name=block.get("name")
+                                ),
+                                model=model,
+                                provider=self.name,
+                                raw=data,
+                            )
                     elif kind == "content_block_delta":
+                        index = data.get("index", 0)
                         delta = data.get("delta", {})
                         if delta.get("type") == "text_delta" and delta.get("text"):
+                            text = delta["text"]
+                            block = blocks.setdefault(index, {"type": "text", "_text_parts": []})
+                            block["_text_parts"].append(text)
                             yield StreamChunk(
-                                delta=delta["text"], model=model, provider=self.name, raw=data
+                                delta=text, model=model, provider=self.name, raw=data
                             )
+                        elif delta.get("type") == "input_json_delta":
+                            # input_json_delta was previously dropped entirely — a
+                            # forced tool_choice call (this content type is the
+                            # *only* content a tool-only turn ever produces) yielded
+                            # zero content chunks through stream().
+                            fragment = delta.get("partial_json", "")
+                            block = blocks.setdefault(
+                                index, {"type": "tool_use", "_partial_json": ""}
+                            )
+                            block["_partial_json"] = block.get("_partial_json", "") + fragment
+                            yield StreamChunk(
+                                tool_call=ToolCallDelta(index=index, partial_json=fragment),
+                                model=model,
+                                provider=self.name,
+                                raw=data,
+                            )
+                        elif delta.get("type") in ("thinking_delta", "signature_delta"):
+                            # Extended-thinking content — accumulated into raw["content"]
+                            # only, never surfaced via StreamChunk.delta: unlike text_delta,
+                            # this isn't the visible answer, and Anthropic requires the
+                            # thinking block sent back unmodified on the next turn (when
+                            # interleaved thinking + tool_use is in play), so silently
+                            # reconstructing it empty would corrupt that round-trip.
+                            is_thinking = delta["type"] == "thinking_delta"
+                            key = "_thinking_parts" if is_thinking else "_signature_parts"
+                            field = "thinking" if is_thinking else "signature"
+                            block = blocks.setdefault(
+                                index,
+                                {"type": "thinking", "_thinking_parts": [], "_signature_parts": []},
+                            )
+                            block.setdefault(key, []).append(delta.get(field, ""))
                     elif kind == "message_delta":
                         usage.output_tokens = data.get("usage", {}).get("output_tokens", 0)
                         finish_reason = data.get("delta", {}).get("stop_reason") or finish_reason
@@ -188,12 +251,53 @@ class AnthropicProvider:
                         )
                     elif kind == "message_stop":
                         break
+                content: list[dict[str, Any]] = []
+                for index in sorted(blocks):
+                    block = dict(blocks[index])
+                    text_parts = block.pop("_text_parts", None)
+                    if text_parts is not None:
+                        block["text"] = "".join(text_parts)
+                    thinking_parts = block.pop("_thinking_parts", None)
+                    signature_parts = block.pop("_signature_parts", None)
+                    if thinking_parts is not None:
+                        block["thinking"] = "".join(thinking_parts)
+                    if signature_parts is not None:
+                        block["signature"] = "".join(signature_parts)
+                    partial_json = block.pop("_partial_json", None)
+                    if partial_json is not None:
+                        try:
+                            block["input"] = json.loads(partial_json) if partial_json else {}
+                        except ValueError as exc:
+                            # A caller feeding raw["content"] straight into a tool
+                            # executor expects input to always be a dict — input=None
+                            # would surface as a confusing AttributeError/TypeError
+                            # there instead of a clear error at the point of failure.
+                            raise ProviderError(
+                                f"{self.name}: malformed tool_use input JSON: {exc}",
+                                provider=self.name,
+                                retryable=False,
+                            ) from exc
+                    content.append(block)
                 yield StreamChunk(
                     done=True,
                     model=model,
                     provider=self.name,
                     usage=usage,
                     finish_reason=finish_reason,
+                    raw={
+                        "id": response_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "model": model,
+                        "content": content,
+                        "stop_reason": finish_reason,
+                        "usage": {
+                            "input_tokens": usage.input_tokens,
+                            "output_tokens": usage.output_tokens,
+                            "cache_read_input_tokens": usage.cache_read_tokens,
+                            "cache_creation_input_tokens": usage.cache_creation_tokens,
+                        },
+                    },
                 )
         except httpx.HTTPError as exc:
             raise ProviderError(

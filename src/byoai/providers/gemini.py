@@ -18,6 +18,7 @@ from .base import (
     parse_json_response,
     raise_for_status,
     require_text_content,
+    strip_provider_metadata,
 )
 
 
@@ -88,13 +89,7 @@ class GeminiProvider:
         if system_parts:
             payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
         options.pop("model", None)
-        # metadata= (Runtime.execute()'s provider_metadata=) is Anthropic's
-        # own top-level request field — generateContent has no equivalent and
-        # rejects unrecognized fields outright. Drop it here instead of
-        # blindly forwarding, so a fallback chain that falls through to
-        # Gemini after Anthropic degrades (loses the audit tag) rather than
-        # failing the whole request with a 400.
-        options.pop("metadata", None)
+        strip_provider_metadata(options)
         generation_config = {}
         for byoai_key, gemini_key in (
             ("temperature", "temperature"),
@@ -164,6 +159,7 @@ class GeminiProvider:
         model = options.pop("model", self.model)
         payload = self._payload(messages, options)
         usage = Usage()
+        finish_reason: str | None = None
         try:
             async with self._client.stream(
                 "POST", f"/models/{model}:streamGenerateContent", params={"alt": "sse"},
@@ -210,12 +206,23 @@ class GeminiProvider:
                         )
                     if data.get("usageMetadata"):
                         usage = self._extract_usage(data)
+                    candidates = data.get("candidates") or []
+                    if candidates:
+                        finish = candidates[0].get("finishReason")
+                        if finish:
+                            finish_reason = finish.lower() if isinstance(finish, str) else finish
                     delta = self._extract_text(data)
                     if delta:
                         yield StreamChunk(
                             delta=delta, model=model, provider=self.name, raw=data
                         )
-                yield StreamChunk(done=True, model=model, provider=self.name, usage=usage)
+                yield StreamChunk(
+                    done=True,
+                    model=model,
+                    provider=self.name,
+                    usage=usage,
+                    finish_reason=finish_reason,
+                )
         except httpx.HTTPError as exc:
             raise ProviderError(
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True

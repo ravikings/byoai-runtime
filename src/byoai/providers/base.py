@@ -32,6 +32,7 @@ __all__ = [
     "has_auth_header",
     "build_anthropic_system_field",
     "require_text_content",
+    "strip_provider_metadata",
 ]
 
 
@@ -140,19 +141,42 @@ def require_text_content(message: Message, *, provider: str) -> str:
     (Anthropic's tool_use/tool_result/image blocks) — only the Anthropic
     adapters handle that today. Every other adapter needs plain text; call
     this instead of using ``message.content`` directly so a stray
-    list-valued message fails with a clear ``ConfigurationError`` rather
-    than being forwarded as a malformed (Anthropic-shaped, not
-    provider-shaped) request body.
+    list-valued message fails with a clear ``ProviderError`` rather than
+    being forwarded as a malformed (Anthropic-shaped, not provider-shaped)
+    request body.
+
+    Raises ``ProviderError`` (non-retryable), not ``ConfigurationError``: a
+    prior turn's Anthropic tool_use/tool_result content landing on a message
+    that later reaches a non-Anthropic fallback provider is a per-request,
+    per-provider incompatibility — exactly what ``ProviderRouter`` falls
+    through on — not a setup-time misconfiguration. ``ConfigurationError``
+    here would escape the router's ``except ProviderError`` and hard-fail the
+    whole request instead of trying the next provider in the chain.
     """
     if not isinstance(message.content, str):
-        from ..errors import ConfigurationError
+        from ..errors import ProviderError
 
-        raise ConfigurationError(
+        raise ProviderError(
             f"{provider} requires plain-text message content, got a list of "
             f"content blocks on a {message.role!r} message — content blocks "
-            "are only supported by the Anthropic adapters"
+            "are only supported by the Anthropic adapters",
+            provider=provider,
+            retryable=False,
         )
     return message.content
+
+
+def strip_provider_metadata(options: dict[str, Any]) -> None:
+    """Drop ``metadata=`` (``Runtime.execute()``'s ``provider_metadata=``,
+    Anthropic's own top-level request field for audit correlation) in place.
+
+    Every non-Anthropic adapter needs this: Gemini's API rejects unrecognized
+    fields outright, and this one also fronts several strict-schema OpenAI-
+    compatible backends (Azure, vLLM, ...) that may 400 on it too — call this
+    instead of blindly forwarding `options` so a fallback chain degrading to
+    one of these providers after `provider_metadata=` doesn't fail outright.
+    """
+    options.pop("metadata", None)
 
 
 def build_anthropic_system_field(
@@ -189,7 +213,11 @@ def build_anthropic_system_field(
         blocks: list[dict[str, Any]] = []
         for c in system_msgs:
             blocks.extend(c)  # type: ignore[arg-type]
-        return blocks
+        # An empty blocks list (every system message's content was itself an
+        # empty list) must not become payload["system"] = [] — Anthropic's API
+        # rejects an empty system array; None omits the field entirely, same
+        # as "no system prompt at all".
+        return blocks or None
     joined = "\n\n".join(system_msgs)  # type: ignore[arg-type]
     if cache_system:
         return [{"type": "text", "text": joined, "cache_control": {"type": "ephemeral"}}]

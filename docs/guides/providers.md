@@ -130,6 +130,42 @@ so it's deliberately excluded from the HTTP/SSE/WebSocket transport dialect (`by
 stream's final frame — `StreamChunk.raw` on individual deltas is adapter-specific and likewise
 excluded from the transport dialect.
 
+### Streaming a tool call
+
+`runtime.stream(messages, tools=[...], tool_choice={...})` streams a tool-use turn the same way
+it streams text, on both Anthropic (native + Bedrock/Vertex) and every OpenAI-compatible provider
+(OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter, LiteLLM proxy — Gemini doesn't support tool
+calling yet, streaming or not). Each provider's incremental tool-call event becomes a
+`StreamChunk` with `tool_call` set instead of `delta` — Anthropic's `content_block_start`/
+`input_json_delta`, OpenAI's `delta.tool_calls[]` — so a forced `tool_choice` call, whose only
+content *is* tool-use JSON, is nothing but `tool_call` chunks with no `delta` chunks at all.
+`ToolCallDelta.id`/`.name` are only on a tool call's first chunk; every following chunk for that
+`index` carries the next `partial_json` fragment. A turn can stream more than one tool call in
+parallel (interleaved by `index`) unless `tool_choice` forces exactly one, so key the
+accumulator by `index` rather than flattening every fragment into a single string — concatenate
+and `json.loads()` each call's fragments once, on the final `done` chunk. `tool_choice`'s shape
+is provider-specific either way (Anthropic: `{"type": "tool", "name": "answer"}`; OpenAI:
+`{"type": "function", "function": {"name": "answer"}}`):
+
+```python
+calls: dict[int, dict] = {}
+async for chunk in runtime.stream(messages, tools=[...], tool_choice={"type": "tool", "name": "answer"}):
+    if chunk.tool_call:
+        call = calls.setdefault(chunk.tool_call.index, {"id": None, "name": None, "json": ""})
+        call["id"] = call["id"] or chunk.tool_call.id
+        call["name"] = call["name"] or chunk.tool_call.name
+        call["json"] += chunk.tool_call.partial_json
+    if chunk.done:
+        arguments_by_index = {i: json.loads(c["json"]) for i, c in calls.items()}
+```
+
+The final chunk's `raw` (and, in the pipeline, `ctx.raw_response`) carries the provider's full
+response — same escape hatch `ExecutionResult.raw` gives `execute()`, now available for a
+streaming call too, so a `REQUEST_COMPLETED` handler can read the provider's response id for
+audit logging without hand-accumulating one. Over HTTP/SSE/WebSocket, a `tool_call` frame looks
+like `{"delta": "", "tool_call": {"index": 0, "id": "...", "name": "...", "partial_json": "..."}}`
+— `id`/`name` only appear on the block's first frame, `partial_json` only when non-empty.
+
 ## Tuning retries
 
 ```python

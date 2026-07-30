@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from byoai.errors import ProviderError
-from byoai.types import Message, ProviderResponse, StreamChunk, Usage
+from byoai.types import Message, ProviderResponse, StreamChunk, ToolCallDelta, Usage
 
 
 class FakeProvider:
@@ -62,10 +62,33 @@ class FakeProvider:
             model=self.model,
             provider=self.name,
             usage=Usage(input_tokens=10, output_tokens=5),
+            finish_reason=self.finish_reason,
+            raw=self.raw,
         )
 
     async def close(self) -> None:
         pass
+
+
+class ToolCallingProvider(FakeProvider):
+    """A FakeProvider whose stream() yields only tool_call chunks (id/name on
+    the first, a partial_json fragment on the second) followed by done — no
+    text deltas at all, matching a forced tool_choice turn."""
+
+    async def stream(self, messages: list[Message], **options: Any) -> AsyncIterator[StreamChunk]:
+        self.calls += 1
+        self._maybe_fail()
+        yield StreamChunk(
+            tool_call=ToolCallDelta(index=0, id="toolu_1", name="answer"),
+            model=self.model,
+            provider=self.name,
+        )
+        yield StreamChunk(
+            tool_call=ToolCallDelta(index=0, partial_json='{"a": 1}'),
+            model=self.model,
+            provider=self.name,
+        )
+        yield StreamChunk(done=True, model=self.model, provider=self.name)
 
 
 @pytest.fixture

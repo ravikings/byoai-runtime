@@ -158,11 +158,19 @@ class CacheLookup:
         self.extra_fingerprint = extra_fingerprint
 
     def fingerprint(self, ctx: RequestContext) -> str:
+        # provider_options["metadata"] is Runtime.execute()'s provider_metadata=
+        # (e.g. {"user_id": ...} for audit correlation) — forwarded into the
+        # provider payload but never affects what answer comes back, so it must
+        # not be part of the key: an app tagging every call with a per-request
+        # id would otherwise defeat exact-match caching entirely.
+        provider_options = ctx.state.get("provider_options")
+        if isinstance(provider_options, dict) and "metadata" in provider_options:
+            provider_options = {k: v for k, v in provider_options.items() if k != "metadata"}
         basis: dict[str, Any] = {
             "messages": [m.to_dict() for m in ctx.messages],
             "model": ctx.model,
             "pipeline": ctx.pipeline_name,
-            "provider_options": ctx.state.get("provider_options"),
+            "provider_options": provider_options,
             "filters": ctx.state.get("filters"),
         }
         if self.extra_fingerprint is not None:

@@ -39,9 +39,11 @@ def create_app():
 
 The SSE stream emits `data: {"delta": "..."}` events per token batch, then a final
 `data: {"done": true, "usage": {...}}` event — same frame shape as the FastAPI/Robyn
-integrations. `stream_response()` also accepts `headers=` to override or drop the default
-buffering-safe response headers (`Cache-Control`, `X-Accel-Buffering`) — pass `{}` to omit
-them entirely.
+integrations. A tool-use turn emits `data: {"delta": "", "tool_call": {"index": 0, ...}}`
+events instead (see `docs/guides/providers.md`'s "Streaming a tool call" section for the
+full `tool_call` shape). `stream_response()` also accepts `headers=` to override or drop
+the default buffering-safe response headers (`Cache-Control`, `X-Accel-Buffering`) — pass
+`{}` to omit them entirely.
 
 ## Why an application factory
 

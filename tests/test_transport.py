@@ -115,6 +115,26 @@ async def test_stream_frames_short_circuit_marks_cached():
     assert frames[-1]["provider"] == "cached-provider"
 
 
+async def test_stream_frames_carries_tool_call_chunks():
+    # Regression: stream_frames()'s filter (`if chunk.done or chunk.delta:`)
+    # silently dropped any chunk whose only content was a tool_call, since
+    # such a chunk has delta="" (falsy) and done=False — the exact same class
+    # of bug the provider adapters had before being fixed to emit tool_call
+    # chunks in the first place. A forced tool_choice call streamed over
+    # HTTP/SSE/WebSocket got zero tool_call frames even though the Python API
+    # (runtime.stream() directly) worked correctly.
+    from tests.conftest import ToolCallingProvider
+
+    runtime = Runtime(providers=[ToolCallingProvider()])
+    frames = [frame async for frame in stream_frames(runtime, {"input": "hi"})]
+    tool_frames = [f for f in frames if "tool_call" in f]
+    assert tool_frames == [
+        {"delta": "", "tool_call": {"index": 0, "id": "toolu_1", "name": "answer"}},
+        {"delta": "", "tool_call": {"index": 0, "partial_json": '{"a": 1}'}},
+    ]
+    assert frames[-1]["done"] is True
+
+
 async def test_sse_stream_lines():
     runtime = Runtime(providers=[FakeProvider(reply="x")])
     lines = [line async for line in sse_stream(runtime, {"input": "hi"})]

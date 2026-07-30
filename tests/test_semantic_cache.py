@@ -26,9 +26,9 @@ async def toy_embedder(text: str) -> list[float]:
     return _DIRECTIONS.get(text.lower(), [0.0, 0.0, 1.0])
 
 
-def make_runtime(**kwargs) -> Runtime:
+def make_runtime(*, providers=None, **kwargs) -> Runtime:
     return Runtime(
-        providers=[FakeProvider(reply="the SLA answer")],
+        providers=providers or [FakeProvider(reply="the SLA answer")],
         semantic_cache={"provider": "memory", "threshold": 0.9, "capacity": 100},
         embedder=toy_embedder,
         **kwargs,
@@ -105,6 +105,26 @@ async def test_streamed_response_feeds_intent_cache():
     assert provider.calls == 1
     text = "".join(c.delta for c in chunks if not c.done)
     assert text.strip() == "the SLA answer"
+
+
+async def test_tool_only_streamed_turn_does_not_poison_intent_cache():
+    # Regression: a tool-only streamed turn (no text deltas at all — every
+    # chunk carries a tool_call, whose delta defaults to "") left
+    # ctx.response == "" rather than None, and _write_back_cache only
+    # excluded None. A later semantically-similar query then got served this
+    # blank string as an intent-cache hit instead of triggering a fresh call.
+    from tests.conftest import ToolCallingProvider
+
+    runtime = make_runtime(providers=[ToolCallingProvider()])
+    assert runtime.router is not None
+    provider = cast(ToolCallingProvider, runtime.router.providers[0])
+
+    _ = [c async for c in runtime.stream("What are our SLA terms?")]
+    assert provider.calls == 1
+    # A similar later query must NOT hit the (would-be-blank) intent cache —
+    # it should reach the provider again, same as any other miss.
+    _ = [c async for c in runtime.stream("Tell me about our SLAs")]
+    assert provider.calls == 2
 
 
 @pytest.mark.parametrize(

@@ -64,15 +64,31 @@ class FakeMessagesAPI:
 
 
 class _FakeStream:
+    """Mimics anthropic.MessageStream's ``async for event in stream`` raw
+    event iteration — the only thing _AnthropicSDKProviderBase.stream()
+    actually consumes. ``events=`` accepts plain text deltas (synthesized
+    into text_delta events below) or raw SimpleNamespace event objects
+    (tool-call tests).
+    """
+
     def __init__(self, events, exc, final_message):
         self._exc = exc
         self._final_message = final_message
-        self.text_stream = self._gen()
         self._events = events
 
-    async def _gen(self):
+    def __aiter__(self):
+        return self._event_gen()
+
+    async def _event_gen(self):
         for delta in self._events:
-            yield delta
+            if isinstance(delta, str):
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    index=0,
+                    delta=SimpleNamespace(type="text_delta", text=delta),
+                )
+            else:
+                yield delta
         if self._exc:
             raise self._exc
 
@@ -143,6 +159,41 @@ async def test_bedrock_stream_yields_deltas_then_done_with_usage():
     assert chunks[-1].done is True
     assert chunks[-1].usage is not None
     assert chunks[-1].usage.total_tokens == 8
+
+
+async def test_bedrock_stream_yields_tool_call_deltas_instead_of_dropping_them():
+    # Regression: stream() previously iterated only stream.text_stream, which
+    # silently drops input_json_delta events entirely — a forced tool_choice
+    # turn (whose only content is tool_use/input_json_delta) yielded zero
+    # content chunks.
+    events = [
+        SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block=SimpleNamespace(type="tool_use", id="toolu_1", name="answer"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="input_json_delta", partial_json='{"a'),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="input_json_delta", partial_json='nswer": 42}'),
+        ),
+    ]
+    final = make_response(stop_reason="tool_use")
+    api = FakeMessagesAPI(stream_events=events, response=final)
+    provider = AnthropicBedrockProvider(model="m", client=FakeClient(api))
+    chunks = [c async for c in provider.stream(MESSAGES)]
+
+    tool_calls = [c.tool_call for c in chunks if c.tool_call is not None]
+    assert len(tool_calls) == 3
+    assert tool_calls[0].id == "toolu_1"
+    assert tool_calls[0].name == "answer"
+    assert "".join(tc.partial_json for tc in tool_calls[1:]) == '{"answer": 42}'
+    assert chunks[-1].raw is final
 
 
 async def test_bedrock_stream_error_wrapped():

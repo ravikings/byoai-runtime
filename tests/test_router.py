@@ -38,6 +38,30 @@ async def test_non_retryable_skips_retries():
     assert primary.calls == 1
 
 
+async def test_list_content_incompatibility_falls_through_not_hard_fails():
+    # Regression: a message with list-valued content (Anthropic tool_use/
+    # tool_result blocks from a prior turn) reaching a non-Anthropic provider
+    # in a fallback chain used to raise ConfigurationError from
+    # require_text_content(), which ProviderRouter's `except ProviderError`
+    # never caught — the whole request hard-failed instead of falling
+    # through to a provider that can actually handle it.
+    from byoai.providers.openai_compat import OpenAICompatProvider
+
+    incompatible = OpenAICompatProvider(model="m", api_key="k")
+    fallback = FakeProvider(name="fallback", reply="from fallback")
+    router = ProviderRouter([incompatible, fallback], retry_policy=FAST)
+    blocky = [
+        Message(
+            role="user",
+            content=[{"type": "tool_use", "id": "x", "name": "y", "input": {}}],
+        )
+    ]
+    response = await router.complete(blocky)
+    assert response.content == "from fallback"
+    assert response.provider == "fallback"
+    await incompatible.close()
+
+
 async def test_all_providers_failed():
     router = ProviderRouter(
         [FakeProvider(name="a", fail_times=99), FakeProvider(name="b", fail_times=99)],

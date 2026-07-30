@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ..errors import ConfigurationError, ProviderError
-from ..types import Message, ProviderResponse, StreamChunk, Usage
+from ..types import Message, ProviderResponse, StreamChunk, ToolCallDelta, Usage
 from .base import DEFAULT_RETRYABLE_STATUS, build_anthropic_system_field, raise_for_status
 
 # 529 = Anthropic's "overloaded" status, retryable like a 503 — same as the
@@ -43,6 +43,17 @@ class _AnthropicSDKProviderBase:
     _client: Any
     _owns_client: bool
     _retryable_status: frozenset[int]
+
+    @staticmethod
+    def _sdk_usage(usage: Any) -> Usage:
+        """Shared by complete()/stream() — both read the same fields off an
+        SDK usage object (``response.usage``/``final.usage``)."""
+        return Usage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        )
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
         chat = [m.to_dict() for m in messages if m.role != "system"]
@@ -77,14 +88,7 @@ class _AnthropicSDKProviderBase:
             content=content,
             model=response.model,
             provider=self.name,
-            usage=Usage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-                cache_creation_tokens=(
-                    getattr(response.usage, "cache_creation_input_tokens", 0) or 0
-                ),
-            ),
+            usage=self._sdk_usage(response.usage),
             finish_reason=response.stop_reason,
             raw=response,
         )
@@ -98,9 +102,40 @@ class _AnthropicSDKProviderBase:
         model = payload["model"]
         try:
             async with self._client.messages.stream(**payload) as stream:
-                async for text in stream.text_stream:
-                    if text:
-                        yield StreamChunk(delta=text, model=model, provider=self.name)
+                # Raw SDK events, not stream.text_stream — text_stream only
+                # surfaces text_delta and silently drops input_json_delta, so a
+                # forced tool_choice call (the only content a tool-only turn
+                # produces) yielded zero content chunks through stream().
+                async for event in stream:
+                    is_tool_start = (
+                        event.type == "content_block_start"
+                        and event.content_block.type == "tool_use"
+                    )
+                    if is_tool_start:
+                        block = event.content_block
+                        yield StreamChunk(
+                            tool_call=ToolCallDelta(
+                                index=event.index, id=block.id, name=block.name
+                            ),
+                            model=model,
+                            provider=self.name,
+                            raw=event,
+                        )
+                    elif event.type == "content_block_delta":
+                        delta = event.delta
+                        if delta.type == "text_delta" and delta.text:
+                            yield StreamChunk(
+                                delta=delta.text, model=model, provider=self.name, raw=event
+                            )
+                        elif delta.type == "input_json_delta":
+                            yield StreamChunk(
+                                tool_call=ToolCallDelta(
+                                    index=event.index, partial_json=delta.partial_json
+                                ),
+                                model=model,
+                                provider=self.name,
+                                raw=event,
+                            )
                 final = await stream.get_final_message()
         except anthropic.APIStatusError as exc:
             raise_for_status(
@@ -115,15 +150,9 @@ class _AnthropicSDKProviderBase:
             done=True,
             model=final.model,
             provider=self.name,
-            usage=Usage(
-                input_tokens=final.usage.input_tokens,
-                output_tokens=final.usage.output_tokens,
-                cache_read_tokens=getattr(final.usage, "cache_read_input_tokens", 0) or 0,
-                cache_creation_tokens=(
-                    getattr(final.usage, "cache_creation_input_tokens", 0) or 0
-                ),
-            ),
+            usage=self._sdk_usage(final.usage),
             finish_reason=final.stop_reason,
+            raw=final,
         )
 
     async def close(self) -> None:
