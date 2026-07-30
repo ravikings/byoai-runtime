@@ -270,6 +270,46 @@ async def test_semantic_cache_non_cosine_metric_requires_explicit_threshold():
         )
 
 
+async def test_semantic_cache_plugin_with_non_cosine_default_metric_still_requires_threshold(
+    monkeypatch,
+):
+    # Regression: the guard used to re-derive the metric default ("cosine")
+    # from the raw config dict — semantic_cache.get("metric", "cosine") —
+    # rather than the store the dict actually built. A plugin-provided
+    # semantic cache whose own default metric isn't cosine, configured with
+    # no "metric" key in the dict at all (nothing to read), used to skip the
+    # guard entirely: "cosine" != "cosine" was always False.
+    class FakeEntryPoint:
+        name = "my_plugin"
+
+        @staticmethod
+        def load():
+            return lambda config: FakePluginStore()
+
+    class FakePluginStore:
+        metric = "euclidean"  # this plugin's own non-cosine default
+
+        async def find(self, embedding, *, threshold):
+            return None
+
+        async def add(self, embedding, response):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "importlib.metadata.entry_points",
+        lambda *, group: [FakeEntryPoint()] if group == "byoai.semantic_caches" else [],
+    )
+    with pytest.raises(ConfigurationError):
+        Runtime(
+            providers=[FakeProvider()],
+            semantic_cache={"provider": "my_plugin"},  # no "metric" key to read
+            embedder=toy_embedder,
+        )
+
+
 async def test_semantic_cache_non_cosine_metric_with_explicit_threshold_is_fine():
     runtime = Runtime(
         providers=[FakeProvider()],

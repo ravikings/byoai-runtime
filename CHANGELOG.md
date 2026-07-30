@@ -29,6 +29,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `azure_openai` provider preset raises `ConfigurationError` at construction when no
   `api_key`/`$AZURE_OPENAI_API_KEY` resolves, instead of sending an empty `api-key` header and
   failing later with a provider-side 401.
+- `PineconeVectorStore` raises `ConfigurationError` naming `host`/`api_key` (or `$PINECONE_API_KEY`)
+  when either is missing and no `client=` is supplied, instead of a bare `TypeError` from a missing
+  required kwarg — matches the fail-fast UX every other provider/vector adapter already has.
+- `transport.parse_payload` raises `ConfigurationError` if `payload["options"]` contains a
+  reserved field (`pipeline`, `session_id`, `user_id`, `model`, `filters`) *that also has a
+  top-level value set* — instead of silently letting `options` override it. The check is scoped
+  to an actual collision, not just the key's presence: `options={"model": ...}` with no top-level
+  `model` at all is a legitimate way to set it, same as before. This is the shared payload dialect
+  behind FastAPI, Robyn, MCP, and queue workers, so the fix applies everywhere at once.
+- `OpenAICompatEmbedder.embed_batch()` now reorders the response by each item's own `"index"`
+  field instead of trusting response order (falling back to position when absent, unchanged from
+  before). A self-hosted OpenAI-compatible backend that returns embeddings out of request order
+  previously mismatched a vector to the wrong input text with no error — this feeds the semantic
+  cache and vector retrieval, so the corruption was silent downstream too.
+- README's vector-database list no longer claims Milvus/Weaviate/Chroma/Elasticsearch/OpenSearch/
+  Azure AI Search/LanceDB support — none of those adapters exist (`src/byoai/vector/` only ever
+  had `pgvector`/`pinecone`/`qdrant`). Trimmed to what actually ships, with a pointer to the
+  `byoai.vector_stores` plugin mechanism for anything else.
+- `Pipeline.remove()`/`.replace()` accept an optional `name=` alongside `stage_type` (either
+  alone, or both together). Matching by `stage_type` alone hits every stage of that type — since
+  `add()` wraps every bare function in the same `FunctionStage` class, a pipeline with two or
+  more function stages had no way to target just one; `remove(FunctionStage)` silently dropped
+  all of them. `name=` (a bare function's stage name defaults to `fn.__name__`) picks one out.
+  Calling either with neither `stage_type` nor `name` — or `.replace()` with no `replacement` —
+  now raises `ConfigurationError` instead of silently matching/replacing nothing.
+- `docs/guides/workers.md` now documents two `RedisStreamQueue`/`RuntimeWorker` gaps that were
+  previously silent: (1) "at-least-once" doesn't cover a worker process crashing mid-job — there's
+  no `XCLAIM`/`XAUTOCLAIM` reclaim, so a crashed consumer's pending entries are never picked up by
+  a fresh one (a fresh `consumer=` name, random by default, only reads new entries); (2)
+  `RuntimeWorker` never closes the queue's own connection, since it doesn't own the queue's
+  lifecycle — `await queue.close()` is on the caller.
 - CI now gates on `pyright` (previously `continue-on-error`, tracked as a known gap). Fixed the
   ~60 pre-existing type errors this surfaced — mostly Optional-narrowing gaps around
   reassigned-parameter patterns in the Redis-backed adapters (`cache/redis.py`,
@@ -41,8 +72,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a caller-supplied auth header (this adapter's own, any capitalization, or a generic
   `Authorization`) in `default_headers=` — an unrelated header (e.g. a tracing header) no
   longer silently disables the check.
+- `PgVectorStore.search()` no longer stalls the event loop building the embedding literal for
+  large vectors — a 1536-dim `text-embedding-3-small` embedding measures ~270-370us of blocking
+  Python-level work with no `await` point, which stalls every other concurrent request on the
+  same worker, not just this one. Offloaded to a thread above 1024 dimensions — a threshold
+  picked from measuring `asyncio.to_thread`'s own ~35-40us fixed overhead against the inline
+  cost at each size, since offloading below that point makes *this* request slower (1.5-1.7x at
+  256-512 dims) for a blocking window barely worth avoiding; the ratio only flattens out to
+  ~1.1-1.2x, where offloading is unambiguously worth it, from 1024 dims up. Also hoisted the SQL
+  query's invariant parts (column list, table, distance expression — fixed for the store's
+  lifetime) out of the per-call f-string building; only the `WHERE`/`LIMIT` parts, which
+  genuinely vary per request, are still built per call. (`table`/`schema_map`/`metric` are now
+  properties instead of plain attributes, so mutating one after construction — e.g. `store.metric
+  = "l2"` — still takes effect on the next `search()` instead of continuing to use what
+  `__init__` saw once its SQL got cached.)
+
+### Security
+- `PgVectorStore`'s connection-failure path no longer risks leaking a DSN's embedded password
+  into logs. `asyncpg.create_pool()` failing (bad credentials, malformed DSN) previously
+  propagated asyncpg's raw exception uncaught — which can echo the DSN it was given back into
+  its own message — straight through `search()`'s `except Exception` wrapping into
+  `VectorStoreError`'s text. Now caught at the source and redacted
+  (`postgresql://user:pass@host` → `postgresql://***@host`) before it can reach any exception
+  message.
 
 ### Added
+- `Message` gained `tool_call_id`/`tool_calls`, completing the OpenAI-compatible family's
+  tool-calling round trip. Streaming already assembled `ToolCallDelta`s into a full
+  `tool_calls` block; there was previously no way to send that block plus the tool's result
+  back — `Message` had no `tool_call_id` field, `content` couldn't be `None` (the type
+  didn't allow it even though OpenAI's own tool-call-only assistant turns require it), and
+  `_coerce_message`/`_is_dropped_tool_call_turn` silently dropped exactly that shape as if it
+  were stale history. `OpenAICompatProvider._payload()` now accepts `content=None` only on an
+  assistant turn with `tool_calls` set and requires `tool_call_id` on every `"tool"` message,
+  raising `ProviderError` naming the actual problem instead of a generic 400 from the API. See
+  `docs/guides/providers.md`'s new "Sending an OpenAI-compatible tool result back" section for
+  the worked example (mirrors the existing Anthropic content-block one). Along the way,
+  `_coerce_message` also stopped silently dropping a dict message's `name` key, which `Message`
+  already had a field for. `_merge_messages` (the seam a dropped stale turn leaves behind)
+  concatenates `tool_calls` from both sides instead of keeping only one via `or` — two
+  independently-live tool-call turns can legitimately land on opposite sides of the same merge
+  when a genuinely-stale turn between them gets dropped, and `or` silently discarded whichever
+  side evaluated second.
 - `MemorySemanticCache`/`RedisSemanticCache` gained `metric=` — `"cosine"` (default, unchanged
   behavior), `"dot"`, `"euclidean"`, or a bare callable `(matrix, vector) -> scores`. Scoring was
   previously hardcoded to cosine with no override. Also fixes a latent bug surfaced while adding
@@ -185,6 +256,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocols.
 
 ### Fixed
+- `ProviderRouter.complete()`/`.stream()` pass a shallow copy of `self.providers` to a custom
+  `selection=` callable instead of the live list. A callable that mutates its argument in place
+  (`.sort()`, `.pop()`, `del providers[i]`) instead of returning a new sequence — plausible for
+  "drop the provider I consider unhealthy for this call" — used to permanently corrupt the
+  router's own provider order/membership for every future call, not just the one it ran for,
+  with no error raised either way.
+- `MemorySemanticCache`'s `metric=` docstring now calls out that a custom callable's cost isn't
+  accounted for by the inline-vs-thread offload decision — `_OFFLOAD_MIN_ROWS` is calibrated for
+  the built-in presets' numpy matrix-vector product, so an expensive custom scorer with a small
+  cache runs inline (and can stall the event loop) the same as it would past the threshold if
+  it's slow. (A first pass made offloading unconditional for any custom callable — reverted:
+  that traded a narrow, speculative risk for a guaranteed latency regression on the far more
+  common case of a small cache with a cheap custom scorer. Documented instead.)
+- `Runtime`'s non-cosine-metric threshold guard (`semantic_cache={"metric": ..., "threshold":
+  ...}` required together) now reads the metric the store actually resolved to
+  (`self.semantic_cache.metric`) instead of re-deriving a `"cosine"` default from the raw config
+  dict. A `byoai.semantic_caches` plugin (or any future built-in) whose own default metric isn't
+  cosine, configured with no `"metric"` key in the dict for the guard to see, used to skip the
+  check it exists for — silently applying the cosine-calibrated default threshold (0.92) to a
+  metric it doesn't fit, so every lookup missed forever with no error.
+- `RuntimeWorker._process()` no longer silently loses a job's result if `queue.push_result()`/
+  `queue.ack()` raises after the runtime already answered (e.g. a transient Redis blip). That
+  exception used to propagate out of a task nobody awaits (`_drain()`'s `asyncio.gather(...,
+  return_exceptions=True)` collected and discarded it too), so the failure was invisible beyond
+  asyncio's generic "Task exception was never retrieved" warning — a caller polling
+  `read_result()` just hung with no clue why. Now caught, logged (`logger.exception` on the
+  `byoai.workers` logger), and counted on the new `RuntimeWorker.errors`, distinct from
+  `processed`/`failed` (which track the runtime's own outcome, not result delivery).
 - `ExecutionResult.content`'s docstring now calls out its divergence from `anthropic.Message.
   content` directly (list of typed blocks vs. a flattened `str`, with a pointer to `raw` and
   the providers guide's worked tool-use example) — previously only documented in the guide, so

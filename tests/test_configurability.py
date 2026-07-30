@@ -285,6 +285,17 @@ def test_redis_sentinels_given_without_sentinel_mode_raises():
         make_redis_client(sentinels=[("host", 26379)], service_name="mymaster")
 
 
+def test_pinecone_without_host_or_api_key_raises(monkeypatch):
+    from byoai.errors import ConfigurationError
+    from byoai.vector.pinecone import PineconeVectorStore
+
+    monkeypatch.delenv("PINECONE_API_KEY", raising=False)
+    with pytest.raises(ConfigurationError):
+        PineconeVectorStore(host="https://x.test")  # api_key missing
+    with pytest.raises(ConfigurationError):
+        PineconeVectorStore(api_key="k")  # host missing
+
+
 def test_azure_openai_without_api_key_raises(monkeypatch):
     from byoai.config import build_provider
     from byoai.errors import ConfigurationError

@@ -26,7 +26,8 @@ import asyncio
 import base64
 import struct
 import time
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from .._config_resolve import resolve_preset
 from ..errors import CacheError, ConfigurationError
@@ -91,7 +92,13 @@ class SemanticCacheStore(Protocol):
 class MemorySemanticCache:
     """Ring-buffer semantic cache: fixed ``capacity``, oldest entries evicted.
 
-    TTL is wall-clock seconds per entry (None = no expiry). ``metric`` selects
+    TTL is wall-clock seconds per entry (None = no expiry) — note the
+    constructor arg here is ``ttl``, not ``default_ttl`` like
+    :class:`~byoai.cache.memory.MemoryCache`/
+    :class:`~byoai.cache.redis.RedisCache`: this store has no per-call
+    ``ttl=`` override to be a *default* for (:meth:`add` takes no ``ttl=``
+    param), so there's only ever the one constructor-level value. ``metric``
+    selects
     how a query vector is scored against stored ones — a preset name or a
     bare callable:
 
@@ -106,7 +113,13 @@ class MemorySemanticCache:
     * a bare callable ``(matrix, vector) -> scores``, one score per stored
       row, higher = more similar — receives raw (non-normalized) vectors.
       Whatever range your callable produces is the range ``threshold`` gets
-      compared against.
+      compared against. Keep it cheap: :meth:`find` only offloads scoring to
+      a worker thread past ``_OFFLOAD_MIN_ROWS`` entries, a threshold sized
+      for the built-in presets' numpy matrix-vector product — a custom
+      callable doing real per-row work in Python runs inline (and can stall
+      the event loop) below that row count the same as it would above it if
+      it's expensive, since there's no way to know a callable's cost ahead
+      of time.
     """
 
     def __init__(

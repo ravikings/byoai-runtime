@@ -238,12 +238,7 @@ cache_config = {
 * **PostgreSQL + pgvector**
 * **Pinecone**
 * **Qdrant**
-* **Milvus**
-* **Weaviate**
-* **Chroma**
-* **Elasticsearch / OpenSearch**
-* **Azure AI Search**
-* **LanceDB**
+* Anything else via a `byoai.vector_stores` plugin — see [Vector stores](docs/guides/vector-stores.md#custom-adapters-via-plugins).
 
 ### LLM Providers
 * **OpenAI**

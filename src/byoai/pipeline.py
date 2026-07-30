@@ -14,7 +14,7 @@ from typing import Protocol, runtime_checkable
 
 from . import events as ev
 from .context import RequestContext
-from .errors import ByoAIError, PipelineError
+from .errors import ByoAIError, ConfigurationError, PipelineError
 from .events import EventBus
 
 
@@ -61,12 +61,42 @@ class Pipeline:
         self._stages.append(stage)  # type: ignore[arg-type]
         return self
 
-    def remove(self, stage_type: type) -> Pipeline:
-        self._stages = [s for s in self._stages if not isinstance(s, stage_type)]
+    def _matches(self, stage: PipelineStage, stage_type: type | None, name: str | None) -> bool:
+        if stage_type is not None and not isinstance(stage, stage_type):
+            return False
+        if name is not None and getattr(stage, "name", None) != name:
+            return False
+        return True
+
+    def remove(self, stage_type: type | None = None, *, name: str | None = None) -> Pipeline:
+        """Remove every stage matching ``stage_type`` and/or ``name`` (both, if
+        both given). ``stage_type`` alone matches every stage of that type —
+        for two or more bare-function stages (every one of them is a
+        ``FunctionStage`` once ``add()`` wraps it), pass ``name=`` too (a bare
+        function's stage name defaults to ``fn.__name__``) to target one
+        specifically instead of removing all of them at once."""
+        if stage_type is None and name is None:
+            raise ConfigurationError("Pipeline.remove() requires stage_type and/or name=")
+        self._stages = [s for s in self._stages if not self._matches(s, stage_type, name)]
         return self
 
-    def replace(self, stage_type: type, replacement: PipelineStage) -> Pipeline:
-        self._stages = [replacement if isinstance(s, stage_type) else s for s in self._stages]
+    def replace(
+        self,
+        stage_type: type | None = None,
+        replacement: PipelineStage | None = None,
+        *,
+        name: str | None = None,
+    ) -> Pipeline:
+        """Replace every stage matching ``stage_type`` and/or ``name`` with
+        ``replacement``. Same multiple-bare-function-stages caveat as
+        :meth:`remove` — pass ``name=`` to target one specifically."""
+        if stage_type is None and name is None:
+            raise ConfigurationError("Pipeline.replace() requires stage_type and/or name=")
+        if replacement is None:
+            raise ConfigurationError("Pipeline.replace() requires replacement=")
+        self._stages = [
+            replacement if self._matches(s, stage_type, name) else s for s in self._stages
+        ]
         return self
 
     async def execute(self, ctx: RequestContext, bus: EventBus | None = None) -> None:

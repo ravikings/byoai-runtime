@@ -7,12 +7,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
 
 from .._version import USER_AGENT
-from ..errors import VectorStoreError
+from ..errors import ConfigurationError, VectorStoreError
 from ..types import Document
 from .filters import parse, to_pinecone
 
@@ -21,8 +22,8 @@ class PineconeVectorStore:
     def __init__(
         self,
         *,
-        host: str,
-        api_key: str,
+        host: str | None = None,
+        api_key: str | None = None,
         namespace: str = "",
         schema_map: dict[str, str] | None = None,
         timeout: float = 30.0,
@@ -30,6 +31,17 @@ class PineconeVectorStore:
         include_values: bool = False,
         sparse_vector: dict[str, Any] | None = None,
     ) -> None:
+        api_key = api_key or os.environ.get("PINECONE_API_KEY")
+        # Every other adapter (Anthropic/Gemini/OpenAI-compatible) fails fast
+        # here with a named env var instead of a bare TypeError from a missing
+        # required kwarg — client=None still needs both to build the default
+        # httpx.AsyncClient, so this check only backs off when client= is
+        # already fully constructed (same escape hatch those adapters use).
+        if client is None and (not host or not api_key):
+            raise ConfigurationError(
+                "PineconeVectorStore requires 'host' and 'api_key' (or $PINECONE_API_KEY) "
+                "unless a pre-built client= is supplied"
+            )
         self.namespace = namespace
         # metadata field holding the document text (Pinecone stores text in metadata)
         self._content_field = (schema_map or {}).get("content", "content")
@@ -38,12 +50,19 @@ class PineconeVectorStore:
         # ({"indices": [...], "values": [...]}); per-query sparse vectors
         # aren't supported by the fixed VectorStore.search() signature.
         self.sparse_vector = sparse_vector
-        self._client = client or httpx.AsyncClient(
-            base_url=host.rstrip("/"),
-            headers={"Api-Key": api_key, "User-Agent": USER_AGENT},
-            timeout=timeout,
-        )
-        self._owns_client = client is None
+        if client is None:
+            # Narrowed by the ConfigurationError check above: client is None
+            # implies host/api_key are both non-empty here.
+            assert host is not None and api_key is not None
+            client = httpx.AsyncClient(
+                base_url=host.rstrip("/"),
+                headers={"Api-Key": api_key, "User-Agent": USER_AGENT},
+                timeout=timeout,
+            )
+            self._owns_client = True
+        else:
+            self._owns_client = False
+        self._client = client
 
     async def search(
         self,

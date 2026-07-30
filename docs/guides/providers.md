@@ -167,6 +167,33 @@ audit logging without hand-accumulating one. Over HTTP/SSE/WebSocket, a `tool_ca
 like `{"delta": "", "tool_call": {"index": 0, "id": "...", "name": "...", "partial_json": "..."}}`
 — `id`/`name` only appear on the block's first frame, `partial_json` only when non-empty.
 
+### Sending an OpenAI-compatible tool result back
+
+Anthropic round-trips a tool call through list-valued `content` blocks (see above). The
+OpenAI-compatible family (OpenAI, Azure OpenAI, Ollama, vLLM, OpenRouter, LiteLLM proxy) instead
+uses `Message.tool_call_id`/`.tool_calls` — append the assistant's own tool-call turn (`content`
+explicitly `None`, `tool_calls` set to what you assembled from the streamed deltas above, or
+straight from `result.raw["choices"][0]["message"]["tool_calls"]` on a non-streaming call), then
+one `role="tool"` message per call:
+
+```python
+messages.append(Message(
+    role="assistant", content=None,
+    tool_calls=[{
+        "id": "call_1", "type": "function",
+        "function": {"name": "get_weather", "arguments": '{"city": "NYC"}'},
+    }],
+))
+messages.append(Message(role="tool", tool_call_id="call_1", content="72F and sunny"))
+
+result = await runtime.execute({"messages": messages})
+```
+
+`content=None` is only valid on an assistant turn that also sets `tool_calls` — any other message
+with `content=None` (including a `"tool"` reply missing `tool_call_id`) raises `ProviderError`
+naming the actual problem instead of failing later with a generic 400 from the API. Gemini has no
+equivalent yet (see above — it doesn't support tool calling at all).
+
 ## Tuning retries
 
 ```python

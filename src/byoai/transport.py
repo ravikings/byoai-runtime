@@ -14,7 +14,10 @@ Request payload (JSON object):
       "user_id": "...",            # optional
       "model": "...",              # optional per-request override
       "filters": {...},            # optional AST filter dialect
-      "options": {...}             # optional provider options (temperature, ...)
+      "options": {...}             # optional provider options (temperature, ...) —
+                                    # a key that collides with a top-level field above
+                                    # (e.g. "model") raises ConfigurationError rather
+                                    # than silently overriding it
     }
 
 Result shape (non-streaming):
@@ -57,12 +60,25 @@ def parse_payload(payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
             break
     if input_value is None:
         raise ConfigurationError(f"payload requires one of {_INPUT_KEYS}")
+    reserved = ("pipeline", "session_id", "user_id", "model", "filters")
     kwargs: dict[str, Any] = {}
-    for key in ("pipeline", "session_id", "user_id", "model", "filters"):
+    for key in reserved:
         if payload.get(key) is not None:
             kwargs[key] = payload[key]
     options = payload.get("options")
     if isinstance(options, dict):
+        # Against kwargs.keys() (only the reserved keys actually present at
+        # the top level), not the full `reserved` tuple — options carrying a
+        # reserved key that has no top-level value to collide with is a
+        # legitimate way to set it (kwargs.update(options) below), not a
+        # silent override of anything.
+        collisions = set(kwargs.keys()) & options.keys()
+        if collisions:
+            raise ConfigurationError(
+                f"payload['options'] can't set {sorted(collisions)} — those are top-level "
+                "payload fields, not provider options; putting them in 'options' would "
+                "silently override the top-level value"
+            )
         kwargs.update(options)
     return input_value, kwargs
 

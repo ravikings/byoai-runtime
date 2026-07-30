@@ -35,6 +35,24 @@ def test_parse_payload_kwargs_and_options():
     }
 
 
+def test_parse_payload_options_colliding_with_reserved_field_raises():
+    # options={"model": ...} would otherwise silently override the top-level
+    # "model" field with no error — same class of bug as the removed
+    # Runtime(cache_ttl=...) override.
+    with pytest.raises(ConfigurationError):
+        parse_payload({"input": "hi", "model": "m1", "options": {"model": "m2"}})
+
+
+def test_parse_payload_options_with_reserved_key_but_no_top_level_value_is_fine():
+    # Regression: the collision check used to test options' keys against the
+    # full reserved-field tuple regardless of whether the top-level field was
+    # actually set — options={"model": ...} with no top-level "model" at all
+    # is a legitimate way to set it (there's nothing to silently override),
+    # not a collision.
+    _, kwargs = parse_payload({"input": "hi", "options": {"model": "m2"}})
+    assert kwargs == {"model": "m2"}
+
+
 def test_parse_payload_missing_input_raises():
     with pytest.raises(ConfigurationError):
         parse_payload({"pipeline": "x"})

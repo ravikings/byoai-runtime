@@ -62,7 +62,8 @@ however long the cache itself is configured to keep entries: `cache={"default_tt
 `Runtime(cache_ttl=...)` default silently overrode whatever `default_ttl` the cache was already
 configured with. `MemoryCache`/`RedisCache` both default `default_ttl` to `3600` on their own, so
 leaving it unset still expires entries after an hour rather than caching forever — pass
-`default_ttl=None` explicitly if you actually want entries to never expire.
+`default_ttl=None` explicitly if you actually want entries to never expire, or `<=0` if you want
+to disable response caching entirely (writes silently no-op instead of storing anything).
 
 A cache outage on write-back never fails the request — the `CacheError` is caught and logged
 (`logger.warning`, not silently discarded) so a cache blip can't take down execution but is still

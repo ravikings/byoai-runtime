@@ -525,6 +525,99 @@ def test_coerce_messages_keeps_tool_replies_not_orphaned_by_a_drop():
     ]
 
 
+def test_coerce_messages_keeps_a_live_tool_call_turn_and_its_reply():
+    # Unlike a stale/malformed content:None assistant turn (dropped, see
+    # test_coerce_messages_drops_tool_replies_orphaned_by_a_dropped_assistant_turn
+    # above), a live OpenAI-shaped tool-call turn (tool_calls set) must be
+    # kept as-is — content=None included — with its "tool" reply intact.
+    from byoai.stages import _coerce_messages
+
+    history = [
+        {"role": "user", "content": "what's the weather?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "get_weather", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "72F and sunny"},
+    ]
+    messages, _ = _coerce_messages(history)
+
+    assert [(m.role, m.content) for m in messages] == [
+        ("user", "what's the weather?"),
+        ("assistant", None),
+        ("tool", "72F and sunny"),
+    ]
+    tool_calls = messages[1].tool_calls
+    assert tool_calls is not None and tool_calls[0]["id"] == "call_1"
+    assert messages[2].tool_call_id == "call_1"
+
+
+def test_coerce_messages_keeps_a_live_tool_call_turn_with_no_content_key_at_all():
+    # Regression: _coerce_message required "content" in item to even consider
+    # a dict — a store that serializes with exclude-null/omit-none semantics
+    # drops a live tool-call turn's content=None key entirely instead of
+    # keeping it as an explicit null. That dict used to fall through to the
+    # malformed-entry catch-all and vanish silently, while its "tool" reply
+    # (not recognized as orphaned, since _is_dropped_tool_call_turn also
+    # requires "content" in item) survived — sending a request with a tool
+    # result answering a tool_calls entry that no longer exists.
+    from byoai.stages import _coerce_messages
+
+    history = [
+        {"role": "user", "content": "what's the weather?"},
+        {
+            "role": "assistant",  # no "content" key at all
+            "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "get_weather", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "72F and sunny"},
+    ]
+    messages, _ = _coerce_messages(history)
+
+    assert [(m.role, m.content) for m in messages] == [
+        ("user", "what's the weather?"),
+        ("assistant", None),
+        ("tool", "72F and sunny"),
+    ]
+    tool_calls = messages[1].tool_calls
+    assert tool_calls is not None and tool_calls[0]["id"] == "call_1"
+
+
+def test_coerce_messages_merge_concatenates_tool_calls_instead_of_dropping_one_side():
+    # Regression: _merge_messages used "a.tool_calls or b.tool_calls", which
+    # silently discards one side's calls when a genuinely-dropped turn forces
+    # two independently-live tool-call assistant turns onto opposite sides of
+    # a merge seam. The second turn's tool_calls (and the tool_call_id its
+    # "tool" reply below references) must survive the merge.
+    from byoai.stages import _coerce_messages
+
+    history = [
+        {
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "f", "arguments": "{}"}}],
+        },
+        {"role": "assistant", "content": None},  # genuinely dropped: no tool_calls
+        {
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "call_2", "type": "function",
+                             "function": {"name": "f", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_2", "content": "result"},
+    ]
+    messages, _ = _coerce_messages(history)
+
+    assert len(messages) == 2
+    merged_tool_calls = messages[0].tool_calls
+    assert merged_tool_calls is not None
+    assert [c["id"] for c in merged_tool_calls] == ["call_1", "call_2"]
+    assert messages[1].tool_call_id == "call_2"
+
+
 def test_coerce_messages_does_not_drop_a_tool_reply_after_a_keyless_assistant_dict():
     # Regression: _is_dropped_tool_call_turn used item.get("content") is
     # None to detect a dropped tool-call-only turn — which is also true for

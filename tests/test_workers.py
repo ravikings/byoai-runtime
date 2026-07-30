@@ -68,6 +68,30 @@ async def test_worker_runs_jobs_concurrently():
     assert elapsed < 0.3
 
 
+async def test_worker_counts_and_logs_push_result_failures_instead_of_losing_them(caplog):
+    # Regression: push_result()/ack() raising after execute_payload() already
+    # succeeded used to propagate out of a task nobody awaits — the exception
+    # (and the fact the job's result never made it to the queue) vanished
+    # silently except for asyncio's generic "never retrieved" warning.
+    class FlakyQueue(MemoryJobQueue):
+        async def push_result(self, job, result):
+            raise ConnectionError("redis blip")
+
+    queue = FlakyQueue()
+    runtime = Runtime(providers=[FakeProvider()])
+    await queue.publish(Job(payload={"input": "hi"}))
+
+    worker = RuntimeWorker(runtime, queue, concurrency=1)
+    import logging
+
+    with caplog.at_level(logging.ERROR, logger="byoai.workers"):
+        await worker.run_until_idle()
+
+    assert worker.processed == 1  # the runtime did answer
+    assert worker.errors == 1  # but delivering the result failed, and is now visible
+    assert "push_result/ack failed" in caplog.text
+
+
 async def test_worker_graceful_stop_drains_in_flight():
     queue = MemoryJobQueue()
     runtime = Runtime(providers=[SlowProvider()])

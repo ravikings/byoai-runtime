@@ -4,7 +4,10 @@
 * ``ttl`` in seconds; explicit ``ttl=None`` falls back to ``default_ttl``;
   a non-positive TTL means "expire immediately" (nothing stored)
 * read-only session reader configured via ``session_reader={"pattern": ...}``
-  (``session_data`` simulates the pre-existing application state)
+  (``session_data`` simulates the pre-existing application state) — unlike
+  :class:`~byoai.cache.redis.RedisCache`, there's no ``"format"`` key: values
+  are returned exactly as stored in ``session_data``, with no serialization
+  step for a format to apply to
 * ``max_size`` bounds memory in long-running processes; oldest entries
   (by insertion/last-write order) are evicted once the cap is hit
 """

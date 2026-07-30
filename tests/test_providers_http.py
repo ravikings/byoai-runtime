@@ -377,6 +377,70 @@ async def test_openai_compat_rejects_list_valued_content_with_clear_error():
     assert excinfo.value.retryable is False
 
 
+async def test_openai_compat_sends_tool_call_round_trip_on_the_wire():
+    # The full OpenAI-shaped tool-calling round trip: the assistant's own
+    # tool-call turn (content=None, tool_calls set) followed by the matching
+    # "tool" reply, both surviving to_dict() as OpenAI expects them on the
+    # wire — content explicitly null (not omitted) on the assistant turn,
+    # tool_call_id present on the reply.
+    captured = {}
+
+    def handler(request):
+        import json as stdlib_json
+
+        captured.update(stdlib_json.loads(request.read()))
+        return httpx.Response(200, json={
+            "model": "m",
+            "choices": [{"message": {"content": "It's sunny."}, "finish_reason": "stop"}],
+        })
+
+    round_trip = [
+        Message(role="user", content="what's the weather?"),
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[{
+                "id": "call_1", "type": "function",
+                "function": {"name": "get_weather", "arguments": "{}"},
+            }],
+        ),
+        Message(role="tool", content="72F and sunny", tool_call_id="call_1"),
+    ]
+    result = await make_provider(handler).complete(round_trip)
+
+    assert captured["messages"][1] == {
+        "role": "assistant", "content": None,
+        "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "get_weather", "arguments": "{}"},
+        }],
+    }
+    assert captured["messages"][2] == {
+        "role": "tool", "content": "72F and sunny", "tool_call_id": "call_1",
+    }
+    assert result.content == "It's sunny."
+
+
+async def test_openai_compat_tool_message_without_tool_call_id_raises():
+    def handler(request):
+        raise AssertionError("should have raised before making a request")
+
+    with pytest.raises(ProviderError, match="tool_call_id"):
+        await make_provider(handler).complete(
+            [Message(role="tool", content="72F and sunny")]
+        )
+
+
+async def test_openai_compat_none_content_without_tool_calls_raises():
+    def handler(request):
+        raise AssertionError("should have raised before making a request")
+
+    with pytest.raises(ProviderError, match="tool_calls"):
+        await make_provider(handler).complete(
+            [Message(role="assistant", content=None)]
+        )
+
+
 # -- system-field building / cache_system / cache-token parsing -------------
 
 

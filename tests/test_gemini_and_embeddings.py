@@ -113,3 +113,43 @@ async def test_embedder_count_mismatch_is_provider_error():
     )
     with pytest.raises(ProviderError):
         await embedder("hello")
+
+
+async def test_embedder_reorders_by_response_index_not_response_order():
+    # A backend returning items out of request order (e.g. parallelized
+    # server-side) must not silently mismatch a vector to the wrong input.
+    embedder = make_embedder(lambda request: httpx.Response(200, json={
+        "data": [
+            {"embedding": [9.0], "index": 1},
+            {"embedding": [1.0], "index": 0},
+        ]
+    }))
+    batch = await embedder.embed_batch(["a", "b"])
+    assert batch == [[1.0], [9.0]]
+
+
+async def test_embedder_falls_back_to_position_when_index_is_explicitly_null():
+    # Regression: item.get("index", position) only substitutes the default
+    # when the key is *absent* — a backend that JSON-serializes every field
+    # (including nulls) sends {"index": null} explicitly, which dict.get()
+    # returns as None rather than falling back to position, and used to
+    # raise ProviderError for a response shape that previously worked fine.
+    embedder = make_embedder(lambda request: httpx.Response(200, json={
+        "data": [
+            {"embedding": [1.0], "index": None},
+            {"embedding": [2.0], "index": None},
+        ]
+    }))
+    batch = await embedder.embed_batch(["a", "b"])
+    assert batch == [[1.0], [2.0]]
+
+
+async def test_embedder_duplicate_index_raises_provider_error():
+    embedder = make_embedder(lambda request: httpx.Response(200, json={
+        "data": [
+            {"embedding": [1.0], "index": 0},
+            {"embedding": [2.0], "index": 0},
+        ]
+    }))
+    with pytest.raises(ProviderError):
+        await embedder.embed_batch(["a", "b"])

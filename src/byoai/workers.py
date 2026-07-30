@@ -17,6 +17,7 @@ isolated ``byoai:`` namespace; :class:`MemoryJobQueue` serves dev/tests.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -25,6 +26,8 @@ from . import _json as json
 from .errors import ByoAIError
 from .runtime import Runtime
 from .transport import execute_payload
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -236,18 +239,33 @@ class RuntimeWorker:
         self._in_flight: set[asyncio.Task] = set()
         self.processed = 0
         self.failed = 0
+        # Distinct from `failed` (a job the runtime itself couldn't answer,
+        # still reported back through push_result/ack normally): errors
+        # counts a job whose *result delivery* failed (push_result/ack
+        # raised, e.g. a queue-backend blip) — the runtime answered fine but
+        # the caller/queue never found out, so it needs separate visibility.
+        self.errors = 0
 
     async def _drain(self) -> None:
         if not self._in_flight:
             return
         gather = asyncio.gather(*self._in_flight, return_exceptions=True)
         if self.shutdown_timeout is None:
-            await gather
-            return
-        try:
-            await asyncio.wait_for(asyncio.shield(gather), timeout=self.shutdown_timeout)
-        except asyncio.TimeoutError:
-            pass  # remaining tasks keep running in the background; not awaited further
+            results = await gather
+        else:
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.shield(gather), timeout=self.shutdown_timeout
+                )
+            except asyncio.TimeoutError:
+                return  # remaining tasks keep running in the background; not awaited further
+        # _process() catches everything itself now, so this should normally
+        # be empty — logged defensively rather than discarded (asyncio.gather
+        # with return_exceptions=True otherwise buries them silently) in case
+        # something outside _process()'s own try/finally still raises.
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error("in-flight job task raised during drain", exc_info=result)
 
     async def run(self, *, until_idle: bool = False, poll_timeout: float = 0.5) -> None:
         """Consume jobs; drains in-flight work on exit.
@@ -302,8 +320,24 @@ class RuntimeWorker:
             except Exception as exc:  # noqa: BLE001 - a bad job must not kill the worker
                 result = {"error": str(exc), "error_type": type(exc).__name__}
                 self.failed += 1
-            await self.queue.push_result(job, result)
-            await self.queue.ack(job)
+            try:
+                await self.queue.push_result(job, result)
+                await self.queue.ack(job)
+            except Exception:
+                # A computed result that never reaches push_result/ack is
+                # invisible to everyone: this task's exception would
+                # otherwise vanish (no one awaits the task this runs in,
+                # only add_done_callback()), the caller polling
+                # read_result() hangs with no clue why, and the queue's own
+                # redelivery semantics (if any) are the only safety net —
+                # log it loudly instead of letting it disappear.
+                self.errors += 1
+                logger.exception(
+                    "job %s: push_result/ack failed after execution succeeded — the "
+                    "result may be lost depending on the queue backend's redelivery "
+                    "semantics",
+                    job.id,
+                )
         finally:
             semaphore.release()
 

@@ -164,6 +164,10 @@ Declarative: `llm={"provider": "gemini", ...}`.
 
 Declarative: `embedder={"provider": "openai"|"ollama"|"openai_compatible"|"vllm"|"litellm", ...}`.
 
+`embed_batch()` reorders the response by each item's own `"index"` field rather than trusting
+response order, so a backend that returns vectors out of request order can't silently mismatch a
+vector to the wrong input text; falls back to response position when `"index"` is absent.
+
 ### `RetryPolicy` / `ProviderRouter`
 
 ```python
@@ -208,7 +212,7 @@ considers unhealthy) does exclude them for that call, by its own choice:
 | Param | Default | Notes |
 | --- | --- | --- |
 | `namespace` | `"byoai:"` | Key prefix. |
-| `default_ttl` | `3600` | Seconds; explicit `ttl=` per-call overrides. `None` disables expiry — the only place TTL is set (there is no separate `Runtime`-level TTL knob). |
+| `default_ttl` | `3600` | Seconds; explicit `ttl=` per-call overrides. `None` disables expiry, `<=0` disables caching entirely (nothing is stored) — the only place TTL is set (there is no separate `Runtime`-level TTL knob). |
 | `session_reader` | `None` | `{"pattern": "app:{user_id}:history"}` — read-only key-pattern mapping onto existing app state. |
 | `session_data` | `None` | Dev/test stand-in for the "existing app state" `session_reader` reads. |
 | `max_size` | `None` (unbounded) | Caps entry count; oldest (by last write) evicted first. |
@@ -303,8 +307,8 @@ Declarative: `semantic_cache={"provider": "memory"|"redis"|"valkey", "threshold"
 
 | Param | Default | Notes |
 | --- | --- | --- |
-| `host` | required | Index data-plane host from the Pinecone console. |
-| `api_key` | required | |
+| `host` | required unless `client=` given | Index data-plane host from the Pinecone console. |
+| `api_key` | `None` → `$PINECONE_API_KEY`, required unless `client=` given | |
 | `namespace` | `""` | |
 | `schema_map` | `{}` | `{"content": metadata_field_name}` (Pinecone stores text in metadata). |
 | `timeout` | `30.0` | |
@@ -325,6 +329,12 @@ backend's native query form; see `filters.py` for the full operator set.
 Constructor knobs on the built-in stages (`byoai/stages.py`), reachable by
 building your own `Pipeline` — the declarative `Runtime(...)` path uses their
 defaults except where noted.
+
+`Pipeline.remove(stage_type)`/`.replace(stage_type, replacement)` match every stage of that type —
+`add()` wraps every bare function in the same `FunctionStage` type, so with two or more function
+stages, matching by type alone hits all of them at once. Pass `name=` (a bare function's stage
+name defaults to `fn.__name__`) to target one specifically: `pipeline.remove(FunctionStage,
+name="my_stage")`. `stage_type` and `name` can be given together, or `name` alone.
 
 ### `ContextResolver`
 

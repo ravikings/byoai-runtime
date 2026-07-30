@@ -137,7 +137,16 @@ class RedisCache:
             raise CacheError(f"redis delete failed: {exc}") from exc
 
     async def read_session(self, **params: str) -> Any | None:
-        """Read existing app state via the configured key pattern. Never writes."""
+        """Read existing app state via the configured key pattern. Never writes.
+
+        Two sequential round trips (``TYPE`` then ``LRANGE``/``GET``) — the
+        key's shape isn't known ahead of time, and Redis has no single
+        command that fetches "whatever this key is." ``ContextResolver``
+        calls this on every request that has both ``cache=`` and history
+        reading enabled (``max_history_messages`` > 0, the default), so this
+        is real per-request Redis latency on top of the LLM call itself, not
+        a one-time cost.
+        """
         if not self._session_pattern:
             return None
         key = self._session_pattern.format(**params)

@@ -141,32 +141,62 @@ def _coerce_message(item: Any) -> Message | None:
         # an already-constructed Message instead of a role/content dict
         # (e.g. reconstructing history as Message objects directly) — a
         # tool-call-only turn's content=None must not sail through
-        # unchecked just because it skipped the dict-coercion path.
-        if item.content is None and item.role == "assistant":
+        # unchecked just because it skipped the dict-coercion path. Not
+        # dropped when tool_calls is set: that's a *live* OpenAI-shaped
+        # tool-call turn (see Message's docstring), not a stale one with
+        # nothing left worth keeping.
+        if item.content is None and item.role == "assistant" and not item.tool_calls:
             return None
         return item
-    if isinstance(item, dict) and "content" in item:
+    # "tool_calls" alone (no "content" key at all) also admits the dict: a
+    # store that serializes with exclude-null/omit-none semantics drops a
+    # live tool-call turn's content=None key entirely rather than keeping it
+    # as an explicit null — that dict must reach the same live-tool-call-turn
+    # handling below as one that spells out "content": None, not the
+    # malformed-entry catch-all at the bottom of this function (which would
+    # silently drop the assistant message while _is_dropped_tool_call_turn,
+    # requiring "content" in item itself, correctly does *not* also drop the
+    # "tool" replies that answer it — leaving them orphaned instead).
+    if isinstance(item, dict) and ("content" in item or "tool_calls" in item):
         role = item.get("role", "user")
         if role in ("system", "user", "assistant", "tool"):
-            content = item["content"]
-            # None on an assistant turn (the standard shape for a
-            # tool-call-only turn in stored OpenAI/Anthropic history) drops
-            # the message entirely rather than sending it. Turning it into
-            # the literal text "None" would fabricate something the model
-            # never said; turning it into "" isn't safe either —
-            # Anthropic's API rejects any non-final message with empty
-            # content outright, failing the whole request. The tool call
-            # itself isn't representable here anyway (this dict shape only
-            # carries role/content), so a turn with no visible text has
-            # nothing worth keeping. See _coerce_messages() for why the
-            # "tool" replies to a dropped turn like this one also need to
-            # go — that requires list-level context this function doesn't
-            # have.
-            if content is None and role == "assistant":
+            content = item.get("content")
+            tool_calls = item.get("tool_calls")
+            # None on an assistant turn with no tool_calls (the shape of a
+            # tool-call-only turn reconstructed from a plain role/content
+            # history store that already lost the call info) drops the
+            # message entirely rather than sending it. Turning it into the
+            # literal text "None" would fabricate something the model never
+            # said; turning it into "" isn't safe either — Anthropic's API
+            # rejects any non-final message with empty content outright,
+            # failing the whole request. A turn with no visible text and no
+            # tool_calls has nothing worth keeping. See _coerce_messages()
+            # for why the "tool" replies to a dropped turn like this one
+            # also need to go — that requires list-level context this
+            # function doesn't have. When tool_calls *is* present (a live
+            # OpenAI-shaped tool-call turn — see Message's docstring), the
+            # message is kept as-is, content=None included.
+            live_tool_call_turn = role == "assistant" and bool(tool_calls)
+            if content is None and role == "assistant" and not live_tool_call_turn:
                 return None
-            if not isinstance(content, (str, list)):
+            if content is None:
+                # Any other role (e.g. a malformed/legacy "tool" entry with
+                # no stored content) falls through to the literal text
+                # "None" below rather than staying None — None is only a
+                # valid wire value for a live tool-call assistant turn
+                # (OpenAI's own shape); every other adapter/role requires an
+                # actual string.
+                if not live_tool_call_turn:
+                    content = str(content)
+            elif not isinstance(content, (str, list)):
                 content = str(content)
-            return Message(role=role, content=content)
+            return Message(
+                role=role,
+                content=content,
+                name=item.get("name"),
+                tool_call_id=item.get("tool_call_id"),
+                tool_calls=tool_calls,
+            )
     return None
 
 
@@ -185,8 +215,12 @@ def _item_role(item: Any) -> Any:
 
 
 def _is_dropped_tool_call_turn(item: Any) -> bool:
+    # Not true when tool_calls is set: that's a live OpenAI-shaped tool-call
+    # turn (see Message's docstring) that _coerce_message keeps rather than
+    # drops, so its "tool" replies below must survive too, not get
+    # orphan-skipped as if answering a turn that no longer exists.
     if isinstance(item, Message):
-        return item.role == "assistant" and item.content is None
+        return item.role == "assistant" and item.content is None and not item.tool_calls
     # "content" in item, not just item.get("content") is None: a dict with
     # no "content" key at all (a malformed/legacy entry _coerce_message
     # already drops on its own, via the same "content" in item guard) must
@@ -198,12 +232,21 @@ def _is_dropped_tool_call_turn(item: Any) -> bool:
         and item.get("role", "user") == "assistant"
         and "content" in item
         and item.get("content") is None
+        and not item.get("tool_calls")
     )
 
 
 def _merge_content(
-    a: str | list[dict[str, Any]], b: str | list[dict[str, Any]]
-) -> str | list[dict[str, Any]]:
+    a: str | list[dict[str, Any]] | None, b: str | list[dict[str, Any]] | None
+) -> str | list[dict[str, Any]] | None:
+    # None only reaches here from a live (tool_calls-bearing, not dropped)
+    # assistant turn forced adjacent to another same-role message by an
+    # unrelated drop elsewhere in the seam — nothing to concatenate, so the
+    # non-None side wins outright rather than fabricating placeholder text.
+    if a is None:
+        return b
+    if b is None:
+        return a
     if isinstance(a, str) and isinstance(b, str):
         return f"{a}\n\n{b}"
     a_blocks = a if isinstance(a, list) else [{"type": "text", "text": a}]
@@ -237,6 +280,16 @@ def _merge_messages(a: Message, b: Message) -> Message:
         content=_merge_content(a.content, b.content),
         name=_merge_name(a.name, b.name),
         metadata=_merge_metadata(a.metadata, b.metadata),
+        # tool_call_id only ever appears on a "tool"-role message, which
+        # _append_messages never merges (its role check below is scoped to
+        # "user"/"assistant") — "or" is fine here, at most one side is ever
+        # set. tool_calls is different: two independently-live assistant
+        # tool-call turns *can* land on opposite sides of a merge seam (a
+        # genuinely dropped turn between them forces the merge), each with
+        # its own real tool_calls — "or" would silently discard one side's
+        # calls instead of keeping both, so this concatenates.
+        tool_call_id=a.tool_call_id or b.tool_call_id,
+        tool_calls=(a.tool_calls or []) + (b.tool_calls or []) or None,
     )
 
 

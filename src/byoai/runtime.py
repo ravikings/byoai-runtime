@@ -110,7 +110,14 @@ class Runtime:
         )
         if (
             isinstance(semantic_cache, dict)
-            and semantic_cache.get("metric", "cosine") != "cosine"
+            # Read the metric the store actually resolved to, not the raw
+            # config dict re-defaulted to "cosine" here too: a plugin-
+            # provided semantic cache (byoai.semantic_caches entry point, or
+            # any future built-in) can default to a non-cosine metric on its
+            # own even when the config dict never mentions "metric" at all —
+            # re-deriving "cosine" from the dict's absence would silently
+            # skip this guard for exactly the case it exists to catch.
+            and getattr(self.semantic_cache, "metric", "cosine") != "cosine"
             and "threshold" not in semantic_cache
         ):
             # DEFAULT_SEMANTIC_THRESHOLD (0.92) is calibrated for cosine's
@@ -118,9 +125,10 @@ class Runtime:
             # (whose scores are <= 0) would make every lookup miss forever —
             # a working feature going silently inert, not a loud failure.
             raise ConfigurationError(
-                f"semantic_cache sets metric={semantic_cache['metric']!r} but no "
-                "explicit threshold= — the default (0.92) is calibrated for cosine "
-                "similarity and won't make sense for this metric's score range"
+                f"semantic_cache resolved to metric="
+                f"{getattr(self.semantic_cache, 'metric', None)!r} but no explicit "
+                "threshold= — the default (0.92) is calibrated for cosine similarity "
+                "and won't make sense for this metric's score range"
             )
         self._semantic_threshold = (
             semantic_cache.get("threshold", DEFAULT_SEMANTIC_THRESHOLD)

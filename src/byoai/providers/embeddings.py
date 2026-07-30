@@ -89,7 +89,33 @@ class OpenAICompatEmbedder:
                 provider=self.name,
                 retryable=False,
             )
-        return [item["embedding"] for item in data]
+        # Reorder by each item's own "index" instead of trusting response
+        # order — the OpenAI embeddings response format includes one per
+        # item, and a self-hosted OpenAI-compatible backend that reorders
+        # would otherwise silently mismatch a vector to the wrong input text
+        # (this feeds the semantic cache and vector retrieval downstream, so
+        # the corruption would be silent there too). Falls back to response
+        # position when "index" is absent *or explicitly null* — a backend
+        # that JSON-serializes every field including nulls sends the latter,
+        # and dict.get()'s default only covers the former.
+        ordered: list[Any] = [None] * len(texts)
+        for position, item in enumerate(data):
+            index = item.get("index")
+            if index is None:
+                index = position
+            if (
+                not isinstance(index, int)
+                or not (0 <= index < len(texts))
+                or ordered[index] is not None
+            ):
+                raise ProviderError(
+                    f"{self.name}: embeddings response has an invalid or duplicate "
+                    f"index ({index!r}) for {len(texts)} inputs",
+                    provider=self.name,
+                    retryable=False,
+                )
+            ordered[index] = item["embedding"]
+        return ordered
 
     async def close(self) -> None:
         if self._owns_client:

@@ -35,7 +35,7 @@ SelectionName = Literal["ordered", "round_robin"]
 SelectionFn = Callable[[Sequence["LLMProvider"]], Sequence["LLMProvider"]]
 
 
-def _ordered_selection(providers: Sequence["LLMProvider"]) -> Sequence["LLMProvider"]:
+def _ordered_selection(providers: Sequence[LLMProvider]) -> Sequence[LLMProvider]:
     return providers
 
 
@@ -47,7 +47,7 @@ class _RoundRobinSelection:
     def __init__(self) -> None:
         self._next = 0
 
-    def __call__(self, providers: Sequence["LLMProvider"]) -> Sequence["LLMProvider"]:
+    def __call__(self, providers: Sequence[LLMProvider]) -> Sequence[LLMProvider]:
         start = self._next % len(providers)
         self._next += 1
         return [*providers[start:], *providers[:start]]
@@ -143,9 +143,18 @@ class ProviderRouter:
         if self._bus:
             await self._bus.emit(event, **payload)
 
+    def _selected_providers(self) -> Sequence[LLMProvider]:
+        # A shallow copy, not self.providers directly: a custom selection=
+        # callable that mutates its argument in place (.sort(), .pop(), del)
+        # instead of returning a new sequence would otherwise permanently
+        # corrupt the router's own provider list for every future call, not
+        # just this one. Shared by complete()/stream() so this reasoning
+        # (and the copy itself) can't drift out of sync between the two.
+        return self._select(list(self.providers))
+
     async def complete(self, messages: list[Message], **options: Any) -> ProviderResponse:
         errors: list[ProviderError] = []
-        for provider in self._select(self.providers):
+        for provider in self._selected_providers():
             attempt = 0
             while True:
                 await self._emit(
@@ -181,7 +190,7 @@ class ProviderRouter:
         as-is (the transport already sent partial output).
         """
         errors: list[ProviderError] = []
-        for provider in self._select(self.providers):
+        for provider in self._selected_providers():
             attempt = 0
             while True:
                 await self._emit(

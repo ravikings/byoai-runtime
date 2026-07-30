@@ -56,7 +56,34 @@ class OpenAICompatProvider:
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
         for m in messages:
+            if m.content is None:
+                # OpenAI's own wire shape for a tool-call-only assistant
+                # turn: content explicitly null, the call(s) on tool_calls
+                # instead — require_text_content would otherwise reject it
+                # as a missing/malformed message. Any other None (a role
+                # other than assistant, or an assistant message with no
+                # tool_calls) has nothing legitimate to send.
+                if m.role != "assistant" or not m.tool_calls:
+                    raise ProviderError(
+                        f"{self.name}: message content is None on a {m.role!r} message "
+                        "with no tool_calls — only a live assistant tool-call turn may "
+                        "omit content",
+                        provider=self.name,
+                        retryable=False,
+                    )
+                continue
             require_text_content(m, provider=self.name)
+            if m.role == "tool" and not m.tool_call_id:
+                # The API rejects this with a 400 either way — raising here
+                # instead names the actual cause (a missing tool_call_id)
+                # rather than leaving a caller to work backward from a
+                # generic "invalid request" response.
+                raise ProviderError(
+                    f"{self.name}: a 'tool' message requires tool_call_id "
+                    "(the id of the tool_calls entry it's answering)",
+                    provider=self.name,
+                    retryable=False,
+                )
         strip_provider_metadata(options)
         return {
             "model": options.pop("model", self.model),

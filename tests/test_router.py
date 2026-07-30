@@ -129,6 +129,27 @@ async def test_selection_custom_callable():
     assert response.provider == "b"
 
 
+async def test_selection_callable_mutating_its_argument_does_not_corrupt_the_router():
+    # Regression: self._select(self.providers) used to hand a custom
+    # selection= callable the router's live provider list. A callable that
+    # mutates in place instead of returning a new sequence (e.g. .pop() to
+    # "exclude" a provider it considers unhealthy for just this call) used
+    # to permanently corrupt self.providers for every future call too.
+    a = FakeProvider(name="a", reply="from a")
+    b = FakeProvider(name="b", reply="from b")
+
+    def pop_first(providers):
+        providers.pop(0)  # in-place mutation, not a copy
+        return providers
+
+    router = ProviderRouter([a, b], retry_policy=FAST, selection=pop_first)
+    first = await router.complete(MESSAGES)
+    assert first.provider == "b"
+    assert len(router.providers) == 2  # "a" must still be there for the next call
+    second = await router.complete(MESSAGES)
+    assert second.provider == "b"  # pop_first drops index 0 again, "a" survives
+
+
 async def test_selection_unknown_name_rejected():
     with pytest.raises(ConfigurationError):
         ProviderRouter([FakeProvider()], selection="least_loaded")  # type: ignore[arg-type]

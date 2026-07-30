@@ -17,22 +17,42 @@ Role = Literal["system", "user", "assistant", "tool"]
 
 @dataclass
 class Message:
-    """``content`` is either plain text or a list of provider content blocks
-    (e.g. Anthropic ``tool_use``/``tool_result``/``image`` blocks) — only the
-    Anthropic adapters (``providers/anthropic.py``, ``providers/anthropic_cloud.py``)
-    are safe to use with list-valued content today; Gemini/OpenAI-compat expect
-    plain strings and will error or mishandle a list.
+    """``content`` is plain text, a list of provider content blocks (e.g.
+    Anthropic ``tool_use``/``tool_result``/``image`` blocks — only the
+    Anthropic adapters, ``providers/anthropic.py`` and
+    ``providers/anthropic_cloud.py``, are safe to use those with; Gemini/
+    OpenAI-compat expect plain strings and will error or mishandle a list),
+    or ``None`` on an OpenAI-shaped assistant turn whose only content is a
+    tool call (``tool_calls`` set, mirroring OpenAI's own wire format).
+
+    ``tool_call_id``/``tool_calls`` are the OpenAI-compatible-family
+    counterpart to Anthropic's content-block tool use: to send a tool result
+    back, append the assistant's own tool-call message (``role="assistant"``,
+    ``content=None``, ``tool_calls=[{"id": ..., "type": "function",
+    "function": {"name": ..., "arguments": "..."}}]`` — the shape
+    ``ExecutionResult.raw``/a streamed turn's assembled ``tool_calls`` are
+    already in) followed by one ``role="tool"`` message per call
+    (``tool_call_id=<call id>``, ``content=<the tool's output as a string>``).
+    Anthropic instead round-trips through list-valued ``content`` blocks —
+    see ``docs/guides/providers.md`` for both worked examples. Unused by
+    Anthropic/Bedrock/Vertex/Gemini.
     """
 
     role: Role
-    content: str | list[dict[str, Any]]
+    content: str | list[dict[str, Any]] | None
     name: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    tool_call_id: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"role": self.role, "content": self.content}
         if self.name:
             d["name"] = self.name
+        if self.tool_call_id:
+            d["tool_call_id"] = self.tool_call_id
+        if self.tool_calls:
+            d["tool_calls"] = self.tool_calls
         return d
 
 
