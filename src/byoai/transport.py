@@ -20,8 +20,15 @@ Request payload (JSON object):
 Result shape (non-streaming):
 
     {"content": ..., "cached": ..., "model": ..., "provider": ...,
-     "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...},
-     "request_id": ...}
+     "usage": {"input_tokens": ..., "output_tokens": ..., "cost_usd": ...,
+               "cache_read_tokens": ..., "cache_creation_tokens": ...},
+     "request_id": ..., "finish_reason": ...}
+
+``finish_reason`` mirrors Anthropic's ``stop_reason`` (``"tool_use"`` on a
+tool-call turn, etc.) — omitted from a streaming chunk frame unless set.
+``ExecutionResult.raw``/``StreamChunk.raw`` (the provider's raw response —
+not JSON-safe for every adapter) are deliberately excluded from every shape
+here; use the Python API directly if you need them.
 """
 
 from __future__ import annotations
@@ -61,6 +68,9 @@ def parse_payload(payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
 
 
 def result_to_dict(result: Any) -> dict[str, Any]:
+    # result.raw is deliberately excluded — it's a Python-API-only escape
+    # hatch (e.g. an SDK response object for Bedrock/Vertex) that isn't
+    # JSON-safe; don't add it here.
     return {
         "content": result.content,
         "cached": result.cached,
@@ -70,8 +80,11 @@ def result_to_dict(result: Any) -> dict[str, Any]:
             "input_tokens": result.usage.input_tokens,
             "output_tokens": result.usage.output_tokens,
             "cost_usd": result.usage.cost_usd,
+            "cache_read_tokens": result.usage.cache_read_tokens,
+            "cache_creation_tokens": result.usage.cache_creation_tokens,
         },
         "request_id": result.context.request_id,
+        "finish_reason": result.finish_reason,
     }
 
 
@@ -96,6 +109,8 @@ def chunk_to_dict(chunk: Any) -> dict[str, Any]:
                 "input_tokens": chunk.usage.input_tokens,
                 "output_tokens": chunk.usage.output_tokens,
                 "cost_usd": chunk.usage.cost_usd,
+                "cache_read_tokens": chunk.usage.cache_read_tokens,
+                "cache_creation_tokens": chunk.usage.cache_creation_tokens,
             }
         if chunk.model:
             frame["model"] = chunk.model
@@ -103,6 +118,8 @@ def chunk_to_dict(chunk: Any) -> dict[str, Any]:
             frame["provider"] = chunk.provider
         if chunk.request_id:
             frame["request_id"] = chunk.request_id
+        if chunk.finish_reason:
+            frame["finish_reason"] = chunk.finish_reason
         return frame
     return {"delta": chunk.delta}
 

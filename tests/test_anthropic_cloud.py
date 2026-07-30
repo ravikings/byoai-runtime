@@ -238,3 +238,75 @@ async def test_declarative_vertex_via_runtime():
     assert runtime.router is not None
     assert runtime.router.providers[0].name == "vertex"
     await runtime.close()
+
+
+# -- cache_system / build_anthropic_system_field / cache-token parsing ------
+
+
+async def test_bedrock_cache_system_wraps_system_field_in_block():
+    api = FakeMessagesAPI(response=make_response())
+    provider = AnthropicBedrockProvider(model="m", client=FakeClient(api), cache_system=True)
+    await provider.complete(MESSAGES)
+    assert api.last_kwargs["system"] == [
+        {"type": "text", "text": "be terse", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+async def test_bedrock_list_content_system_message_passed_through():
+    api = FakeMessagesAPI(response=make_response())
+    provider = AnthropicBedrockProvider(model="m", client=FakeClient(api))
+    blocks = [{"type": "text", "text": "pre-built"}]
+    messages = [Message(role="system", content=blocks), Message(role="user", content="hi")]
+    await provider.complete(messages)
+    assert api.last_kwargs["system"] == blocks
+
+
+async def test_bedrock_mixed_system_content_raises_configuration_error():
+    api = FakeMessagesAPI(response=make_response())
+    provider = AnthropicBedrockProvider(model="m", client=FakeClient(api))
+    messages = [
+        Message(role="system", content="plain"),
+        Message(role="system", content=[{"type": "text", "text": "blocky"}]),
+    ]
+    with pytest.raises(ConfigurationError):
+        await provider.complete(messages)
+
+
+async def test_bedrock_complete_parses_cache_tokens_when_present():
+    response = make_response()
+    response.usage.cache_read_input_tokens = 7
+    response.usage.cache_creation_input_tokens = 3
+    api = FakeMessagesAPI(response=response)
+    provider = AnthropicBedrockProvider(model="m", client=FakeClient(api))
+    result = await provider.complete(MESSAGES)
+    assert result.usage.cache_read_tokens == 7
+    assert result.usage.cache_creation_tokens == 3
+
+
+async def test_bedrock_complete_defaults_cache_tokens_to_zero_when_absent():
+    # make_response()'s usage SimpleNamespace has no cache_read_input_tokens/
+    # cache_creation_input_tokens attributes at all (older SDK / fake double) —
+    # the getattr(..., 0) or 0 fallback must not raise and must default to 0.
+    api = FakeMessagesAPI(response=make_response())
+    provider = AnthropicBedrockProvider(model="m", client=FakeClient(api))
+    result = await provider.complete(MESSAGES)
+    assert result.usage.cache_read_tokens == 0
+    assert result.usage.cache_creation_tokens == 0
+
+
+async def test_bedrock_stream_final_chunk_carries_cache_tokens_and_finish_reason():
+    # Regression: stream()'s final StreamChunk didn't surface cache_read_tokens/
+    # cache_creation_tokens/finish_reason from the SDK's final message even
+    # though complete() parsed the equivalent fields.
+    response = make_response(stop_reason="tool_use")
+    response.usage.cache_read_input_tokens = 7
+    response.usage.cache_creation_input_tokens = 3
+    api = FakeMessagesAPI(stream_events=["hel", "lo"], response=response)
+    provider = AnthropicBedrockProvider(model="m", client=FakeClient(api))
+    chunks = [c async for c in provider.stream(MESSAGES)]
+    final = chunks[-1]
+    assert final.done is True
+    assert final.usage is not None
+    assert final.usage.cache_read_tokens == 7
+    assert final.usage.cache_creation_tokens == 3
+    assert final.finish_reason == "tool_use"

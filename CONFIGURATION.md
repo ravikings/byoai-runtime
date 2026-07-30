@@ -32,9 +32,21 @@ nothing here is required to keep working code working.
 | `telemetry` | `None` | Dict (`{"provider": "opentelemetry", "endpoint": ...}`), a pre-built `TracerProvider`, or `None`. See [Telemetry](#telemetry-opentelemetry). |
 
 `Runtime.execute()` / `Runtime.stream()` per-call kwargs: `pipeline`,
-`session_id`, `user_id`, `model` (override), `filters` (AST dialect for
-retrieval), plus any `**provider_options` (`temperature`, `top_p`, ...) —
-forwarded to the provider and included in the exact-match cache fingerprint.
+`session_id`, `user_id`, `model` (override), `system_prompt` (override —
+`None` falls back to the constructor default, `""` clears it for this call),
+`filters` (AST dialect for retrieval), plus any `**provider_options`
+(`temperature`, `top_p`, ...) — forwarded to the provider and included in the
+exact-match cache fingerprint.
+
+`provider_metadata` is a separate kwarg, forwarded as-is into the provider's
+own request payload (e.g. Anthropic's top-level `metadata` field —
+`{"user_id": ...}` for audit correlation on Anthropic's side). Don't confuse
+it with `metadata=`, which is app-level (`ExecutionResult.metadata`) and
+never reaches the provider. It's Anthropic-shaped, so `GeminiProvider`
+(the only adapter with no `metadata` concept of its own) drops it rather
+than forwarding it — a fallback from Anthropic to Gemini degrades (loses the
+audit tag) instead of failing outright. Other Anthropic-family adapters
+(Bedrock/Vertex) and the OpenAI-compatible adapter forward it as-is.
 
 ---
 
@@ -85,6 +97,7 @@ Declarative: `llm={"provider": "openai"|"ollama"|"openrouter"|"openai_compatible
 | `default_headers` | `None` | e.g. `{"anthropic-beta": "prompt-caching-2024-07-31"}`. |
 | `retryable_status` | `None` → `DEFAULT_RETRYABLE_STATUS | {529}` | 529 = Anthropic's "overloaded". |
 | `messages_path` | `"/v1/messages"` | |
+| `cache_system` | `False` | When `True`, a plain-string system prompt is wrapped in a `cache_control: {"type": "ephemeral"}` block so repeated calls with the same prompt hit Anthropic's server-side prompt cache. Has no effect if you already built your own system content blocks by hand (see [Provider routing & fallback](guides/providers.md#anthropic-tool-use-and-content-blocks)). |
 
 Declarative: `llm={"provider": "anthropic", ...}`.
 
@@ -102,6 +115,7 @@ against the SDK's own `httpx.Response`) stay identical to every other provider.
 | `max_tokens` | `4096` | |
 | `client` | `None` | Pre-built `AsyncAnthropicBedrock`/`AsyncAnthropicVertex` — bypasses every other constructor param below. |
 | `retryable_status` | `None` → `DEFAULT_RETRYABLE_STATUS | {529}` | |
+| `cache_system` | `False` | Same as `AnthropicProvider.cache_system` above. |
 | **Bedrock only** | | |
 | `aws_region` | `None` → `$AWS_REGION` or `$AWS_DEFAULT_REGION` | Required (directly or via env). |
 | `aws_access_key`, `aws_secret_key`, `aws_session_token`, `aws_profile` | `None` | Falls back to the standard AWS credential chain (env vars, `~/.aws`, instance/task role) when all unset. |

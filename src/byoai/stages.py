@@ -61,8 +61,11 @@ class ContextResolver:
 
     async def execute(self, ctx: RequestContext) -> None:
         messages: list[Message] = []
-        if self.system_prompt:
-            messages.append(Message(role="system", content=self.system_prompt))
+        # ctx.system_prompt is a per-call override (None = not overridden,
+        # "" = explicitly cleared for this call) set by Runtime.execute().
+        prompt = ctx.system_prompt if ctx.system_prompt is not None else self.system_prompt
+        if prompt:
+            messages.append(Message(role="system", content=prompt))
         messages.extend(await self._history(ctx))
         messages.extend(self._normalize(ctx.input))
         ctx.messages = messages
@@ -118,7 +121,14 @@ def _coerce_message(item: Any) -> Message | None:
     if isinstance(item, dict) and "content" in item:
         role = item.get("role", "user")
         if role in ("system", "user", "assistant", "tool"):
-            return Message(role=role, content=str(item["content"]))
+            content = item["content"]
+            # str/list pass through untouched (list = provider content
+            # blocks, e.g. Anthropic tool_use/tool_result); anything else
+            # (a stray int/bool from a hand-written history dict) is
+            # stringified rather than rejected.
+            if not isinstance(content, (str, list)):
+                content = str(content)
+            return Message(role=role, content=content)
     return None
 
 
@@ -179,11 +189,13 @@ class CacheLookup:
         if hit is not None:
             if self._bus:
                 await self._bus.emit(ev.CACHE_HIT, ctx=ctx, key=key)
-            # Entries are {"content", "model", "provider"} dicts; tolerate bare
-            # strings so pre-existing/hand-written entries still work.
+            # Entries are {"content", "model", "provider", "finish_reason"}
+            # dicts; tolerate bare strings so pre-existing/hand-written
+            # entries still work.
             if isinstance(hit, dict) and "content" in hit:
                 ctx.model = hit.get("model") or ctx.model
                 ctx.provider = hit.get("provider")
+                ctx.finish_reason = hit.get("finish_reason")
                 ctx.short_circuit(str(hit["content"]), cached=True)
             else:
                 ctx.short_circuit(str(hit), cached=True)
@@ -195,7 +207,21 @@ Embedder = Callable[[str], Awaitable[list[float]]]
 
 
 def _last_user_message(ctx: RequestContext) -> str | None:
-    return next((m.content for m in reversed(ctx.messages) if m.role == "user"), None)
+    """Text of the last user message, for the Embedder (semantic cache /
+    vector retrieval), which is str-only. A list-valued content (e.g. a
+    tool_result turn) is reduced to its text blocks; ``None`` if it has none
+    (a pure tool_result turn) so callers degrade to a no-op instead of
+    feeding the embedder a non-str value.
+    """
+    content = next((m.content for m in reversed(ctx.messages) if m.role == "user"), None)
+    if content is None or isinstance(content, str):
+        return content
+    text = "".join(
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    return text or None
 
 
 class SemanticCacheLookup:
@@ -330,3 +356,5 @@ class ProviderCall:
         ctx.model = response.model
         ctx.provider = response.provider
         ctx.usage.add(response.usage)
+        ctx.finish_reason = response.finish_reason
+        ctx.raw_response = response.raw

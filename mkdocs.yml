@@ -54,6 +54,7 @@ nav:
   - Getting Started: getting-started.md
   - Guides:
       - FastAPI integration: guides/fastapi.md
+      - Flask integration: guides/flask.md
       - Robyn integration: guides/robyn.md
       - MCP integration: guides/mcp.md
       - Caching: guides/caching.md

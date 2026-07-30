@@ -12,7 +12,13 @@ from .. import _json as json
 from .._version import USER_AGENT
 from ..errors import ConfigurationError, ProviderError, RateLimitError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
-from .base import DEFAULT_RETRYABLE_STATUS, has_auth_header, parse_json_response, raise_for_status
+from .base import (
+    DEFAULT_RETRYABLE_STATUS,
+    build_anthropic_system_field,
+    has_auth_header,
+    parse_json_response,
+    raise_for_status,
+)
 
 # 529 = Anthropic's "overloaded" status, retryable like a 503.
 DEFAULT_RETRYABLE_STATUS_ANTHROPIC = DEFAULT_RETRYABLE_STATUS | {529}
@@ -34,11 +40,18 @@ class AnthropicProvider:
         default_headers: dict[str, str] | None = None,
         retryable_status: frozenset[int] | set[int] | None = None,
         messages_path: str = "/v1/messages",
+        cache_system: bool = False,
     ) -> None:
         self.name = name
         self.model = model
         self.max_tokens = max_tokens
         self._messages_path = messages_path
+        # When True, a plain-string system prompt is wrapped in Anthropic's
+        # cache_control ephemeral block so repeated calls with the same
+        # prompt hit the server-side prompt cache. No effect on a system
+        # message whose content is already a list of content blocks (the
+        # caller built their own — see build_anthropic_system_field).
+        self.cache_system = cache_system
         self._retryable_status = (
             frozenset(retryable_status) if retryable_status is not None
             else DEFAULT_RETRYABLE_STATUS_ANTHROPIC
@@ -68,7 +81,6 @@ class AnthropicProvider:
         self._client = client
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
-        system_parts = [m.content for m in messages if m.role == "system"]
         chat = [m.to_dict() for m in messages if m.role != "system"]
         payload: dict[str, Any] = {
             "model": options.pop("model", self.model),
@@ -76,8 +88,9 @@ class AnthropicProvider:
             "messages": chat,
             **options,
         }
-        if system_parts:
-            payload["system"] = "\n\n".join(system_parts)
+        system = build_anthropic_system_field(messages, cache_system=self.cache_system)
+        if system is not None:
+            payload["system"] = system
         return payload
 
     def _raise_for_status(self, response: httpx.Response) -> None:
@@ -106,6 +119,8 @@ class AnthropicProvider:
             usage=Usage(
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
+                cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
             ),
             finish_reason=data.get("stop_reason"),
             raw=data,
@@ -118,6 +133,7 @@ class AnthropicProvider:
         payload["stream"] = True
         model = payload["model"]
         usage = Usage()
+        finish_reason: str | None = None
         try:
             async with self._client.stream("POST", self._messages_path, json=payload) as response:
                 if response.status_code >= 400:
@@ -138,7 +154,12 @@ class AnthropicProvider:
                     if kind == "message_start":
                         message = data.get("message", {})
                         model = message.get("model", model)
-                        usage.input_tokens = message.get("usage", {}).get("input_tokens", 0)
+                        message_usage = message.get("usage", {})
+                        usage.input_tokens = message_usage.get("input_tokens", 0)
+                        usage.cache_read_tokens = message_usage.get("cache_read_input_tokens", 0)
+                        usage.cache_creation_tokens = message_usage.get(
+                            "cache_creation_input_tokens", 0
+                        )
                     elif kind == "content_block_delta":
                         delta = data.get("delta", {})
                         if delta.get("type") == "text_delta" and delta.get("text"):
@@ -147,6 +168,7 @@ class AnthropicProvider:
                             )
                     elif kind == "message_delta":
                         usage.output_tokens = data.get("usage", {}).get("output_tokens", 0)
+                        finish_reason = data.get("delta", {}).get("stop_reason") or finish_reason
                     elif kind == "error":
                         # In-band failure after a 200 (overloaded_error, mid-stream
                         # rate limit, ...) — must not fall through to a clean
@@ -166,7 +188,13 @@ class AnthropicProvider:
                         )
                     elif kind == "message_stop":
                         break
-                yield StreamChunk(done=True, model=model, provider=self.name, usage=usage)
+                yield StreamChunk(
+                    done=True,
+                    model=model,
+                    provider=self.name,
+                    usage=usage,
+                    finish_reason=finish_reason,
+                )
         except httpx.HTTPError as exc:
             raise ProviderError(
                 f"{self.name}: transport error: {exc}", provider=self.name, retryable=True

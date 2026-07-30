@@ -5,6 +5,7 @@ from tests.conftest import FakeProvider
 
 from byoai import ConfigurationError, Message, Pipeline, Runtime
 from byoai.cache.memory import MemoryCache
+from byoai.context import RequestContext
 from byoai.stages import CacheLookup, ContextResolver, ProviderCall
 
 
@@ -76,6 +77,24 @@ async def test_cache_hit_on_second_call():
     assert second.provider == first.provider
     assert provider.calls == 1  # second call never reached the provider
     assert events == ["cache.miss", "cache.hit"]
+
+
+async def test_cache_hit_preserves_finish_reason():
+    # Regression: a cache hit used to always return finish_reason=None on
+    # ExecutionResult even when the original (cached) response had one (e.g.
+    # "tool_use") — _write_back_cache now stores finish_reason in the cache
+    # entry and CacheLookup.execute's hit-restore path restores it.
+    cache = MemoryCache()
+    provider = FakeProvider(finish_reason="tool_use")
+    runtime = Runtime(providers=[provider], cache=cache)
+
+    first = await runtime.execute("same query")
+    second = await runtime.execute("same query")
+
+    assert first.cached is False
+    assert first.finish_reason == "tool_use"
+    assert second.cached is True
+    assert second.finish_reason == "tool_use"
 
 
 async def test_lifecycle_events_emitted():
@@ -209,3 +228,158 @@ async def test_default_pipeline_stage_composition():
     runtime = Runtime(providers=[FakeProvider()], cache=MemoryCache())
     stage_types = [type(s) for s in runtime.pipeline.stages]
     assert stage_types == [ContextResolver, CacheLookup, ProviderCall]
+
+
+# -- system_prompt= per-call override ----------------------------------------
+
+
+async def test_system_prompt_constructor_default_used_when_not_overridden():
+    runtime = Runtime(providers=[FakeProvider()], system_prompt="be nice")
+    result = await runtime.execute("hi")
+    assert result.context.messages[0].role == "system"
+    assert result.context.messages[0].content == "be nice"
+
+
+async def test_system_prompt_per_call_override_replaces_constructor_default():
+    runtime = Runtime(providers=[FakeProvider()], system_prompt="be nice")
+    result = await runtime.execute("hi", system_prompt="be terse")
+    assert result.context.messages[0].role == "system"
+    assert result.context.messages[0].content == "be terse"
+
+
+async def test_system_prompt_empty_string_clears_constructor_default_for_call():
+    runtime = Runtime(providers=[FakeProvider()], system_prompt="be nice")
+    result = await runtime.execute("hi", system_prompt="")
+    # No system message at all — "" clears it for this call.
+    assert [m.role for m in result.context.messages] == ["user"]
+
+
+async def test_system_prompt_not_passed_no_constructor_default_means_no_system_message():
+    runtime = make_runtime()  # no system_prompt= at construction
+    result = await runtime.execute("hi")
+    assert [m.role for m in result.context.messages] == ["user"]
+
+
+# -- provider_metadata= flows into ctx.state["provider_options"]["metadata"] --
+
+
+async def test_provider_metadata_flows_into_provider_options_metadata():
+    runtime = make_runtime()
+    result = await runtime.execute("hi", provider_metadata={"user_id": "u1"})
+    assert result.context.state["provider_options"]["metadata"] == {"user_id": "u1"}
+
+
+async def test_provider_metadata_reaches_the_provider_call():
+    captured: dict = {}
+
+    class CapturingProvider(FakeProvider):
+        async def complete(self, messages, **options):
+            captured.update(options)
+            return await super().complete(messages, **options)
+
+    runtime = Runtime(providers=[CapturingProvider()])
+    await runtime.execute("hi", provider_metadata={"user_id": "u1"})
+    assert captured.get("metadata") == {"user_id": "u1"}
+
+
+async def test_provider_metadata_omitted_leaves_no_metadata_key():
+    runtime = make_runtime()
+    result = await runtime.execute("hi")
+    assert "metadata" not in result.context.state.get("provider_options", {})
+
+
+# -- ExecutionResult.finish_reason / .raw ------------------------------------
+
+
+async def test_execution_result_surfaces_finish_reason_and_raw():
+    runtime = Runtime(providers=[FakeProvider(finish_reason="tool_use", raw={"foo": "bar"})])
+    result = await runtime.execute("hi")
+    assert result.finish_reason == "tool_use"
+    assert result.raw == {"foo": "bar"}
+
+
+async def test_execution_result_finish_reason_and_raw_default_to_none():
+    runtime = make_runtime()
+    result = await runtime.execute("hi")
+    assert result.finish_reason is None
+    assert result.raw is None
+
+
+# -- _coerce_message: content pass-through vs. stringification --------------
+
+
+def test_coerce_message_list_content_passes_through():
+    from byoai.stages import _coerce_message
+
+    blocks = [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+    message = _coerce_message({"role": "user", "content": blocks})
+    assert message is not None
+    assert message.content is blocks
+
+
+def test_coerce_message_non_str_non_list_scalar_is_stringified():
+    from byoai.stages import _coerce_message
+
+    message = _coerce_message({"role": "user", "content": 42})
+    assert message is not None
+    assert message.content == "42"
+
+
+# -- _last_user_message: text-block extraction from list-valued content -----
+
+
+def test_last_user_message_extracts_text_block_from_mixed_list_content():
+    from byoai.stages import _last_user_message
+
+    ctx = RequestContext(input="x")
+    ctx.messages = [
+        Message(
+            role="user",
+            content=[
+                {"type": "tool_result", "tool_use_id": "t1", "content": "42"},
+                {"type": "text", "text": "what's the weather?"},
+            ],
+        )
+    ]
+    assert _last_user_message(ctx) == "what's the weather?"
+
+
+def test_last_user_message_returns_none_for_all_tool_result_content():
+    from byoai.stages import _last_user_message
+
+    ctx = RequestContext(input="x")
+    ctx.messages = [
+        Message(
+            role="user",
+            content=[{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
+        )
+    ]
+    assert _last_user_message(ctx) is None
+
+
+def test_last_user_message_returns_none_when_no_user_message_at_all():
+    from byoai.stages import _last_user_message
+
+    ctx = RequestContext(input="x")
+    ctx.messages = [Message(role="system", content="be terse")]
+    assert _last_user_message(ctx) is None
+
+
+async def test_semantic_cache_lookup_degrades_to_noop_on_pure_tool_result_turn():
+    from byoai.stages import SemanticCacheLookup
+
+    class ExplodingEmbedder:
+        async def __call__(self, text: str) -> list[float]:
+            raise AssertionError("embedder must not be called for a pure tool_result turn")
+
+    stage = SemanticCacheLookup(store=object(), embedder=ExplodingEmbedder())
+    ctx = RequestContext(input="x")
+    ctx.messages = [
+        Message(
+            role="user",
+            content=[{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
+        )
+    ]
+    # Must not raise (embedder is never invoked) and must not short-circuit.
+    await stage.execute(ctx)
+    assert ctx.short_circuited is False
