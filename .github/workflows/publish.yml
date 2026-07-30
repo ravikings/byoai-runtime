@@ -16,15 +16,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Compare pyproject.toml version to the release tag
+      - name: Compare package version to the release tag
         run: |
           set -euo pipefail
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          # The version is single-sourced in src/byoai/_version.py (pyproject
+          # declares it dynamic); read it from there without importing.
+          PKG_VERSION="$(python -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('src/byoai/_version.py').read()).group(1))")"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Release tag '${GITHUB_REF_NAME}' (version '${TAG_VERSION}') does not match pyproject.toml version '${PKG_VERSION}'"
+            echo "::error::Release tag '${GITHUB_REF_NAME}' (version '${TAG_VERSION}') does not match src/byoai/_version.py version '${PKG_VERSION}'"
             exit 1
           fi
+
+  test:
+    # A release cut from a ref with failing tests must not reach PyPI, even
+    # though CI already ran on the branch — the release event is the gate.
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+      - run: pip install -e ".[all,dev]"
+      - run: python -m pytest
 
   build:
     name: Build distribution
@@ -34,7 +54,7 @@ jobs:
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, test]
     environment:
       name: pypi
       url: https://pypi.org/project/byoai-runtime/
@@ -45,4 +65,6 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # SHA-pinned (not the mutable release/v1 branch): this step holds OIDC
+      # publish rights, so the exact code it runs must be immutable.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2

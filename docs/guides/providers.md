@@ -3,7 +3,8 @@
 `byoai.providers.router.ProviderRouter` tries the primary provider up to `max_retries` times
 (exponential backoff with jitter, honoring a server's `Retry-After`), then moves to the next
 provider in the chain. Non-retryable errors (4xx other than 429) skip straight to the next
-provider. If every provider fails, `AllProvidersFailed` carries the full list of underlying
+provider. If every provider fails, `AllProvidersFailedError` (the old
+`AllProvidersFailed` name still works as an alias) carries the full list of underlying
 errors.
 
 ## Configuring a fallback chain

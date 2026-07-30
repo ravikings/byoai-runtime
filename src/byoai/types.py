@@ -7,7 +7,10 @@ hard dependency beyond the standard library; transport adapters may convert them
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .context import RequestContext
 
 Role = Literal["system", "user", "assistant", "tool"]
 
@@ -79,7 +82,7 @@ class ExecutionResult:
     """Final result of ``runtime.execute()``."""
 
     content: str
-    context: Any  # RequestContext; typed as Any to avoid a circular import
+    context: RequestContext
     usage: Usage = field(default_factory=Usage)
     cached: bool = False
     model: str | None = None

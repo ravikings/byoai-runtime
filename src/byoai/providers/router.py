@@ -3,7 +3,7 @@
 The router tries the primary provider up to ``max_retries`` times (exponential
 backoff + jitter, honoring server ``Retry-After``), then moves to the next
 provider in the chain. Non-retryable errors (4xx other than 429) skip straight
-to the next provider. If every provider fails, :class:`AllProvidersFailed`
+to the next provider. If every provider fails, :class:`AllProvidersFailedError`
 carries the full error list.
 """
 
@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from .. import events as ev
-from ..errors import AllProvidersFailed, ProviderError
+from ..errors import AllProvidersFailedError, ProviderError
 from ..events import EventBus
 from ..types import Message, ProviderResponse, StreamChunk
 from .base import FunctionProvider, LLMProvider
@@ -24,6 +24,11 @@ from .base import FunctionProvider, LLMProvider
 
 @dataclass
 class RetryPolicy:
+    """Retry/backoff knobs for :class:`ProviderRouter`: exponential backoff
+    from ``base_delay`` capped at ``max_delay``, with proportional jitter;
+    a server-provided ``Retry-After`` wins (still capped at ``max_delay``).
+    """
+
     max_retries: int = 2
     base_delay: float = 0.5
     max_delay: float = 10.0
@@ -37,6 +42,12 @@ class RetryPolicy:
 
 
 class ProviderRouter:
+    """Tries each provider in order: retryable failures back off and retry up
+    to ``retry_policy.max_retries``, then routing falls through to the next
+    provider; when every provider fails, :class:`AllProvidersFailedError`
+    carries the accumulated errors.
+    """
+
     def __init__(
         self,
         providers: Sequence[LLMProvider | Callable[..., Any]],
@@ -86,7 +97,7 @@ class ProviderRouter:
                         break
                     await asyncio.sleep(self.retry_policy.delay(attempt, exc.retry_after))
                     attempt += 1
-        raise AllProvidersFailed(
+        raise AllProvidersFailedError(
             "; ".join(str(e) for e in errors) or "all providers failed", errors
         )
 
@@ -129,7 +140,7 @@ class ProviderRouter:
                         break
                     await asyncio.sleep(self.retry_policy.delay(attempt, exc.retry_after))
                     attempt += 1
-        raise AllProvidersFailed(
+        raise AllProvidersFailedError(
             "; ".join(str(e) for e in errors) or "all providers failed", errors
         )
 

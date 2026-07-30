@@ -19,6 +19,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exception to every other adapter's httpx-only, no-SDK design). Error classification reuses
   `raise_for_status()` against the SDK's own `httpx.Response`, so retry/fallback behaves
   identically to every other provider.
+- `PipelineNotFoundError` and `AllProvidersFailedError` — PEP 8 names for the two exceptions
+  that lacked the `Error` suffix. The old `PipelineNotFound`/`AllProvidersFailed` names remain
+  as aliases, so existing `except` clauses keep working. `PipelineNotFoundError` also
+  subclasses `LookupError`.
+- `Runtime.aclose()` as an alias for `close()`, matching the async-native naming convention.
+- All library-owned HTTP clients now send a `User-Agent: byoai-runtime/<version>` header
+  (overridable via `default_headers`).
+- `default_params=` on `OpenAICompatProvider`/`build_openai_client` — query parameters applied
+  to every request (how the Azure preset now passes `api-version`).
+- Library logging: cache write failures and event-handler exceptions are logged on the
+  `byoai.*` loggers (a `NullHandler` is installed on the package logger; nothing is printed
+  unless the application configures logging). `EventBus` without an `error_handler` logs
+  swallowed subscriber exceptions at WARNING instead of discarding them.
+- CI measures test coverage; the release workflow runs the full test matrix before publishing
+  and pins the PyPI publish action to a commit SHA. Builds are checked with
+  `twine check --strict`. A `.pre-commit-config.yaml` mirrors the ruff CI check locally.
+
+### Changed
+- The version is single-sourced from `src/byoai/_version.py`; `pyproject.toml` declares it
+  `dynamic` and reads it at build time, so `byoai.__version__` can no longer drift from the
+  published package version.
+- The Robyn integration maps runtime errors to meaningful HTTP statuses instead of a blanket
+  422: `400` malformed payload, `404` unknown pipeline, `429` provider rate limit (echoing
+  `Retry-After`), `502` provider failure; other runtime errors keep `422`.
+- `AnthropicProvider` and `GeminiProvider` raise `ConfigurationError` at construction when no
+  API key is resolvable (argument, environment, or `default_headers`), instead of sending a
+  blank credential and failing later with a provider-side 401.
+- `Retry-After` headers in RFC 9110 HTTP-date form are now honored as backoff hints
+  (previously only the delay-seconds form was).
+- The pgvector filter compiler binds metadata field names as query parameters instead of
+  splicing them into the SQL text. Generated clauses now read `meta->>$1 = $2` rather than
+  `meta->>'field' = $1`; semantics are unchanged.
+- OTel provider span events use GenAI semantic-convention attribute keys (`gen_ai.system`,
+  `gen_ai.request.model`/`gen_ai.response.model`, `gen_ai.usage.*`, `error.message`), and
+  `byoai.execute` spans carry `gen_ai.operation.name` and `gen_ai.request.model`. Dashboards
+  filtering on the old ad-hoc keys (`provider`, `model`, `input_tokens`) need updating.
+- `MemorySemanticCache` runs its similarity math in a worker thread once the cache exceeds
+  4096 entries, so large lookups no longer stall the event loop.
+- `ExecutionResult.context` and `RequestContext.documents` are now precisely typed
+  (`RequestContext` / `list[Document]` instead of `Any`), and `Runtime`'s `embedder=`/
+  `semantic_cache=` parameters are typed against the `Embedder`/`SemanticCacheStore`
+  protocols.
+
+### Fixed
+- Streaming adapters (OpenAI-compatible, Anthropic, Gemini) now raise `ProviderError` on an
+  in-band `error` event mid-stream. Previously the event was silently skipped and the
+  truncated generation was delivered as a clean, successful completion.
+- FastAPI's `stream_response()` turns a mid-stream runtime error into a final
+  `data: {"error": ..., "done": true}` SSE event instead of tearing the connection, matching
+  the Robyn integration and `transport.sse_stream`.
+- The Azure OpenAI preset passes `api-version` as a real query parameter. It was previously
+  baked into `base_url`, where httpx's path concatenation placed the request path after the
+  query string.
 
 ## [0.1.0a1] - 2026-07-29
 

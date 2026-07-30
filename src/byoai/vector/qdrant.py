@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from .._version import USER_AGENT
 from ..errors import VectorStoreError
 from ..types import Document
 from .filters import parse, to_qdrant
@@ -49,6 +50,7 @@ class QdrantVectorStore:
         self.score_threshold = score_threshold
         self.search_params = search_params
         headers = {"api-key": api_key} if api_key else {}
+        headers.setdefault("User-Agent", USER_AGENT)
         self._client = client or httpx.AsyncClient(
             base_url=url.rstrip("/"), headers=headers, timeout=timeout
         )

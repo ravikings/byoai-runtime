@@ -16,8 +16,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
-      - run: pip install build
+      - run: pip install build twine
       - run: python -m build
+      # Catches metadata problems (bad readme rendering, missing fields)
+      # before an artifact can reach PyPI.
+      - run: twine check --strict dist/*
       - uses: actions/upload-artifact@v4
         with:
           name: dist

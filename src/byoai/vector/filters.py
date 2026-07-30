@@ -91,7 +91,12 @@ def to_pgvector_sql(
                 return f"NOT ({walk(n.children[0])})"
             joiner = " AND " if n.op == "$and" else " OR "
             return "(" + joiner.join(walk(c) for c in n.children) + ")"
-        accessor = f"{metadata_column}->>{_sql_str(n.field)}"
+        # The field name comes from request payloads — bind it like any other
+        # value instead of splicing it into the SQL text. The name check stays
+        # as a sanity contract (clear FilterError over a silent no-match).
+        _check_field(n.field)
+        params.append(n.field)
+        accessor = f"{metadata_column}->>${len(params)}"
         if n.op in ("$in", "$nin"):
             params.append([_to_text(v) for v in n.value])
             clause = f"{accessor} = ANY(${len(params)})"
@@ -113,10 +118,9 @@ def to_pgvector_sql(
     return walk(node), params
 
 
-def _sql_str(field: str) -> str:
+def _check_field(field: str) -> None:
     if not field.replace("_", "").replace(".", "").isalnum():
         raise FilterError(f"invalid field name {field!r}")
-    return "'" + field + "'"
 
 
 def _to_text(value: Any) -> str:

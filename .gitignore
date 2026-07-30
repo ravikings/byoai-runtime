@@ -182,3 +182,4 @@ cython_debug/
 internal_doc/
 .claude
 CLAUDE.md
+note.txt

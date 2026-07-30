@@ -39,39 +39,39 @@ def test_unknown_operator_rejected():
 
 def test_pgvector_sql_eq():
     clause, params = to_pgvector_sql(parse({"department": {"$eq": "legal"}}), "payload_json")
-    assert clause == "payload_json->>'department' = $1"
-    assert params == ["legal"]
+    assert clause == "payload_json->>$1 = $2"
+    assert params == ["department", "legal"]
 
 
 def test_pgvector_sql_numeric_comparison():
     clause, params = to_pgvector_sql(parse({"priority": {"$gt": 3}}), "meta")
-    assert clause == "(meta->>'priority')::numeric > $1"
-    assert params == [3]
+    assert clause == "(meta->>$1)::numeric > $2"
+    assert params == ["priority", 3]
 
 
 def test_pgvector_sql_in():
     clause, params = to_pgvector_sql(parse({"dept": {"$in": ["legal", "hr"]}}), "meta")
-    assert clause == "meta->>'dept' = ANY($1)"
-    assert params == [["legal", "hr"]]
+    assert clause == "meta->>$1 = ANY($2)"
+    assert params == ["dept", ["legal", "hr"]]
 
 
 def test_pgvector_sql_logical_with_seeded_params():
     node = parse({"$and": [{"a": "x"}, {"b": {"$ne": "y"}}]})
     clause, params = to_pgvector_sql(node, "meta", params=["seed"])
-    assert clause == "(meta->>'a' = $2 AND meta->>'b' != $3)"
-    assert params == ["seed", "x", "y"]
+    assert clause == "(meta->>$2 = $3 AND meta->>$4 != $5)"
+    assert params == ["seed", "a", "x", "b", "y"]
 
 
 def test_pgvector_sql_in_with_bools_uses_json_text_form():
     clause, params = to_pgvector_sql(parse({"active": {"$in": [True, False]}}), "meta")
-    assert params == [["true", "false"]]  # matches JSONB ->> text extraction
+    assert params == ["active", ["true", "false"]]  # matches JSONB ->> text extraction
 
 
 def test_pgvector_sql_none_compiles_to_is_null():
     clause, _ = to_pgvector_sql(parse({"deleted_at": None}), "meta")
-    assert clause == "meta->>'deleted_at' IS NULL"
+    assert clause == "meta->>$1 IS NULL"
     clause, _ = to_pgvector_sql(parse({"deleted_at": {"$ne": None}}), "meta")
-    assert clause == "meta->>'deleted_at' IS NOT NULL"
+    assert clause == "meta->>$1 IS NOT NULL"
 
 
 def test_pgvector_sql_none_with_ordering_op_rejected():

@@ -11,11 +11,13 @@ and frameworks compose stages; the runtime executes them.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from . import events as ev
 from .cache.base import CacheStore
+from .cache.semantic import SemanticCacheStore
 from .config import (
     build_cache,
     build_embedder,
@@ -25,7 +27,7 @@ from .config import (
     configure_telemetry,
 )
 from .context import RequestContext
-from .errors import ByoAIError, CacheError, ConfigurationError, PipelineNotFound
+from .errors import ByoAIError, CacheError, ConfigurationError, PipelineNotFoundError
 from .events import EventBus, EventHandler
 from .middleware import MiddlewareChain, MiddlewareLike
 from .pipeline import Pipeline
@@ -38,14 +40,23 @@ from .stages import (
     STATE_STREAMING,
     CacheLookup,
     ContextResolver,
+    Embedder,
     ProviderCall,
     SemanticCacheLookup,
 )
 from .types import ExecutionResult, StreamChunk
 from .vector.base import FunctionVectorStore, VectorStore
 
+logger = logging.getLogger(__name__)
+
 
 class Runtime:
+    """The execution engine: owns middleware, pipelines, events, provider
+    routing, caching and usage accounting. Configure it declaratively
+    (``llm={...}``, ``cache={...}``) or with pre-built adapter instances;
+    both styles compose.
+    """
+
     def __init__(
         self,
         *,
@@ -53,8 +64,8 @@ class Runtime:
         providers: list[LLMProvider | Callable[..., Any]] | None = None,
         cache: dict[str, Any] | CacheStore | None = None,
         vector_store: dict[str, Any] | VectorStore | Callable[..., Any] | None = None,
-        semantic_cache: dict[str, Any] | Any | None = None,
-        embedder: dict[str, Any] | Any | None = None,
+        semantic_cache: dict[str, Any] | SemanticCacheStore | None = None,
+        embedder: dict[str, Any] | Embedder | None = None,
         retry_policy: RetryPolicy | None = None,
         system_prompt: str | None = None,
         cache_ttl: int | None = 3600,
@@ -84,8 +95,10 @@ class Runtime:
             else None
         )
 
-        self.embedder = build_embedder(embedder) if isinstance(embedder, dict) else embedder
-        self.semantic_cache = (
+        self.embedder: Embedder | None = (
+            build_embedder(embedder) if isinstance(embedder, dict) else embedder
+        )
+        self.semantic_cache: SemanticCacheStore | None = (
             build_semantic_cache(semantic_cache)
             if isinstance(semantic_cache, dict)
             else semantic_cache
@@ -95,10 +108,6 @@ class Runtime:
             if isinstance(semantic_cache, dict)
             else DEFAULT_SEMANTIC_THRESHOLD
         )
-        if self.semantic_cache is not None and self.embedder is None:
-            raise ConfigurationError(
-                "semantic_cache requires an embedder= (config dict or async callable)"
-            )
 
         # Default pipeline: resolve context → exact cache → semantic (intent)
         # cache → provider call.
@@ -109,6 +118,10 @@ class Runtime:
         if self.cache is not None:
             self.pipeline.add(CacheLookup(self.cache, bus=self.events))
         if self.semantic_cache is not None:
+            if self.embedder is None:
+                raise ConfigurationError(
+                    "semantic_cache requires an embedder= (config dict or async callable)"
+                )
             self.pipeline.add(
                 SemanticCacheLookup(
                     self.semantic_cache,
@@ -147,7 +160,7 @@ class Runtime:
         try:
             return self._pipelines[name]
         except KeyError:
-            raise PipelineNotFound(
+            raise PipelineNotFoundError(
                 f"pipeline {name!r} is not registered (have: {sorted(self._pipelines)})"
             ) from None
 
@@ -310,19 +323,33 @@ class Runtime:
                 }
                 try:
                     await self.cache.set(key, entry, ttl=self._cache_ttl)
-                except CacheError:
-                    pass  # cache outage must never fail the request
+                except CacheError as exc:
+                    # A cache outage must never fail the request, but operators
+                    # need to see it happening.
+                    logger.warning(
+                        "cache write failed for request %s: %s", ctx.request_id, exc
+                    )
         if self.semantic_cache is not None:
             embedding = ctx.state.get(STATE_SEMANTIC_EMBEDDING)
             if embedding is not None:
                 try:
                     await self.semantic_cache.add(embedding, ctx.response)
-                except ByoAIError:
+                except ByoAIError as exc:
                     # e.g. a zero-magnitude embedding — a cache write failure
                     # must never fail an already-answered request.
-                    pass
+                    logger.warning(
+                        "semantic cache write failed for request %s: %s",
+                        ctx.request_id,
+                        exc,
+                    )
+
+    async def aclose(self) -> None:
+        """Alias for :meth:`close`, matching async-native naming (httpx, anyio)."""
+        await self.close()
 
     async def close(self) -> None:
+        """Close every adapter the runtime owns (providers, caches, vector
+        stores, embedder, telemetry). Prefer ``async with Runtime(...)``."""
         if self.router is not None:
             await self.router.close()
         if self.cache is not None:
@@ -331,8 +358,9 @@ class Runtime:
             await self.vector_store.close()
         if self.semantic_cache is not None:
             await self.semantic_cache.close()
-        if self.embedder is not None and hasattr(self.embedder, "close"):
-            await self.embedder.close()
+        embedder_close = getattr(self.embedder, "close", None)
+        if embedder_close is not None:
+            await embedder_close()
         if self._owned_tracer_provider is not None:
             # Flush the exporter's final batch so last-window spans aren't lost.
             await asyncio.to_thread(self._owned_tracer_provider.shutdown)

@@ -18,12 +18,18 @@ entries. Requires the ``semantic`` extra: ``pip install byoai-runtime[semantic]`
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
 import time
 from typing import Any, Protocol, runtime_checkable
 
 from ..errors import CacheError, ConfigurationError
+
+# Below this row count the matrix-vector product is cheaper than a thread
+# hop; above it, running inline would stall the event loop for every
+# concurrent request on the worker.
+_OFFLOAD_MIN_ROWS = 4096
 
 
 @runtime_checkable
@@ -62,6 +68,9 @@ class MemorySemanticCache:
         self._expires: Any = numpy.zeros(capacity, dtype=numpy.float64)
         self._next = 0
         self._count = 0
+        # Serializes writers against lookups: large lookups run in a worker
+        # thread, and an add() interleaving with one could tear a row mid-read.
+        self._mutex = asyncio.Lock()
 
     def _normalize(self, embedding: list[float]) -> Any:
         vector = self._np.asarray(embedding, dtype=self._np.float32)
@@ -89,16 +98,17 @@ class MemorySemanticCache:
         elif expires_at <= time.monotonic():
             return  # already expired
         vector = self._normalize(embedding)
-        if self._matrix is None:
-            self._matrix = self._np.zeros(
-                (self.capacity, vector.shape[0]), dtype=self._np.float32
-            )
-        slot = self._next
-        self._matrix[slot] = vector
-        self._responses[slot] = response
-        self._expires[slot] = expires_at
-        self._next = (self._next + 1) % self.capacity
-        self._count = min(self._count + 1, self.capacity)
+        async with self._mutex:
+            if self._matrix is None:
+                self._matrix = self._np.zeros(
+                    (self.capacity, vector.shape[0]), dtype=self._np.float32
+                )
+            slot = self._next
+            self._matrix[slot] = vector
+            self._responses[slot] = response
+            self._expires[slot] = expires_at
+            self._next = (self._next + 1) % self.capacity
+            self._count = min(self._count + 1, self.capacity)
 
     async def find(
         self, embedding: list[float], *, threshold: float
@@ -106,6 +116,12 @@ class MemorySemanticCache:
         if self._count == 0 or self._matrix is None:
             return None
         vector = self._normalize(embedding)
+        async with self._mutex:
+            if self._count >= _OFFLOAD_MIN_ROWS:
+                return await asyncio.to_thread(self._find_best, vector, threshold)
+            return self._find_best(vector, threshold)
+
+    def _find_best(self, vector: Any, threshold: float) -> tuple[str, float] | None:
         live = self._matrix[: self._count] @ vector  # cosine, rows pre-normalized
         alive = self._expires[: self._count] > time.monotonic()
         live = self._np.where(alive, live, -1.0)

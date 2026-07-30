@@ -44,7 +44,7 @@ except ImportError as exc:  # pragma: no cover
         "byoai.integrations.fastapi requires FastAPI: pip install 'byoai-runtime[fastapi]'"
     ) from exc
 
-from ..errors import ConfigurationError
+from ..errors import ByoAIError, ConfigurationError
 from ..runtime import Runtime
 from ..transport import chunk_to_dict, ws_reply
 
@@ -98,9 +98,15 @@ def stream_response(
     )
 
     async def event_source():
-        async for chunk in runtime.stream(input, **execute_kwargs):
-            if chunk.done or chunk.delta:
-                yield f"data: {json.dumps(chunk_to_dict(chunk))}\n\n"
+        try:
+            async for chunk in runtime.stream(input, **execute_kwargs):
+                if chunk.done or chunk.delta:
+                    yield f"data: {json.dumps(chunk_to_dict(chunk))}\n\n"
+        except ByoAIError as exc:
+            # Headers are already on the wire; a torn connection would leave the
+            # client guessing. Emit the same terminal error event as
+            # transport.sse_stream so all transports fail identically.
+            yield f"data: {json.dumps({'error': str(exc), 'done': True})}\n\n"
 
     return StreamingResponse(event_source(), media_type=media_type, headers=effective_headers)
 

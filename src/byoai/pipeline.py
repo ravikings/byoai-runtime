@@ -29,7 +29,9 @@ StageLike = "PipelineStage | Callable[[RequestContext], Awaitable[None]]"
 class FunctionStage:
     """Adapts a bare async function into a stage."""
 
-    def __init__(self, fn: Callable[[RequestContext], Awaitable[None]], name: str | None = None):
+    def __init__(
+        self, fn: Callable[[RequestContext], Awaitable[None]], name: str | None = None
+    ) -> None:
         self._fn = fn
         self.name = name or getattr(fn, "__name__", "function_stage")
 
@@ -38,6 +40,12 @@ class FunctionStage:
 
 
 class Pipeline:
+    """An ordered list of stages executed against one :class:`RequestContext`.
+
+    Stages run sequentially; a stage calling ``ctx.short_circuit()`` stops the
+    rest. Mutate with :meth:`add`, :meth:`remove`, :meth:`replace`.
+    """
+
     def __init__(self, name: str = "default") -> None:
         self.name = name
         self._stages: list[PipelineStage] = []

@@ -9,7 +9,8 @@ from typing import Any
 import httpx
 
 from .. import _json as json
-from ..errors import ProviderError
+from .._version import USER_AGENT
+from ..errors import ConfigurationError, ProviderError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
 from .base import DEFAULT_RETRYABLE_STATUS, parse_json_response, raise_for_status
 
@@ -33,15 +34,26 @@ class GeminiProvider:
             frozenset(retryable_status) if retryable_status is not None
             else DEFAULT_RETRYABLE_STATUS
         )
-        api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get(
-            "GOOGLE_API_KEY", ""
-        )
-        headers = {"x-goog-api-key": api_key}
-        headers.update(default_headers or {})
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,
-        )
         self._owns_client = client is None
+        if client is None:
+            api_key = (
+                api_key
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("GOOGLE_API_KEY")
+            )
+            if not api_key and "x-goog-api-key" not in (default_headers or {}):
+                # Fail fast at construction rather than sending a blank
+                # credential and surfacing a confusing 401 at request time.
+                raise ConfigurationError(
+                    "GeminiProvider needs an API key: pass api_key= or set the "
+                    "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable"
+                )
+            headers = {"x-goog-api-key": api_key or "", "User-Agent": USER_AGENT}
+            headers.update(default_headers or {})
+            client = httpx.AsyncClient(
+                base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,
+            )
+        self._client = client
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
         system_parts = [m.content for m in messages if m.role == "system"]
@@ -147,6 +159,24 @@ class GeminiProvider:
                             provider=self.name,
                             retryable=False,
                         ) from exc
+                    if data.get("error"):
+                        # In-band failure after a 200 — must not fall through to
+                        # a clean done=True as if the generation completed.
+                        error = data["error"]
+                        code = error.get("code") if isinstance(error, dict) else None
+                        detail = (
+                            error.get("message", str(error))
+                            if isinstance(error, dict)
+                            else str(error)
+                        )
+                        raise ProviderError(
+                            f"{self.name}: stream error event: {detail}",
+                            provider=self.name,
+                            status_code=code if isinstance(code, int) else None,
+                            retryable=code in self._retryable_status
+                            if isinstance(code, int)
+                            else False,
+                        )
                     if data.get("usageMetadata"):
                         usage = self._extract_usage(data)
                     delta = self._extract_text(data)

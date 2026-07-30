@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from .types import Message, Usage
+from .types import Document, Message, Usage
 
 
 @dataclass
@@ -32,7 +32,7 @@ class RequestContext:
 
     # Populated by stages as execution progresses.
     messages: list[Message] = field(default_factory=list)
-    documents: list[Any] = field(default_factory=list)
+    documents: list[Document] = field(default_factory=list)
     response: str | None = None
     model: str | None = None
     provider: str | None = None

@@ -13,7 +13,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     # PgVectorStore is behind the optional `pgvector` extra; import lazily.
     if name == "PgVectorStore":
         from .pgvector import PgVectorStore

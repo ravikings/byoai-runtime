@@ -5,7 +5,8 @@ Every execution emits lifecycle events (``request.received``, ``cache.hit``,
 
 Handlers may be sync or async. Handler failures are isolated: a raising
 subscriber never breaks the execution that emitted the event; failures are
-reported through the ``error_handler`` hook (default: ignored).
+reported through the ``error_handler`` hook (default: logged at WARNING on
+the ``byoai.events`` logger).
 """
 
 from __future__ import annotations
@@ -13,9 +14,12 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import inspect
+import logging
 from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 EventHandler = Callable[..., Any]
 
@@ -36,6 +40,10 @@ REQUEST_FAILED = "request.failed"
 
 
 class EventBus:
+    """Publish/subscribe hub for lifecycle events, with ``*`` wildcard
+    subscriptions. Handler failures are isolated from the emitting execution.
+    """
+
     def __init__(self, error_handler: Callable[[str, Exception], None] | None = None) -> None:
         self._handlers: dict[str, list[EventHandler]] = defaultdict(list)
         self._wildcard_handlers: dict[str, list[EventHandler]] = defaultdict(list)
@@ -71,6 +79,12 @@ class EventBus:
             except Exception as exc:  # noqa: BLE001 - subscriber isolation is the contract
                 if self._error_handler is not None:
                     self._error_handler(event, exc)
+                else:
+                    # A failing subscriber must never vanish without a trace —
+                    # telemetry/audit hooks silently dying is undebuggable.
+                    logger.warning(
+                        "event handler for %r raised", event, exc_info=exc
+                    )
 
     def emit_nowait(self, event: str, **payload: Any) -> None:
         """Fire-and-forget emit from sync code paths (requires a running loop)."""

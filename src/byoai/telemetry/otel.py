@@ -57,6 +57,11 @@ class OpenTelemetryMiddleware(Middleware):
     async def __call__(self, ctx: RequestContext, call_next: CallNext) -> None:
         with self._tracer.start_as_current_span("byoai.execute") as span:
             span.set_attribute("byoai.request_id", ctx.request_id)
+            span.set_attribute("gen_ai.operation.name", "chat")
+            if ctx.model:
+                # ctx.model at span start is the caller's requested model; by
+                # _finalize it holds what the provider actually served.
+                span.set_attribute("gen_ai.request.model", ctx.model)
             if ctx.pipeline_name:
                 span.set_attribute("byoai.pipeline", ctx.pipeline_name)
             if ctx.user_id:
@@ -117,15 +122,22 @@ def instrument(runtime: Runtime, *, tracer_provider: Any | None = None) -> Runti
             span.end()
 
     def on_provider_event(event: str, payload: dict[str, Any]) -> None:
-        attributes: dict[str, Any] = {"provider": payload.get("provider", "")}
+        # GenAI semantic-convention keys, matching the span attributes set by
+        # OpenTelemetryMiddleware._finalize.
+        attributes: dict[str, Any] = {"gen_ai.system": payload.get("provider", "")}
         if payload.get("model"):
-            attributes["model"] = payload["model"]
+            key = (
+                "gen_ai.response.model"
+                if event == ev.PROVIDER_COMPLETED
+                else "gen_ai.request.model"
+            )
+            attributes[key] = payload["model"]
         if payload.get("error"):
-            attributes["error"] = payload["error"]
+            attributes["error.message"] = payload["error"]
         usage = payload.get("usage")
         if usage is not None:
-            attributes["input_tokens"] = usage.input_tokens
-            attributes["output_tokens"] = usage.output_tokens
+            attributes["gen_ai.usage.input_tokens"] = usage.input_tokens
+            attributes["gen_ai.usage.output_tokens"] = usage.output_tokens
         trace.get_current_span().add_event(event, attributes)
 
     def on_cache_event(event: str, payload: dict[str, Any]) -> None:

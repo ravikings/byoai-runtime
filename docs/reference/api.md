@@ -42,7 +42,7 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 
 ::: byoai.ProviderError
 
-::: byoai.AllProvidersFailed
+::: byoai.AllProvidersFailedError
 
 ::: byoai.RateLimitError
 
@@ -56,7 +56,7 @@ Auto-generated from docstrings. For narrative guides, see [Guides](../guides/fas
 
 ::: byoai.PipelineError
 
-::: byoai.PipelineNotFound
+::: byoai.PipelineNotFoundError
 
 ## Cache adapters
 

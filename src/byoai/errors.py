@@ -23,7 +23,7 @@ class PipelineError(ByoAIError):
         self.stage = stage
 
 
-class PipelineNotFound(ByoAIError):
+class PipelineNotFoundError(ByoAIError, LookupError):
     """A named pipeline was requested but never registered."""
 
 
@@ -68,7 +68,7 @@ class RateLimitError(ProviderError):
         )
 
 
-class AllProvidersFailed(ByoAIError):
+class AllProvidersFailedError(ByoAIError):
     """Every provider in the fallback chain failed."""
 
     def __init__(self, message: str, errors: list[ProviderError]) -> None:
@@ -86,3 +86,10 @@ class VectorStoreError(ByoAIError):
 
 class FilterError(ByoAIError):
     """An AST filter expression is malformed or unsupported by the target dialect."""
+
+
+# Pre-0.1 names, kept as aliases so existing `except PipelineNotFound` /
+# `except AllProvidersFailed` code keeps working. New code should use the
+# PEP 8 ``*Error`` names.
+PipelineNotFound = PipelineNotFoundError
+AllProvidersFailed = AllProvidersFailedError

@@ -57,7 +57,8 @@ async def test_provider_lifecycle_span_events():
     assert "provider.started" in event_names
     assert "provider.completed" in event_names
     completed = next(e for e in stage.events if e.name == "provider.completed")
-    assert completed.attributes["input_tokens"] == 10
+    assert completed.attributes["gen_ai.usage.input_tokens"] == 10
+    assert completed.attributes["gen_ai.system"] == "fake"
 
 
 async def test_cache_hit_recorded():

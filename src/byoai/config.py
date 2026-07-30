@@ -163,8 +163,11 @@ def build_provider(config: dict[str, Any]) -> LLMProvider:
         config.setdefault("model", deployment)
         return OpenAICompatProvider(
             name="azure_openai",
-            base_url=f"{endpoint.rstrip('/')}/openai/deployments/{deployment}"
-            f"?api-version={api_version}",
+            base_url=f"{endpoint.rstrip('/')}/openai/deployments/{deployment}",
+            # As a query param on every request, not baked into base_url —
+            # httpx joins request paths onto base_url by concatenation, which
+            # would land "/chat/completions" after the query string.
+            default_params={"api-version": api_version},
             api_key=None,
             default_headers={"api-key": api_key},
             **config,

@@ -32,7 +32,13 @@ except ImportError as exc:  # pragma: no cover
         "byoai.integrations.robyn requires Robyn: pip install 'byoai-runtime[robyn]'"
     ) from exc
 
-from ..errors import ByoAIError
+from ..errors import (
+    AllProvidersFailedError,
+    ByoAIError,
+    PipelineNotFoundError,
+    ProviderError,
+    RateLimitError,
+)
 from ..runtime import Runtime
 from ..transport import execute_payload, parse_payload, sse_stream, ws_reply
 
@@ -66,9 +72,15 @@ def attach(
         except Exception:
             return _error_response(400, "request body must be JSON")
         try:
+            # Validate eagerly so a malformed payload is a 400, distinct from
+            # execution-time failures.
+            parse_payload(payload)
+        except ByoAIError as exc:
+            return _error_response(400, str(exc))
+        try:
             result = await execute_payload(runtime, payload)
         except ByoAIError as exc:
-            return _error_response(422, str(exc))
+            return _error_response(_error_status(exc), str(exc), headers=_error_headers(exc))
         return jsonify(result)
 
     @app.post(f"{prefix}/stream")
@@ -82,7 +94,7 @@ def attach(
             # status code; mid-stream errors become SSE error events instead.
             parse_payload(payload)
         except ByoAIError as exc:
-            return _error_response(422, str(exc))
+            return _error_response(400, str(exc))
         return StreamingResponse(
             sse_stream(runtime, payload),
             media_type=stream_media_type,
@@ -148,11 +160,35 @@ def _is_disconnect(exc: Exception) -> bool:
     return isinstance(exc, ConnectionError) or "disconnect" in type(exc).__name__.lower()
 
 
-def _error_response(status: int, message: str) -> Any:
+def _error_status(exc: ByoAIError) -> int:
+    """HTTP status for an execution-time runtime error.
+
+    Upstream provider failures are gateway errors (429/502), an unknown
+    pipeline is a 404, and anything else (middleware/stage failures, runtime
+    misconfiguration surfacing at request time) keeps the historical 422.
+    """
+    if isinstance(exc, RateLimitError):
+        return 429
+    if isinstance(exc, (AllProvidersFailedError, ProviderError)):
+        return 502
+    if isinstance(exc, PipelineNotFoundError):
+        return 404
+    return 422
+
+
+def _error_headers(exc: ByoAIError) -> dict[str, str] | None:
+    """Echo the provider's Retry-After hint so well-behaved clients back off."""
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        return {"Retry-After": str(max(0, round(retry_after)))}
+    return None
+
+
+def _error_response(status: int, message: str, headers: dict[str, str] | None = None) -> Any:
     from robyn import Response
 
     return Response(
         status_code=status,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
         description=json.dumps({"error": message}),
     )

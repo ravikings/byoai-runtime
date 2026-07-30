@@ -34,6 +34,7 @@ class OpenAICompatProvider:
         name: str = "openai",
         timeout: float = 60.0,
         default_headers: dict[str, str] | None = None,
+        default_params: dict[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
         chat_path: str = "/chat/completions",
         retryable_status: frozenset[int] | set[int] | None = None,
@@ -47,7 +48,8 @@ class OpenAICompatProvider:
         )
         self._client, self._owns_client = build_openai_client(
             api_key=api_key, base_url=base_url, timeout=timeout,
-            default_headers=default_headers, client=client,
+            default_headers=default_headers, default_params=default_params,
+            client=client,
         )
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +123,20 @@ class OpenAICompatProvider:
                             provider=self.name,
                             retryable=False,
                         ) from exc
+                    if data.get("error"):
+                        # In-band failure after a 200 — must not fall through to
+                        # a clean done=True as if the generation completed.
+                        error = data["error"]
+                        detail = (
+                            error.get("message", str(error))
+                            if isinstance(error, dict)
+                            else str(error)
+                        )
+                        raise ProviderError(
+                            f"{self.name}: stream error event: {detail}",
+                            provider=self.name,
+                            retryable=False,
+                        )
                     model = data.get("model", model)
                     if data.get("usage"):
                         usage = Usage(

@@ -49,7 +49,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
       - run: pip install -e ".[all,dev]"
-      - run: python -m pytest -v
+      - run: python -m pytest -v --cov=byoai --cov-report=term-missing
 
   build:
     name: Build distribution

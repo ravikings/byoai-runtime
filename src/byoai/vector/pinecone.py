@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from .._version import USER_AGENT
 from ..errors import VectorStoreError
 from ..types import Document
 from .filters import parse, to_pinecone
@@ -39,7 +40,7 @@ class PineconeVectorStore:
         self.sparse_vector = sparse_vector
         self._client = client or httpx.AsyncClient(
             base_url=host.rstrip("/"),
-            headers={"Api-Key": api_key},
+            headers={"Api-Key": api_key, "User-Agent": USER_AGENT},
             timeout=timeout,
         )
         self._owns_client = client is None

@@ -8,24 +8,46 @@ decisions without knowing provider specifics.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from .._version import USER_AGENT
 from ..types import Message, ProviderResponse, StreamChunk
+
+# The adapter-author toolkit: the protocol itself, the function wrapper, and
+# the shared HTTP-normalization helpers every httpx-based adapter uses.
+__all__ = [
+    "LLMProvider",
+    "FunctionProvider",
+    "DEFAULT_RETRYABLE_STATUS",
+    "parse_retry_after",
+    "raise_for_status",
+    "parse_json_response",
+    "build_openai_client",
+]
 
 
 def parse_retry_after(response: httpx.Response) -> float | None:
-    """Parse a Retry-After header as delay-seconds; None for absent or the
-    RFC 7231 HTTP-date form (which we treat as 'no usable delay')."""
+    """Parse a Retry-After header as delay-seconds. Both RFC 9110 forms are
+    accepted: delay-seconds and HTTP-date (converted to a delay from now)."""
     value = response.headers.get("retry-after")
     if value is None:
         return None
     try:
         return float(value)
     except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
         return None
+    if when is None:
+        return None
+    return max(0.0, when.timestamp() - time.time())
 
 
 DEFAULT_RETRYABLE_STATUS = frozenset({408, 409, 500, 502, 503, 504})
@@ -95,11 +117,15 @@ def build_openai_client(
     base_url: str,
     timeout: float,
     default_headers: dict[str, str] | None = None,
+    default_params: dict[str, str] | None = None,
     client: httpx.AsyncClient | None = None,
     env_var: str = "OPENAI_API_KEY",
 ) -> tuple[httpx.AsyncClient, bool]:
     """Shared httpx client construction for OpenAI-compatible endpoints.
 
+    ``default_params`` become query parameters on every request (e.g. Azure's
+    ``api-version``) — query strings never belong inside ``base_url``, where
+    httpx's path concatenation would mangle them.
     Returns ``(client, owns_client)`` — adapters close only clients they own.
     """
     import os
@@ -108,10 +134,16 @@ def build_openai_client(
     headers = dict(default_headers or {})
     if api_key:
         headers.setdefault("Authorization", f"Bearer {api_key}")
+    headers.setdefault("User-Agent", USER_AGENT)
     if client is not None:
         return client, False
     return (
-        httpx.AsyncClient(base_url=base_url.rstrip("/"), headers=headers, timeout=timeout),
+        httpx.AsyncClient(
+            base_url=base_url.rstrip("/"),
+            headers=headers,
+            params=default_params,
+            timeout=timeout,
+        ),
         True,
     )
 

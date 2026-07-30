@@ -9,7 +9,8 @@ from typing import Any
 import httpx
 
 from .. import _json as json
-from ..errors import ProviderError
+from .._version import USER_AGENT
+from ..errors import ConfigurationError, ProviderError, RateLimitError
 from ..types import Message, ProviderResponse, StreamChunk, Usage
 from .base import DEFAULT_RETRYABLE_STATUS, parse_json_response, raise_for_status
 
@@ -42,13 +43,26 @@ class AnthropicProvider:
             frozenset(retryable_status) if retryable_status is not None
             else DEFAULT_RETRYABLE_STATUS_ANTHROPIC
         )
-        api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        headers = {"x-api-key": api_key, "anthropic-version": api_version}
-        headers.update(default_headers or {})
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,
-        )
         self._owns_client = client is None
+        if client is None:
+            api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+            if not api_key and "x-api-key" not in (default_headers or {}):
+                # Fail fast at construction rather than sending a blank
+                # credential and surfacing a confusing 401 at request time.
+                raise ConfigurationError(
+                    "AnthropicProvider needs an API key: pass api_key= or set "
+                    "the ANTHROPIC_API_KEY environment variable"
+                )
+            headers = {
+                "x-api-key": api_key or "",
+                "anthropic-version": api_version,
+                "User-Agent": USER_AGENT,
+            }
+            headers.update(default_headers or {})
+            client = httpx.AsyncClient(
+                base_url=base_url.rstrip("/"), headers=headers, timeout=timeout,
+            )
+        self._client = client
 
     def _payload(self, messages: list[Message], options: dict[str, Any]) -> dict[str, Any]:
         system_parts = [m.content for m in messages if m.role == "system"]
@@ -130,6 +144,23 @@ class AnthropicProvider:
                             )
                     elif kind == "message_delta":
                         usage.output_tokens = data.get("usage", {}).get("output_tokens", 0)
+                    elif kind == "error":
+                        # In-band failure after a 200 (overloaded_error, mid-stream
+                        # rate limit, ...) — must not fall through to a clean
+                        # done=True as if the generation completed.
+                        error = data.get("error") or {}
+                        error_type = error.get("type", "error")
+                        detail = error.get("message", "")
+                        if error_type == "rate_limit_error":
+                            raise RateLimitError(
+                                f"{self.name}: rate limited mid-stream: {detail}",
+                                provider=self.name,
+                            )
+                        raise ProviderError(
+                            f"{self.name}: stream error event ({error_type}): {detail}",
+                            provider=self.name,
+                            retryable=error_type == "overloaded_error",
+                        )
                     elif kind == "message_stop":
                         break
                 yield StreamChunk(done=True, model=model, provider=self.name, usage=usage)

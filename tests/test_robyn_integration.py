@@ -37,3 +37,17 @@ def test_healthz():
         response = client.get("/healthz")
         assert response.status_code == 200
         assert response.json() == {"ok": True}
+
+
+def test_bad_payload_maps_to_400():
+    with make_client() as client:
+        response = client.post("/byoai/execute", json_data={"nope": 1})
+        assert response.status_code == 400
+
+
+def test_provider_failure_maps_to_502():
+    runtime = Runtime(providers=[FakeProvider(fail_times=99, fail_retryable=False)])
+    with TestClient(create_app(runtime)) as client:
+        response = client.post("/byoai/execute", json_data={"input": "hi"})
+        assert response.status_code == 502
+        assert "error" in response.json()

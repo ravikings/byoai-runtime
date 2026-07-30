@@ -4,7 +4,7 @@ from .memory import MemoryCache
 __all__ = ["CacheStore", "MemoryCache", "RedisCache"]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     # RedisCache is behind the optional `redis` extra; import lazily.
     if name == "RedisCache":
         from .redis import RedisCache

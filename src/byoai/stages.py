@@ -140,7 +140,7 @@ class CacheLookup:
         *,
         bus: EventBus | None = None,
         extra_fingerprint: Callable[[RequestContext], Any] | None = None,
-    ):
+    ) -> None:
         self.cache = cache
         self._bus = bus
         # Hook for apps needing extra key dimensions (e.g. a tenant id from

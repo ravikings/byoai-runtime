@@ -79,7 +79,7 @@ async def test_tool_error_surfaced_as_structured_result_not_crash(tool_name):
     result = await server.call_tool(
         tool_name, {"input": "hi", "pipeline": "no-such-pipeline"}
     )
-    assert result.structured_content["error_type"] == "PipelineNotFound"
+    assert result.structured_content["error_type"] == "PipelineNotFoundError"
     # caught and returned as data, not raised as a transport-level error
     assert result.is_error is False
 
