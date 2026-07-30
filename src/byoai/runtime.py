@@ -32,7 +32,7 @@ from .events import EventBus, EventHandler
 from .middleware import MiddlewareChain, MiddlewareLike
 from .pipeline import Pipeline
 from .providers.base import LLMProvider
-from .providers.router import ProviderRouter, RetryPolicy
+from .providers.router import ProviderRouter, RetryPolicy, SelectionFn, SelectionName
 from .stages import (
     DEFAULT_SEMANTIC_THRESHOLD,
     STATE_CACHE_KEY,
@@ -67,8 +67,8 @@ class Runtime:
         semantic_cache: dict[str, Any] | SemanticCacheStore | None = None,
         embedder: dict[str, Any] | Embedder | None = None,
         retry_policy: RetryPolicy | None = None,
+        selection: SelectionName | SelectionFn = "ordered",
         system_prompt: str | None = None,
-        cache_ttl: int | None = 3600,
         telemetry: Any | None = None,
     ) -> None:
         self.events = EventBus()
@@ -90,7 +90,12 @@ class Runtime:
         if llm is not None:
             resolved_providers = build_router(llm) + resolved_providers
         self.router: ProviderRouter | None = (
-            ProviderRouter(resolved_providers, retry_policy=retry_policy, event_bus=self.events)
+            ProviderRouter(
+                resolved_providers,
+                retry_policy=retry_policy,
+                selection=selection,
+                event_bus=self.events,
+            )
             if resolved_providers
             else None
         )
@@ -103,6 +108,20 @@ class Runtime:
             if isinstance(semantic_cache, dict)
             else semantic_cache
         )
+        if (
+            isinstance(semantic_cache, dict)
+            and semantic_cache.get("metric", "cosine") != "cosine"
+            and "threshold" not in semantic_cache
+        ):
+            # DEFAULT_SEMANTIC_THRESHOLD (0.92) is calibrated for cosine's
+            # [-1, 1] range. Falling back to it silently for e.g. "euclidean"
+            # (whose scores are <= 0) would make every lookup miss forever —
+            # a working feature going silently inert, not a loud failure.
+            raise ConfigurationError(
+                f"semantic_cache sets metric={semantic_cache['metric']!r} but no "
+                "explicit threshold= — the default (0.92) is calibrated for cosine "
+                "similarity and won't make sense for this metric's score range"
+            )
         self._semantic_threshold = (
             semantic_cache.get("threshold", DEFAULT_SEMANTIC_THRESHOLD)
             if isinstance(semantic_cache, dict)
@@ -133,7 +152,6 @@ class Runtime:
         if self.router is not None:
             self.pipeline.add(ProviderCall(self.router))
         self._pipelines["default"] = self.pipeline
-        self._cache_ttl = cache_ttl
 
         # A provider configure_telemetry created for us is ours to shut down
         # (flushing the final span batch); one the caller passed in is theirs.
@@ -359,7 +377,13 @@ class Runtime:
                     "finish_reason": ctx.finish_reason,
                 }
                 try:
-                    await self.cache.set(key, entry, ttl=self._cache_ttl)
+                    # No ttl= override here: the cache's own default_ttl (set
+                    # via cache={"default_ttl": ...} or on a pre-built
+                    # CacheStore instance) governs write-back lifetime — a
+                    # second, Runtime-level TTL knob previously shadowed it
+                    # unconditionally, silently overriding whatever the cache
+                    # itself was configured with.
+                    await self.cache.set(key, entry)
                 except CacheError as exc:
                     # A cache outage must never fail the request, but operators
                     # need to see it happening.

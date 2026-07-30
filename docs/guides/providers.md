@@ -1,9 +1,10 @@
 # Provider routing & fallback
 
-`byoai.providers.router.ProviderRouter` tries the primary provider up to `max_retries` times
-(exponential backoff with jitter, honoring a server's `Retry-After`), then moves to the next
-provider in the chain. Non-retryable errors (4xx other than 429) skip straight to the next
-provider. If every provider fails, `AllProvidersFailedError` (the old
+`byoai.providers.router.ProviderRouter` tries a provider up to `max_retries` times (exponential
+backoff with jitter, honoring a server's `Retry-After`), then moves to the next provider in the
+order `selection` picks for that call (ordered by default — see
+[Selection strategy](#selection-strategy)). Non-retryable errors (4xx other than 429) skip
+straight to the next provider. If every provider fails, `AllProvidersFailedError` (the old
 `AllProvidersFailed` name still works as an alias) carries the full list of underlying
 errors.
 
@@ -177,6 +178,30 @@ runtime = Runtime(
     retry_policy=RetryPolicy(max_retries=3, base_delay=0.5, max_delay=10.0, jitter=0.25),
 )
 ```
+
+## Selection strategy
+
+`selection=` picks the order providers are tried each call. A failure still falls through the
+rest of *whatever `selection` returned*, in order — the two built-in presets below only reorder,
+so with them nothing is ever skipped, only reprioritized. A custom callable that also filters
+(e.g. dropping providers it considers unhealthy) does exclude them for that call, by its own
+choice.
+
+```python
+runtime = Runtime(
+    llm={"provider": "openai", "model": "gpt-4o", "fallback": {"provider": "azure_openai", ...}},
+    selection="round_robin",
+)
+```
+
+* `"ordered"` (default) — always try providers in the order given; the primary is always tried
+  first and the rest are pure fallback.
+* `"round_robin"` — rotates the starting provider each call, so load spreads across providers
+  instead of always preferring the first.
+* a callable `(providers) -> providers`, returning the providers to try, in order, for this
+  call — e.g. weighted selection. A callable that also filters (dropping providers it considers
+  unhealthy, say) excludes them entirely for that call; it isn't a pure reprioritization like the
+  two presets above.
 
 ## Streaming fallback semantics
 

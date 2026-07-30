@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from tests.conftest import FakeProvider
 
-from byoai.errors import AllProvidersFailed
+from byoai.errors import AllProvidersFailed, ConfigurationError
 from byoai.providers.router import ProviderRouter, RetryPolicy
 from byoai.types import Message
 
@@ -83,3 +83,52 @@ async def test_stream_fallback_before_first_token():
 async def test_empty_provider_list_rejected():
     with pytest.raises(ValueError):
         ProviderRouter([])
+
+
+async def test_selection_default_is_ordered():
+    a = FakeProvider(name="a", reply="from a")
+    b = FakeProvider(name="b", reply="from b")
+    router = ProviderRouter([a, b], retry_policy=FAST)
+    first = await router.complete(MESSAGES)
+    second = await router.complete(MESSAGES)
+    assert first.provider == "a"
+    assert second.provider == "a"  # "ordered" never rotates
+
+
+async def test_selection_round_robin_rotates_starting_provider():
+    a = FakeProvider(name="a", reply="from a")
+    b = FakeProvider(name="b", reply="from b")
+    c = FakeProvider(name="c", reply="from c")
+    router = ProviderRouter([a, b, c], retry_policy=FAST, selection="round_robin")
+    served = [(await router.complete(MESSAGES)).provider for _ in range(4)]
+    assert served == ["a", "b", "c", "a"]
+
+
+async def test_selection_round_robin_still_falls_through_on_failure():
+    # Rotation changes who goes first, but a failure must still fall through
+    # every remaining provider in ring order — nothing gets skipped outright.
+    a = FakeProvider(name="a", fail_times=99)
+    b = FakeProvider(name="b", fail_times=99)
+    c = FakeProvider(name="c", reply="from c")
+    router = ProviderRouter([a, b, c], retry_policy=FAST, selection="round_robin")
+    first = await router.complete(MESSAGES)  # starts at a: a fails, b fails, c serves
+    assert first.provider == "c"
+    second = await router.complete(MESSAGES)  # starts at b: b fails, c serves
+    assert second.provider == "c"
+
+
+async def test_selection_custom_callable():
+    a = FakeProvider(name="a", reply="from a")
+    b = FakeProvider(name="b", reply="from b")
+
+    def reversed_order(providers):
+        return list(reversed(providers))
+
+    router = ProviderRouter([a, b], retry_policy=FAST, selection=reversed_order)
+    response = await router.complete(MESSAGES)
+    assert response.provider == "b"
+
+
+async def test_selection_unknown_name_rejected():
+    with pytest.raises(ConfigurationError):
+        ProviderRouter([FakeProvider()], selection="least_loaded")  # type: ignore[arg-type]

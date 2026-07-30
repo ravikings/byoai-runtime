@@ -124,7 +124,16 @@ class StreamChunk:
 
 @dataclass
 class ExecutionResult:
-    """Final result of ``runtime.execute()``."""
+    """Final result of ``runtime.execute()``.
+
+    Porting from the raw ``anthropic``/``openai`` SDKs: ``content`` here is
+    always a flattened ``str``, unlike ``anthropic.Message.content`` (a list
+    of typed content blocks) — a pure ``tool_use`` turn comes back as ``""``,
+    not a list to iterate. Block-level detail (``tool_use``, response id,
+    prompt-cache token counts) lives on ``raw`` instead; see the
+    ``docs/guides/providers.md#anthropic-tool-use-and-content-blocks`` guide
+    for the per-adapter shape of ``raw`` and a worked tool-use example.
+    """
 
     content: str
     context: RequestContext

@@ -31,6 +31,16 @@ runtime = Runtime(
 `dsn`, `min_pool_size`/`max_pool_size`, a `command_timeout`, and arbitrary `**pool_kwargs`
 forwarded to `asyncpg.create_pool()` (e.g. `server_settings={"statement_timeout": "..."}`, `ssl=...`).
 
+`metric` selects the pgvector distance operator — it must match whatever operator class the
+table's index was actually built with, or pgvector silently falls back to a sequential scan:
+
+* `"cosine"` (default) — `<=>`, for a `vector_cosine_ops` index.
+* `"l2"` — `<->`, for a `vector_l2_ops` index.
+* `"inner_product"` — `<#>`, for a `vector_ip_ops` index.
+
+`Document.score` is always "higher = more similar" regardless of metric: cosine reports
+`1 - distance`; `l2`/`inner_product` report the negated distance.
+
 ### Qdrant
 
 Reads an existing collection over Qdrant's REST API — points are never written.

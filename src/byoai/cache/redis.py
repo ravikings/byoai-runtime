@@ -41,6 +41,11 @@ def make_redis_client(
             "Redis support requires the redis package: pip install 'byoai-runtime[redis]'"
         ) from exc
 
+    if mode != "sentinel" and (sentinels or service_name):
+        raise ConfigurationError(
+            f"sentinels/service_name were given but mode={mode!r} — they're only used "
+            "when mode='sentinel', so this would silently connect without them"
+        )
     client_kwargs.setdefault("decode_responses", True)
     if mode == "standalone":
         return aioredis.from_url(url, **client_kwargs)
@@ -70,7 +75,7 @@ class RedisCache:
         namespace: str = "byoai:",
         session_reader: dict[str, str] | None = None,
         client: Any | None = None,
-        default_ttl: int | None = None,
+        default_ttl: int | None = 3600,
         mode: str = "standalone",
         sentinels: list | None = None,
         service_name: str | None = None,

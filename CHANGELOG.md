@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Breaking:** removed `Runtime(cache_ttl=...)`. It was a second, Runtime-level TTL knob that
+  always overrode whatever `default_ttl` the cache itself was configured with — `cache=
+  {"provider": "redis", "default_ttl": 7200}` still expired entries at 3600s, silently, because
+  `Runtime`'s own default (3600) was passed as an explicit `ttl=` on every write. TTL now lives
+  in exactly one place: `cache={"default_ttl": ...}`, or the matching arg on a pre-built
+  `CacheStore`. `MemoryCache`/`RedisCache` now default `default_ttl` to `3600` themselves
+  (previously `None`), so this removal doesn't also remove the implicit 1-hour expiry every
+  write-back used to get from `Runtime`'s old default — a cache built with no `default_ttl` at
+  all no longer caches forever by accident; pass `default_ttl=None` explicitly for that.
+- `build_cache` raises `ConfigurationError` instead of silently dropping `url` when `provider`
+  is `"memory"`/`"inmemory"` — catches the common dev-workflow slip of flipping `provider` from
+  `"redis"` to `"memory"` without also removing the now-stale `url`.
+- `PgVectorStore` raises `ConfigurationError` if `**pool_kwargs` includes `min_size`/`max_size` —
+  asyncpg's own names for `min_pool_size`/`max_pool_size`, which would otherwise silently win
+  over the typed constructor args via kwarg spread order.
+- `make_redis_client` raises `ConfigurationError` if `sentinels`/`service_name` are given with
+  `mode` other than `"sentinel"`, instead of silently accepting and ignoring them.
+- The `azure_openai` provider preset raises `ConfigurationError` at construction when no
+  `api_key`/`$AZURE_OPENAI_API_KEY` resolves, instead of sending an empty `api-key` header and
+  failing later with a provider-side 401.
 - CI now gates on `pyright` (previously `continue-on-error`, tracked as a known gap). Fixed the
   ~60 pre-existing type errors this surfaced — mostly Optional-narrowing gaps around
   reassigned-parameter patterns in the Redis-backed adapters (`cache/redis.py`,
@@ -23,6 +43,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer silently disables the check.
 
 ### Added
+- `MemorySemanticCache`/`RedisSemanticCache` gained `metric=` — `"cosine"` (default, unchanged
+  behavior), `"dot"`, `"euclidean"`, or a bare callable `(matrix, vector) -> scores`. Scoring was
+  previously hardcoded to cosine with no override. Also fixes a latent bug surfaced while adding
+  this: the "dead entry" sentinel used to reject expired/absent rows was `-1.0` (cosine's own
+  floor), which wouldn't reliably mask a NaN or out-of-range score under a non-cosine metric —
+  now `-inf`, with NaN explicitly masked too, so a broken custom metric callable degrades to a
+  miss instead of a bogus hit.
+- `PgVectorStore` gained `metric=` (`"cosine"` default, `"l2"`, `"inner_product"`), mapping to
+  pgvector's `<=>`/`<->`/`<#>` operators. The adapter previously had no way to match a table
+  whose index was actually built `vector_l2_ops`/`vector_ip_ops` — pgvector silently falls back
+  to a sequential scan on an operator/index mismatch.
+- `ProviderRouter`/`Runtime` gained `selection=` (`"ordered"` default, `"round_robin"`, or a bare
+  callable `(providers) -> providers`) for which provider is tried first each call. Fallback
+  still walks whatever `selection` returns in full on failure, so the two built-in presets never
+  skip a provider outright, only reprioritize; a custom callable that also filters providers out
+  excludes them for that call by its own choice.
 - `byoai.integrations.flask` (`attach`/`get_runtime`/`execute`/`stream_response`) — Flask's
   WSGI/sync model meets `Runtime`'s asyncio-native providers via a persistent background
   event-loop thread, so route handlers stay plain `def` with no `flask[async]`/asgiref
@@ -149,6 +185,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocols.
 
 ### Fixed
+- `ExecutionResult.content`'s docstring now calls out its divergence from `anthropic.Message.
+  content` directly (list of typed blocks vs. a flattened `str`, with a pointer to `raw` and
+  the providers guide's worked tool-use example) — previously only documented in the guide, so
+  porting existing Anthropic code and iterating blocks on `.content` failed with a plain
+  `'str' object has no attribute 'type'` instead of a discoverable pointer to the right field.
 - Streaming adapters (OpenAI-compatible, Anthropic, Gemini) now raise `ProviderError` on an
   in-band `error` event mid-stream. Previously the event was silently skipped and the
   truncated generation was delivered as a clean, successful completion.
