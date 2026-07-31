@@ -87,8 +87,8 @@ jobs:
     needs: [build, test]
     environment:
       # Matches the repo's actual environment name (Settings > Environments >
-      # "PYPI") — cosmetic only, both GitHub and PyPI match this case-insensitively.
-      name: PYPI
+      # "development") — cosmetic only, both GitHub and PyPI match this case-insensitively.
+      name: development
       url: https://pypi.org/project/byoai-runtime/
     permissions:
       id-token: write  # required for PyPI Trusted Publishing (OIDC)
