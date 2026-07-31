@@ -12,8 +12,8 @@ jobs:
     name: Check version matches release tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Compare package version to the release tag
@@ -45,8 +45,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -63,12 +63,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build, test]
     environment:
-      name: pypi
+      # Matches the repo's actual environment name (Settings > Environments >
+      # "PYPI") — cosmetic only, both GitHub and PyPI match this case-insensitively.
+      name: PYPI
       url: https://pypi.org/project/byoai-runtime/
     permissions:
       id-token: write  # required for PyPI Trusted Publishing (OIDC)
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/

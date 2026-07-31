@@ -138,7 +138,7 @@ Pass `stream_fn=` to `FunctionProvider` explicitly — a bare function given str
 from byoai.providers.base import FunctionProvider
 
 async def fake_llm(messages, **options):
-    return "canned answer"  # the non-streaming fallback FunctionProvider still needs
+    return "canned answer"  # FunctionProvider's required fn=, even though only .stream() is used
 
 async def fake_stream(messages, **options):
     yield "hel"
