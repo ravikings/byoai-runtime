@@ -62,11 +62,11 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: [build, test]
-    environment:
-      # Matches the repo's actual environment name (Settings > Environments >
-      # "PYPI") — cosmetic only, both GitHub and PyPI match this case-insensitively.
-      name: PYPI
-      url: https://pypi.org/project/byoai-runtime/
+    # environment:
+    #   # Matches the repo's actual environment name (Settings > Environments >
+    #   # "PYPI") — cosmetic only, both GitHub and PyPI match this case-insensitively.
+    #   name: PYPI
+    #   url: https://pypi.org/project/byoai-runtime/
     permissions:
       id-token: write  # required for PyPI Trusted Publishing (OIDC)
     steps:
@@ -76,4 +76,5 @@ jobs:
           path: dist/
       # SHA-pinned (not the mutable release/v1 branch): this step holds OIDC
       # publish rights, so the exact code it runs must be immutable.
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+      #- uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+      - uses: pypa/gh-action-pypi-publish@release/v1
