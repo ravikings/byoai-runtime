@@ -3,6 +3,12 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  # Lets you manually run build+test end to end (Actions tab > this workflow >
+  # Run workflow) without cutting a real release. check-version is skipped
+  # (there's no release tag to check against) and publish never runs outside
+  # a real `release: published` event, so a manual run can't accidentally
+  # push a package to PyPI.
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -10,6 +16,7 @@ permissions:
 jobs:
   check-version:
     name: Check version matches release tag
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -56,17 +63,33 @@ jobs:
   build:
     name: Build distribution
     needs: [check-version]
+    # check-version only runs (and must pass) for a real release; a manual
+    # workflow_dispatch run leaves it skipped rather than failed, and build
+    # should still go ahead in that case so it's actually testable on demand.
+    # Allowlisted, not blocklisted (!= 'failure' alone would also admit a
+    # 'cancelled' check-version — e.g. that job hitting its own timeout —
+    # since a single needed job's own cancellation doesn't set run-level
+    # cancelled()): only 'success' (a real release, check passed) or
+    # 'skipped' (workflow_dispatch, nothing to check) let build proceed.
+    if: "!cancelled() && (needs.check-version.result == 'success' || needs.check-version.result == 'skipped')"
     uses: ./.github/workflows/build.yml
 
   publish:
     name: Publish to PyPI
+    # success() is explicit, not implicit: a custom if: on a job replaces
+    # GitHub's default "only run if needs succeeded" check rather than
+    # adding to it, so without this, publish could run even if build/test
+    # failed as long as the event was a release. Real releases only — never
+    # on a manual workflow_dispatch run, so triggering this workflow by hand
+    # to sanity-check the pipeline can never accidentally push to PyPI.
+    if: success() && github.event_name == 'release'
     runs-on: ubuntu-latest
     needs: [build, test]
-    # environment:
-    #   # Matches the repo's actual environment name (Settings > Environments >
-    #   # "PYPI") — cosmetic only, both GitHub and PyPI match this case-insensitively.
-    #   name: PYPI
-    #   url: https://pypi.org/project/byoai-runtime/
+    environment:
+      # Matches the repo's actual environment name (Settings > Environments >
+      # "PYPI") — cosmetic only, both GitHub and PyPI match this case-insensitively.
+      name: PYPI
+      url: https://pypi.org/project/byoai-runtime/
     permissions:
       id-token: write  # required for PyPI Trusted Publishing (OIDC)
     steps:
@@ -76,5 +99,4 @@ jobs:
           path: dist/
       # SHA-pinned (not the mutable release/v1 branch): this step holds OIDC
       # publish rights, so the exact code it runs must be immutable.
-      #- uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
