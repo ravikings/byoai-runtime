@@ -51,7 +51,9 @@ dev = [
 ]
 
 [project.scripts]
-byoai-agent-context-cache = "byoai.agent_context_cache.main:run"
+byoai-cache = "byoai.agent_context_cache.main:cli"
+# Long-form alias kept for backward compatibility.
+byoai-agent-context-cache = "byoai.agent_context_cache.main:cli"
 
 [project.urls]
 Homepage = "https://github.com/ravikings/byoai-runtime"

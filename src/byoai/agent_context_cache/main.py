@@ -972,16 +972,185 @@ async def proxy_catch_all(request: Request, path: str):
     )
 
 
-def run():
-    """Entry point for the `byoai-agent-context-cache` console script."""
+# --------------------------------------------------------------------------
+# CLI: foreground server + background start/stop/status
+# --------------------------------------------------------------------------
+
+# Runtime files live alongside the durable SQLite log under ~/.byoai/ so a
+# developer has one predictable place for the proxy's state, pid, and logs.
+_BYOAI_HOME = os.path.join(os.path.expanduser("~"), ".byoai")
+_PID_FILE = os.path.join(_BYOAI_HOME, "proxy.pid")
+_LOG_FILE = os.path.join(_BYOAI_HOME, "proxy.log")
+
+
+def _resolve_host_port(args) -> tuple[str, int]:
+    # getattr: the bare `byoai-cache` (no subcommand) namespace has no host/port
+    # attributes since those flags live on the subparsers.
+    host = getattr(args, "host", None) or os.getenv("BYOAI_HOST", "0.0.0.0")
+    arg_port = getattr(args, "port", None)
+    port = arg_port if arg_port is not None else int(os.getenv("BYOAI_PORT", "8787"))
+    return host, port
+
+
+def _display_url(host: str, port: int) -> str:
+    # 0.0.0.0 / :: mean "all interfaces" — not a usable address to click, so
+    # show localhost, which is where a developer actually reaches it.
+    shown = "localhost" if host in ("0.0.0.0", "::", "") else host
+    return f"http://{shown}:{port}"
+
+
+def run(host: str = "0.0.0.0", port: int = 8787) -> None:
+    """Run the proxy in the foreground (blocks). Shared by the default command
+    and the detached child spawned by ``start``."""
     import uvicorn
 
-    uvicorn.run(
-        app,
-        host=os.getenv("BYOAI_HOST", "0.0.0.0"),
-        port=int(os.getenv("BYOAI_PORT", "8787")),
+    uvicorn.run(app, host=host, port=port)
+
+
+def _read_pid() -> int | None:
+    try:
+        with open(_PID_FILE) as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # signal 0 only checks existence/permission, doesn't kill
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    return True
+
+
+def _running_pid() -> int | None:
+    """The pid of a live proxy per the pidfile, cleaning up a stale file."""
+    pid = _read_pid()
+    if pid is None:
+        return None
+    if _pid_alive(pid):
+        return pid
+    # Stale pidfile from a crash/kill -9 — remove it so `start` can proceed.
+    try:
+        os.remove(_PID_FILE)
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def _cmd_start(args) -> int:
+    import subprocess
+    import sys
+
+    existing = _running_pid()
+    if existing is not None:
+        host, port = _resolve_host_port(args)
+        print(f"already running (pid {existing}) → {_display_url(host, port)}")
+        return 0
+
+    os.makedirs(_BYOAI_HOME, exist_ok=True)
+    host, port = _resolve_host_port(args)
+    logf = open(_LOG_FILE, "a")
+    # Re-invoke ourselves in the foreground as a detached session leader:
+    # start_new_session=True gives the child its own session with no
+    # controlling terminal, so it survives the parent shell closing. stdin is
+    # detached; stdout/stderr stream to the log file.
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "byoai.agent_context_cache.main",
+         "serve", "--host", host, "--port", str(port)],
+        stdin=subprocess.DEVNULL,
+        stdout=logf,
+        stderr=logf,
+        start_new_session=True,
     )
+    with open(_PID_FILE, "w") as f:
+        f.write(str(proc.pid))
+    print(f"proxy running (pid {proc.pid}) → {_display_url(host, port)}")
+    print(f"logs: {_LOG_FILE}")
+    print("stop with: byoai-cache stop")
+    return 0
+
+
+def _cmd_stop(args) -> int:
+    import signal
+    import time
+
+    pid = _running_pid()
+    if pid is None:
+        print("not running")
+        return 0
+    os.kill(pid, signal.SIGTERM)
+    # Give uvicorn a moment to shut down gracefully, then escalate.
+    for _ in range(50):  # up to ~5s
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, signal.SIGKILL)
+    try:
+        os.remove(_PID_FILE)
+    except FileNotFoundError:
+        pass
+    print("stopped")
+    return 0
+
+
+def _cmd_status(args) -> int:
+    pid = _running_pid()
+    if pid is None:
+        print("stopped")
+        return 1
+    host, port = _resolve_host_port(args)
+    print(f"running (pid {pid}) → {_display_url(host, port)}")
+    return 0
+
+
+def cli(argv: list[str] | None = None) -> int:
+    """Console-script entry point.
+
+    Default (no subcommand) runs the proxy in the foreground, matching the
+    historical behavior. ``start``/``stop``/``status`` manage a detached
+    background instance whose pid and logs live under ``~/.byoai/``.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="byoai-cache",
+        description="ByoAI agent context-cache proxy (Anthropic-compatible).",
+    )
+    # Shared --host/--port live on the subparsers only (not the top level) so a
+    # value given before a subcommand can't be clobbered by the subparser's
+    # default. Bare `byoai-cache` reads host/port from the environment.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--host", help="bind address (env BYOAI_HOST, default 0.0.0.0)")
+    common.add_argument("--port", type=int, help="port (env BYOAI_PORT, default 8787)")
+
+    sub = parser.add_subparsers(dest="command")
+    for name, help_text in (
+        ("serve", "run in the foreground (default)"),
+        ("start", "start in the background (detached; survives closing the terminal)"),
+        ("stop", "stop the background proxy"),
+        ("status", "show whether the background proxy is running"),
+    ):
+        sub.add_parser(name, parents=[common], help=help_text)
+
+    args = parser.parse_args(argv)
+
+    if args.command in (None, "serve"):
+        host, port = _resolve_host_port(args)
+        run(host, port)
+        return 0
+    if args.command == "start":
+        return _cmd_start(args)
+    if args.command == "stop":
+        return _cmd_stop(args)
+    if args.command == "status":
+        return _cmd_status(args)
+    parser.print_help()
+    return 2
 
 
 if __name__ == "__main__":
-    run()
+    raise SystemExit(cli())

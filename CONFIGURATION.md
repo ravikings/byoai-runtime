@@ -479,11 +479,18 @@ repeated large text blocks within a session to cut token spend.
 It is a separate process from `Runtime`, started via its own console script,
 not something you configure through `build_*` dicts.
 
-Start it with:
+Start it with `byoai-cache` (the long `byoai-agent-context-cache` name is an
+alias for the same command):
 
 ```bash
-byoai-agent-context-cache
+byoai-cache                # foreground
+byoai-cache start          # background (detached; survives closing the terminal)
+byoai-cache status         # running (pid …) → http://localhost:8787
+byoai-cache stop
 ```
+
+`start` writes its pid and logs under `~/.byoai/` (`proxy.pid`, `proxy.log`).
+`--host` / `--port` override the `BYOAI_HOST` / `BYOAI_PORT` env vars below.
 
 Then point any Anthropic API client at it, e.g. for Claude Code:
 

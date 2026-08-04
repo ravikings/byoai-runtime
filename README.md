@@ -296,13 +296,25 @@ within a session, cutting token spend without any client-side changes.
 
 ```bash
 pip install byoai-runtime
-byoai-agent-context-cache
+byoai-cache                                    # runs in the foreground
 export ANTHROPIC_BASE_URL=http://localhost:8787
 ```
 
-It listens on `:8787` by default and uses Redis for session/dedup state if
-`REDIS_URL` is set (falls back to an in-process store otherwise). Full env
-var reference in **[CONFIGURATION.md](CONFIGURATION.md#agent-context-cache--byoai-agent-context-cache)**.
+Prefer to keep it running without holding a terminal open? Start it detached:
+
+```bash
+byoai-cache start      # background; survives closing the terminal
+byoai-cache status     # running (pid …) → http://localhost:8787
+byoai-cache stop
+```
+
+`start` writes its pid and logs under `~/.byoai/` (`proxy.pid`, `proxy.log`).
+Both `byoai-cache` and the longer `byoai-agent-context-cache` are the same
+command. Override the bind address/port with `--host` / `--port` (or the
+`BYOAI_HOST` / `BYOAI_PORT` env vars). It listens on `:8787` by default and
+uses Redis for session/dedup state if `REDIS_URL` is set (falls back to an
+in-process store otherwise). Full env var reference in
+**[CONFIGURATION.md](CONFIGURATION.md#agent-context-cache--byoai-agent-context-cache)**.
 
 ### Inspecting token-savings data
 
