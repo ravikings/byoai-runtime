@@ -25,6 +25,13 @@ from .vector.base import VectorStore
 STATE_STREAMING = "byoai.streaming"
 STATE_CACHE_KEY = "byoai.cache_key"
 STATE_SEMANTIC_EMBEDDING = "byoai.semantic_embedding"
+# The raw Anthropic-wire request body (dict, the /v1/messages shape) the wire
+# shell hands the pipeline. The PromptCacheInjection and SessionDedup stages
+# read and mutate it in place; the wire shell reads it back out to forward
+# upstream. Both stages are no-ops when it is absent.
+STATE_ANTHROPIC_BODY = "byoai.anthropic_body"
+# Written by SessionDedup: (original_estimated_tokens, optimized_estimated_tokens).
+STATE_DEDUP_TOKENS = "byoai.dedup_tokens"
 
 # Single source of truth for the semantic-cache similarity floor; runtime.py
 # reads this default too instead of duplicating the literal.
@@ -625,3 +632,224 @@ class ProviderCall:
         ctx.usage.add(response.usage)
         ctx.finish_reason = response.finish_reason
         ctx.raw_response = response.raw
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-wire optimization stages
+#
+# These two stages express the only behaviors the agent-context-cache proxy
+# does that the runtime didn't already own: injecting prompt-cache breakpoints,
+# and session-scoped dedup/truncation of oversized tool output and repeated
+# file snapshots. They operate on the raw Anthropic-wire request body carried
+# in ``ctx.state[STATE_ANTHROPIC_BODY]`` so the wire shell can hand the request
+# straight through without lossy re-coercion. The pure ``inject`` / ``optimize``
+# methods are the reusable core; ``execute`` is just the pipeline adapter.
+# ---------------------------------------------------------------------------
+
+
+def _count_cache_control_markers(node: Any) -> int:
+    """Recursively count existing ``cache_control`` occurrences in the body."""
+    count = 0
+    if isinstance(node, dict):
+        if "cache_control" in node:
+            count += 1
+        for v in node.values():
+            count += _count_cache_control_markers(v)
+    elif isinstance(node, list):
+        for item in node:
+            count += _count_cache_control_markers(item)
+    return count
+
+
+# Anthropic caps a request at 4 cache_control breakpoints; leave headroom for
+# whatever the client may already set by only ever spending 2 of our own
+# (system + tools, at most).
+MAX_CACHE_CONTROL_BREAKPOINTS = 4
+OUR_CACHE_CONTROL_BUDGET = 2
+
+# Tools whose output is genuinely log-shaped (test runners, shell commands)
+# where "keep only the error lines" is a reasonable lossy summary. Everything
+# else — file reads, greps, edits — must never be keyword-classified, since
+# ordinary source very plausibly contains "ERROR"/"Exception" with zero
+# relation to a failure. Case-insensitive substring match on the tool name.
+NOISY_LOG_TOOLS = {"bash", "shell", "execute", "run", "runtests", "runcommand", "terminal"}
+
+
+def _tool_name_is_noisy_log_source(tool_name: str) -> bool:
+    name = (tool_name or "").lower()
+    return any(marker in name for marker in NOISY_LOG_TOOLS)
+
+
+def _build_tool_use_name_map(messages: list) -> dict:
+    """tool_use_id -> tool name, so a tool_result can be traced back to the
+    tool that produced it (a tool_result block carries only tool_use_id)."""
+    id_to_name: dict = {}
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tid = block.get("id")
+                    if tid:
+                        id_to_name[tid] = block.get("name", "")
+    return id_to_name
+
+
+def _truncate_generic(text: str, limit: int = 4000) -> str:
+    """Length-based head/tail truncation for non-log tool output. Never
+    reclassifies by keyword, so it can't mislabel ordinary file content."""
+    if len(text) <= limit:
+        return text
+    head = text[: limit // 2]
+    tail = text[-limit // 2 :]
+    return (
+        f"{head}\n\n[...byoai-runtime: {len(text) - limit:,} chars omitted from "
+        f"middle (non-log tool output, safe length cap only)...]\n\n{tail}"
+    )
+
+
+def _truncate_log_like(text: str) -> str:
+    """Only for known log/test-runner tool output: safe to keep just the
+    error-shaped lines since that's the pattern this class of output follows."""
+    if len(text) <= 1200:
+        return text
+    lines = text.split("\n")
+    errors = [l for l in lines if any(k in l for k in ["FAIL", "ERROR", "Traceback", "Exception"])]
+    if errors:
+        return "\n".join(errors[-25:]) + "\n\n[...byoai-runtime: Verbose test/log output pruned to error lines...]"
+    return text[:600] + "\n\n[...byoai-runtime: Large log-like tool output truncated...]"
+
+
+def _estimate_tokens(data: dict) -> int:
+    """Quick token estimator (~4 chars per token average).
+
+    Uses the stdlib ``json`` (default spaced separators) rather than byoai's
+    compact ``_json`` so the estimate stays byte-identical to the legacy
+    proxy's ``estimate_tokens``; this number feeds logging/benchmark output
+    that must not drift when the inline logic is swapped for this stage.
+    """
+    import json as _stdlib_json
+
+    return len(_stdlib_json.dumps(data)) // 4
+
+
+class PromptCacheInjection:
+    """Inject ``cache_control`` breakpoints on the system prompt and tool
+    definitions when the client didn't set any of its own.
+
+    Anthropic's prompt cache is keyed purely on exact content match — it has no
+    concept of "session". Subagent calls routed through the shell typically
+    share a fixed system prompt and tool schema; without a breakpoint that
+    shared prefix is never cached and every call pays full price. Safe no-op if
+    the client already manages ``cache_control`` anywhere, so we never blow past
+    the 4-breakpoint limit or clash with a client-side cache strategy.
+    """
+
+    name = "prompt_cache_injection"
+
+    @staticmethod
+    def inject(body: dict) -> dict:
+        if _count_cache_control_markers(body) > 0:
+            return body  # client manages its own cache_control; don't interfere
+
+        breakpoints_used = 0
+
+        system = body.get("system")
+        if system and breakpoints_used < OUR_CACHE_CONTROL_BUDGET:
+            if isinstance(system, str):
+                body["system"] = [
+                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+                ]
+                breakpoints_used += 1
+            elif isinstance(system, list) and system:
+                system[-1] = {**system[-1], "cache_control": {"type": "ephemeral"}}
+                breakpoints_used += 1
+
+        tools = body.get("tools")
+        if tools and isinstance(tools, list) and breakpoints_used < OUR_CACHE_CONTROL_BUDGET:
+            tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
+            breakpoints_used += 1
+
+        return body
+
+    async def execute(self, ctx: RequestContext) -> None:
+        body = ctx.state.get(STATE_ANTHROPIC_BODY)
+        if isinstance(body, dict):
+            self.inject(body)
+
+
+class SessionDedup:
+    """Truncate noisy tool output and dedup repeated large file snapshots
+    *within one conversation only*.
+
+    Two behaviors, both loss-conscious:
+
+    * Oversized ``tool_result`` content (>1200 chars) is truncated — error-line
+      pruning for known log/test-runner tools, safe head/tail otherwise.
+    * A text block >2000 chars whose SHA-256 was already seen for this
+      ``session_id`` is collapsed to a short placeholder. Dedup state is scoped
+      per session via the injected :class:`~byoai.session_hash.SessionHashStore`,
+      so it can never reference content the model never saw in this conversation.
+    """
+
+    name = "session_dedup"
+
+    def __init__(self, store: Any) -> None:
+        self.store = store
+
+    async def optimize(self, body: dict, session_id: str) -> tuple[dict, int, int]:
+        """Mutate ``body`` in place; return ``(body, orig_tokens, opt_tokens)``."""
+        orig_tokens = _estimate_tokens(body)
+        messages = body.get("messages", [])
+        tool_name_by_id = _build_tool_use_name_map(messages)
+
+        for msg in messages:
+            if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                for block in msg["content"]:
+                    # 1. Truncate oversized tool output — keyword heuristic only
+                    # for log-shaped tools, safe length cap otherwise.
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        content = block.get("content", "")
+                        tool_name = tool_name_by_id.get(block.get("tool_use_id"), "")
+                        is_log_source = _tool_name_is_noisy_log_source(tool_name)
+
+                        if isinstance(content, str) and len(content) > 1200:
+                            block["content"] = (
+                                _truncate_log_like(content)
+                                if is_log_source
+                                else _truncate_generic(content)
+                            )
+                        elif isinstance(content, list):
+                            for sub_block in content:
+                                if isinstance(sub_block, dict) and sub_block.get("type") == "text":
+                                    sub_text = sub_block.get("text", "")
+                                    if len(sub_text) > 1200:
+                                        sub_block["text"] = (
+                                            _truncate_log_like(sub_text)
+                                            if is_log_source
+                                            else _truncate_generic(sub_text)
+                                        )
+
+                    # 2. SHA-256 dedup for repeated large file snapshots, scoped
+                    # to this conversation's session_id.
+                    elif isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        if len(text) > 2000:
+                            doc_hash = hashlib.sha256(text.encode()).hexdigest()
+                            if await self.store.is_duplicate(session_id, doc_hash):
+                                block["text"] = (
+                                    f"[byoai-runtime: Duplicate file snapshot detected "
+                                    f"(SHA: {doc_hash[:8]}). Content retained in earlier turns.]"
+                                )
+                            else:
+                                await self.store.add(session_id, doc_hash)
+
+        opt_tokens = _estimate_tokens(body)
+        return body, orig_tokens, opt_tokens
+
+    async def execute(self, ctx: RequestContext) -> None:
+        body = ctx.state.get(STATE_ANTHROPIC_BODY)
+        if not isinstance(body, dict):
+            return
+        _, orig_tokens, opt_tokens = await self.optimize(body, ctx.session_id or "")
+        ctx.state[STATE_DEDUP_TOKENS] = (orig_tokens, opt_tokens)

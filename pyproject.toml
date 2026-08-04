@@ -69,6 +69,11 @@ packages = ["src/byoai"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# importlib import mode + explicit pythonpath so the local `tests` package
+# wins over any stray `tests` dist installed in site-packages (which otherwise
+# shadows `tests.conftest` and breaks collection).
+addopts = "--import-mode=importlib"
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
