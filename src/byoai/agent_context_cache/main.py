@@ -1,6 +1,5 @@
 import os
 import json
-import time
 import copy
 import random
 import asyncio
@@ -92,21 +91,15 @@ JSON_MEDIA_TYPE = "application/json"
 # Redis Connection Pool & in-memory backup (used only if Redis is unreachable)
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Fallback store when Redis is down: per-session {hash_set, last_touched_ts}.
-# Bounded/pruned so it can't grow forever during an extended Redis outage.
-_local_session_hashes: dict[str, dict] = {}
-_LOCAL_SESSION_MAX = 500  # cap on distinct sessions kept in memory
-
-# Runtime primitives are the single source of truth for request-side
-# optimization on the live /v1/messages path. The legacy inline functions
-# (ensure_cache_control / optimize_payload / is_duplicate_hash / add_hash)
-# remain defined for the step-1 golden tests but are no longer called here.
-# One module-level store + dedup stage so per-session dedup state persists
-# across requests exactly like the legacy global did. The store resolves the
-# module-level `r` lazily (via _LazyRedisClient) rather than capturing it at
-# import time, so a test that monkeypatches `acc_main.r` — or a runtime redis
-# reconnect — is honored on the live path, matching the legacy inline logic
-# that referenced the global `r` on every call.
+# Runtime primitives (byoai.stages) are the single source of truth for
+# request-side optimization on the live /v1/messages path. The legacy inline
+# implementations (ensure_cache_control / optimize_payload / is_duplicate_hash
+# / add_hash) have been deleted; PromptCacheInjection and SessionDedup now own
+# this logic. One module-level store + dedup stage so per-session dedup state
+# persists across requests. The store resolves the module-level `r` lazily
+# (via _LazyRedisClient) rather than capturing it at import time, so a test
+# that monkeypatches `acc_main.r` — or a runtime redis reconnect — is honored
+# on the live path.
 class _LazyRedisClient:
     def __getattr__(self, name):
         return getattr(r, name)
@@ -202,72 +195,6 @@ def log_usage(session_id: str, usage: dict | None):
         print(f" └─ Cache hit rate: {cache_hit_pct:.1f}% of context served from cache (cheap) vs fresh (full price).")
 
 
-# Anthropic allows at most 4 cache_control breakpoints per request. We
-# leave headroom for whatever the client itself may have already set
-# (e.g. on message content) rather than assuming all 4 are ours to use.
-MAX_CACHE_CONTROL_BREAKPOINTS = 4
-OUR_CACHE_CONTROL_BUDGET = 2  # system + tools, at most
-
-
-def _count_cache_control_markers(node) -> int:
-    """Recursively count existing cache_control occurrences anywhere in the body."""
-    count = 0
-    if isinstance(node, dict):
-        if "cache_control" in node:
-            count += 1
-        for v in node.values():
-            count += _count_cache_control_markers(v)
-    elif isinstance(node, list):
-        for item in node:
-            count += _count_cache_control_markers(item)
-    return count
-
-
-def ensure_cache_control(body: dict) -> dict:
-    """
-    Inject cache_control breakpoints on the system prompt and tool
-    definitions if the client didn't already set any.
-
-    Why this matters: Anthropic's prompt cache is keyed purely on exact
-    content match — it has no concept of "session" at all. Subagent calls
-    routed through this proxy typically share the same fixed system
-    prompt and tool schema across many otherwise-unrelated invocations.
-    If those requests never carry a cache_control breakpoint, none of
-    that shared prefix is ever cached, and every subagent call pays full
-    price for it — which is exactly the cache_read=0, cache_write=0
-    pattern seen in production logs. Adding a breakpoint here lets
-    separate subagent calls that share the same system+tools prefix
-    reuse each other's cache entry, even though this proxy tracks them
-    as unrelated sessions for dedup purposes.
-
-    Safe no-op if the client already set cache_control anywhere (we
-    don't want to blow past Anthropic's 4-breakpoint limit or clash with
-    intentional client-side cache strategy).
-    """
-    if _count_cache_control_markers(body) > 0:
-        return body  # client already manages its own cache_control; don't interfere
-
-    breakpoints_used = 0
-
-    system = body.get("system")
-    if system and breakpoints_used < OUR_CACHE_CONTROL_BUDGET:
-        if isinstance(system, str):
-            body["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
-            breakpoints_used += 1
-        elif isinstance(system, list) and system:
-            system[-1] = {**system[-1], "cache_control": {"type": "ephemeral"}}
-            breakpoints_used += 1
-
-    tools = body.get("tools")
-    if tools and isinstance(tools, list) and breakpoints_used < OUR_CACHE_CONTROL_BUDGET:
-        tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
-        breakpoints_used += 1
-
-    return body
-
-
 def derive_session_id(request: Request, body: dict) -> str:
     """
     Scope dedup state to a single conversation.
@@ -286,7 +213,7 @@ def derive_session_id(request: Request, body: dict) -> str:
     happen to start with a byte-identical system prompt and first message
     (common for subagent/Task-tool calls, which reuse a fixed boilerplate
     opening message) would otherwise collide onto the same session id — and
-    since dedup state controls whether optimize_payload deletes content as
+    since dedup state controls whether SessionDedup deletes content as
     "already seen", a collision means one conversation's genuinely-first-seen
     file content gets silently replaced with a stale-duplicate placeholder.
     Scoping by API key makes that cross-account collision impossible. The one
@@ -361,163 +288,6 @@ async def real_token_count(count_token_headers: dict, body: dict | None) -> int 
     except Exception as e:
         print(f"[byoai-runtime 🔬 BENCHMARK ERROR] count_tokens call raised {type(e).__name__}: {e}")
         return None
-
-
-def _prune_local_sessions():
-    if len(_local_session_hashes) <= _LOCAL_SESSION_MAX:
-        return
-    # Drop the oldest-touched sessions first.
-    ordered = sorted(_local_session_hashes.items(), key=lambda kv: kv[1]["touched"])
-    for sid, _ in ordered[: len(ordered) - _LOCAL_SESSION_MAX]:
-        _local_session_hashes.pop(sid, None)
-
-
-def _local_get_session(session_id: str) -> set:
-    now = time.time()
-    entry = _local_session_hashes.get(session_id)
-    if entry is None or (now - entry["touched"]) > SESSION_TTL_SECONDS:
-        entry = {"hashes": set(), "touched": now}
-        _local_session_hashes[session_id] = entry
-        _prune_local_sessions()
-    entry["touched"] = now
-    return entry["hashes"]
-
-
-async def is_duplicate_hash(session_id: str, doc_hash: str) -> bool:
-    key = f"byoai:hashes:{session_id}"
-    try:
-        is_member = bool(await r.sismember(key, doc_hash))
-        # Refresh idle TTL on every touch so an active conversation never
-        # loses its dedup state mid-stream, while a conversation that goes
-        # quiet gets reaped automatically.
-        await r.expire(key, SESSION_TTL_SECONDS)
-        return is_member
-    except Exception:
-        return doc_hash in _local_get_session(session_id)
-
-
-async def add_hash(session_id: str, doc_hash: str):
-    _local_get_session(session_id).add(doc_hash)
-    key = f"byoai:hashes:{session_id}"
-    try:
-        await r.sadd(key, doc_hash)
-        await r.expire(key, SESSION_TTL_SECONDS)
-    except Exception:
-        pass
-
-
-# Tools whose output is genuinely log-shaped (test runners, shell
-# commands) where "keep only the error lines" is a reasonable lossy
-# summary. Everything else — file reads, greps, edits, anything that
-# returns source/document content — must never be classified by keyword
-# guessing, since ordinary code very plausibly contains the substrings
-# "ERROR", "Exception", etc. with zero relation to a test failure.
-# Match is case-insensitive and case-insensitive-substring on tool name so
-# this survives minor naming differences (e.g. "Bash", "bash_command").
-NOISY_LOG_TOOLS = {"bash", "shell", "execute", "run", "runtests", "runcommand", "terminal"}
-
-
-def _tool_name_is_noisy_log_source(tool_name: str) -> bool:
-    name = (tool_name or "").lower()
-    return any(marker in name for marker in NOISY_LOG_TOOLS)
-
-
-def _build_tool_use_name_map(messages: list) -> dict:
-    """tool_use_id -> tool name, so a tool_result can be traced back to
-    the tool that produced it (the tool_result block itself only carries
-    tool_use_id, not the tool's name)."""
-    id_to_name = {}
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    tid = block.get("id")
-                    if tid:
-                        id_to_name[tid] = block.get("name", "")
-    return id_to_name
-
-
-def _truncate_generic(text: str, limit: int = 4000) -> str:
-    """
-    Safe fallback for non-log tool output that's still oversized: keep a
-    head and tail slice rather than guessing at "errors" or discarding the
-    middle blind. Never applies keyword reclassification — this is purely
-    length-based, so it can't mislabel or gut ordinary file content the
-    way the old logic could.
-    """
-    if len(text) <= limit:
-        return text
-    head = text[: limit // 2]
-    tail = text[-limit // 2 :]
-    return f"{head}\n\n[...byoai-runtime: {len(text) - limit:,} chars omitted from middle (non-log tool output, safe length cap only)...]\n\n{tail}"
-
-
-def _truncate_log_like(text: str) -> str:
-    """Only for known log/test-runner tool output: safe to keep just the
-    error-shaped lines since that's the pattern this class of tool output
-    actually follows (pytest, npm, git, CI logs)."""
-    if len(text) <= 1200:
-        return text
-    lines = text.split("\n")
-    errors = [l for l in lines if any(k in l for k in ["FAIL", "ERROR", "Traceback", "Exception"])]
-    if errors:
-        return "\n".join(errors[-25:]) + "\n\n[...byoai-runtime: Verbose test/log output pruned to error lines...]"
-    return text[:600] + "\n\n[...byoai-runtime: Large log-like tool output truncated...]"
-
-
-async def optimize_payload(body: dict, session_id: str) -> tuple[dict, int, int]:
-    """
-    Cleans tool output noise and deduplicates repeated file snapshots
-    *within this same conversation only*.
-    Returns: (optimized_body, orig_tokens, opt_tokens)
-    """
-    orig_tokens = estimate_tokens(body)
-    messages = body.get("messages", [])
-    tool_name_by_id = _build_tool_use_name_map(messages)
-
-    for msg in messages:
-        if msg.get("role") == "user" and isinstance(msg.get("content"), list):
-            for block in msg["content"]:
-                # 1. Truncate Excessive Tool Outputs — but only apply the
-                # error-keyword heuristic to tools we know produce
-                # log-shaped output. Anything else gets a safe, purely
-                # length-based head/tail truncation that can't misfire on
-                # ordinary source code.
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    content = block.get("content", "")
-                    tool_name = tool_name_by_id.get(block.get("tool_use_id"), "")
-                    is_log_source = _tool_name_is_noisy_log_source(tool_name)
-
-                    if isinstance(content, str) and len(content) > 1200:
-                        block["content"] = (
-                            _truncate_log_like(content) if is_log_source else _truncate_generic(content)
-                        )
-
-                    elif isinstance(content, list):
-                        for sub_block in content:
-                            if isinstance(sub_block, dict) and sub_block.get("type") == "text":
-                                sub_text = sub_block.get("text", "")
-                                if len(sub_text) > 1200:
-                                    sub_block["text"] = (
-                                        _truncate_log_like(sub_text) if is_log_source else _truncate_generic(sub_text)
-                                    )
-
-                # 2. SHA-256 Deduplication for Repeated Large File Snapshots
-                # Scoped to this conversation's session_id — never cross-
-                # conversation, so we can't reference content the model in
-                # THIS conversation never actually saw.
-                elif isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text", "")
-                    if len(text) > 2000:
-                        doc_hash = hashlib.sha256(text.encode()).hexdigest()
-                        if await is_duplicate_hash(session_id, doc_hash):
-                            block["text"] = f"[byoai-runtime: Duplicate file snapshot detected (SHA: {doc_hash[:8]}). Content retained in earlier turns.]"
-                        else:
-                            await add_hash(session_id, doc_hash)
-
-    opt_tokens = estimate_tokens(body)
-    return body, orig_tokens, opt_tokens
 
 
 @app.get("/health")
@@ -663,10 +433,10 @@ async def _apply_optimizer(
     it's sampled for tokenizer-verified benchmarking.
 
     Returns (body, is_benchmark_sample, pre_optimize_snapshot). `body` is
-    `raw_body` unchanged when the optimizer is off, or optimize_payload's
+    `raw_body` unchanged when the optimizer is off, or the SessionDedup stage's
     mutated-in-place result when it's on.
     """
-    # Snapshot BEFORE optimize_payload runs — it mutates the body's nested
+    # Snapshot BEFORE the dedup stage runs — it mutates the body's nested
     # blocks in place, so by the time it returns, the "original" is already
     # gone. Only pay the deepcopy cost when this request is actually
     # sampled for benchmarking.
@@ -780,10 +550,10 @@ async def proxy_claude_messages(request: Request):
     # NOTE: if this upstream traffic uses prompt caching (cache_control
     # breakpoints — including the ones we may have just injected above),
     # mutating cached blocks below busts the cache for everything after
-    # that point in the prompt on every call. optimize_payload only
+    # that point in the prompt on every call. The SessionDedup stage only
     # touches tool_result/text blocks inside individual user messages, not
     # the system/tools blocks we cache here, so the two don't conflict —
-    # but keep that boundary in mind if optimize_payload is ever extended.
+    # but keep that boundary in mind if SessionDedup is ever extended.
     is_enabled = (await safe_redis_get(REDIS_KEY_ENABLED, default="1")) != "0"
     session_id = derive_session_id(request, raw_body)
     body, is_benchmark_sample, pre_optimize_snapshot = await _apply_optimizer(raw_body, session_id, is_enabled)

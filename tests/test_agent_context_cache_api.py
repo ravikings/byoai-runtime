@@ -71,10 +71,10 @@ def client(monkeypatch, tmp_path):
     # making these tests flaky (~15%). No test asserts sampling behavior, so
     # pin it off for deterministic capture.
     monkeypatch.setattr(acc_main, "BENCHMARK_SAMPLE_RATE", 0.0)
-    acc_main._local_session_hashes.clear()
+    acc_main._session_hash_store.fallback._sessions.clear()
     with TestClient(acc_main.app) as test_client:
         yield test_client
-    acc_main._local_session_hashes.clear()
+    acc_main._session_hash_store.fallback._sessions.clear()
 
 
 def use_mock_upstream(handler):

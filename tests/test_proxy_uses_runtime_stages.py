@@ -67,10 +67,10 @@ def _restore_proxy_globals():
     """Guard against the known cross-test state-leak hazard: save/restore any
     proxy globals a test (or the live path) may mutate."""
     saved_r = acc_main.r
-    acc_main._local_session_hashes.clear()
+    acc_main._session_hash_store.fallback._sessions.clear()
     yield
     acc_main.r = saved_r
-    acc_main._local_session_hashes.clear()
+    acc_main._session_hash_store.fallback._sessions.clear()
 
 
 @pytest.fixture
