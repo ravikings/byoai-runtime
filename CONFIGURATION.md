@@ -496,7 +496,7 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 | `BYOAI_HOST` | `0.0.0.0` | Bind address |
 | `BYOAI_PORT` | `8787` | Bind port |
 | `REDIS_URL` | `redis://localhost:6379/0` | Session/dedup state; falls back to an in-process store if unreachable (lost on restart, not shared across processes) |
-| `BYOAI_SQLITE_PATH` | `byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`) |
+| `BYOAI_SQLITE_PATH` | `~/.byoai/byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`); absolute default so data survives launching from any directory |
 | `BYOAI_SESSION_TTL_SECONDS` | `28800` (8h) | How long a session's dedup hash set lives in Redis |
 | `BYOAI_BENCHMARK_SAMPLE_RATE` | `0.1` | Fraction of requests sampled for before/after token-count comparison |
 | `BYOAI_READ_TIMEOUT_SECONDS` | `600` | Upstream request read timeout |

@@ -307,15 +307,16 @@ var reference in **[CONFIGURATION.md](CONFIGURATION.md#agent-context-cache--byoa
 ### Inspecting token-savings data
 
 The proxy keeps a durable SQLite log of per-request usage and tokenizer-verified
-benchmark samples at `BYOAI_SQLITE_PATH` (default `byoai_runtime.db`). The
-`/v1/stats`, `/v1/stats/benchmark`, `/v1/stats/permanent`, and `/v1/stats/history`
-endpoints expose these numbers as JSON. To browse the raw tables without writing
-SQL, open the file in [`sqlite-web`](https://github.com/coleifer/sqlite-web), a
-small browser-based SQLite viewer:
+benchmark samples at `BYOAI_SQLITE_PATH` (default `~/.byoai/byoai_runtime.db`).
+The `/v1/stats`, `/v1/stats/benchmark`, `/v1/stats/permanent`, and
+`/v1/stats/history` endpoints expose these numbers as JSON. To browse the raw
+tables without writing SQL, open the file in
+[`sqlite-web`](https://github.com/coleifer/sqlite-web), a small browser-based
+SQLite viewer:
 
 ```bash
 pip install sqlite-web
-sqlite-web byoai_runtime.db   # opens a UI at http://localhost:8080
+sqlite-web ~/.byoai/byoai_runtime.db   # opens a UI at http://localhost:8080
 ```
 
 `sqlite-web` is an optional dev convenience, not a dependency of `byoai-runtime`.
