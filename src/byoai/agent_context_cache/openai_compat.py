@@ -189,12 +189,43 @@ _FINISH_REASON_MAP = {
     "stop": "end_turn",
     "length": "max_tokens",
     "tool_calls": "tool_use",
-    "content_filter": "stop_sequence",
+    "content_filter": "refusal",
     None: "end_turn",
 }
 
 
-def openai_to_anthropic_response(openai_resp: dict, requested_model: str) -> dict:
+def _detect_stop_sequence(text: str | None, stop_sequences: list | None, choice: dict | None = None) -> str | None:
+    """
+    OpenAI's `finish_reason: "stop"` covers BOTH a natural end-of-turn and
+    generation halting because it hit one of the caller's `stop` strings —
+    unlike Anthropic, which has a distinct `stop_reason: "stop_sequence"`.
+    Most backends (including Ollama) give no further signal: the matched
+    stop string is truncated out of the output entirely, so it can't be
+    recovered from the text afterwards, and `finish_reason` alone can't
+    tell "hit a stop word" apart from "model naturally finished." That
+    ambiguity is unresolvable from here for those backends — reporting
+    "stop_sequence" on every ordinary completion would be a worse default
+    than the current "always end_turn."
+
+    Two narrower signals we CAN use when present:
+    - vLLM's OpenAI-compatible server adds a non-standard `stop_reason` on
+      the choice set to the actual matched string (null for natural EOS).
+    - If a backend does include the trailing stop text verbatim (some do),
+      an exact suffix match is a reliable positive signal.
+    """
+    if choice:
+        vllm_stop_reason = choice.get("stop_reason")
+        if isinstance(vllm_stop_reason, str) and vllm_stop_reason:
+            return vllm_stop_reason
+    if not text or not stop_sequences:
+        return None
+    for seq in stop_sequences:
+        if seq and text.endswith(seq):
+            return seq
+    return None
+
+
+def openai_to_anthropic_response(openai_resp: dict, requested_model: str, stop_sequences: list | None = None) -> dict:
     """Translate one complete (non-streaming) OpenAI chat.completion response
     into an Anthropic Messages API response body."""
     choice = (openai_resp.get("choices") or [{}])[0]
@@ -221,14 +252,18 @@ def openai_to_anthropic_response(openai_resp: dict, requested_model: str) -> dic
     usage = openai_resp.get("usage", {})
     resp_id = openai_resp.get("id") or ("msg_" + hashlib.sha256(json.dumps(openai_resp).encode()).hexdigest()[:24])
 
+    finish_reason = choice.get("finish_reason")
+    matched_stop = _detect_stop_sequence(text, stop_sequences, choice) if finish_reason == "stop" else None
+    stop_reason = "stop_sequence" if matched_stop else _FINISH_REASON_MAP.get(finish_reason, "end_turn")
+
     return {
         "id": resp_id,
         "type": "message",
         "role": "assistant",
         "model": requested_model,
         "content": content_blocks,
-        "stop_reason": _FINISH_REASON_MAP.get(choice.get("finish_reason"), "end_turn"),
-        "stop_sequence": None,
+        "stop_reason": stop_reason,
+        "stop_sequence": matched_stop,
         "usage": {
             "input_tokens": usage.get("prompt_tokens", 0),
             "output_tokens": usage.get("completion_tokens", 0),
@@ -241,7 +276,7 @@ def openai_to_anthropic_response(openai_resp: dict, requested_model: str) -> dic
 # ---------------------------------------------------------------------------
 
 async def translate_openai_stream_to_anthropic_sse(
-    openai_lines: AsyncIterator[str], requested_model: str
+    openai_lines: AsyncIterator[str], requested_model: str, stop_sequences: list | None = None
 ) -> AsyncIterator[bytes]:
     """
     Consume an OpenAI-style SSE line stream ("data: {...}\\n\\n" chunks,
@@ -271,10 +306,13 @@ async def translate_openai_stream_to_anthropic_sse(
     })
 
     text_block_open = False
+    text_block_index = None
     tool_blocks_open = {}  # openai tool_call index -> anthropic content block index
     next_block_index = 0
     finish_reason = None
+    finish_choice = None
     usage = {}
+    accumulated_text = ""
 
     async for line in openai_lines:
         if not line.startswith("data:"):
@@ -291,6 +329,7 @@ async def translate_openai_stream_to_anthropic_sse(
         delta = choice.get("delta", {})
         if choice.get("finish_reason"):
             finish_reason = choice["finish_reason"]
+            finish_choice = choice
         if chunk.get("usage"):
             usage = chunk["usage"]
 
@@ -303,6 +342,7 @@ async def translate_openai_stream_to_anthropic_sse(
                 text_block_open = True
                 text_block_index = next_block_index
                 next_block_index += 1
+            accumulated_text += delta["content"]
             yield sse("content_block_delta", {
                 "type": "content_block_delta", "index": text_block_index,
                 "delta": {"type": "text_delta", "text": delta["content"]},
@@ -337,9 +377,12 @@ async def translate_openai_stream_to_anthropic_sse(
     for anthropic_idx in tool_blocks_open.values():
         yield sse("content_block_stop", {"type": "content_block_stop", "index": anthropic_idx})
 
+    matched_stop = _detect_stop_sequence(accumulated_text, stop_sequences, finish_choice) if finish_reason == "stop" else None
+    stream_stop_reason = "stop_sequence" if matched_stop else _FINISH_REASON_MAP.get(finish_reason, "end_turn")
+
     yield sse("message_delta", {
         "type": "message_delta",
-        "delta": {"stop_reason": _FINISH_REASON_MAP.get(finish_reason, "end_turn"), "stop_sequence": None},
+        "delta": {"stop_reason": stream_stop_reason, "stop_sequence": matched_stop},
         "usage": {
             "input_tokens": usage.get("prompt_tokens", 0),
             "output_tokens": usage.get("completion_tokens", 0),

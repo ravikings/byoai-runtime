@@ -511,8 +511,28 @@ async def proxy_count_tokens(request: Request):
     no optimizer/dedup logic — it's a lightweight pre-flight call clients
     make to estimate tokens before sending the real request, and if it
     404s, the client can end up retrying aggressively. Just relay it.
+
+    Models routed to an OpenAI-compat backend (Ollama, vLLM, etc.) have no
+    Anthropic tokenizer to call and may have no real Anthropic API key
+    configured at all — passing through unconditionally would always
+    401/404 for those. Answer with our own estimate_tokens() heuristic
+    instead; it's the same estimate already used for the /v1/stats
+    savings numbers, so it's consistent even if not tokenizer-exact.
     """
     body_bytes = await request.body()
+
+    if body_bytes:
+        try:
+            raw_body = json.loads(body_bytes)
+        except json.JSONDecodeError:
+            raw_body = None
+        if raw_body and raw_body.get("model") in OPENAI_COMPAT_MODELS:
+            return Response(
+                content=json.dumps({"input_tokens": estimate_tokens(raw_body)}),
+                status_code=200,
+                media_type=JSON_MEDIA_TYPE,
+            )
+
     headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in ("host", "content-length", "accept-encoding", "connection")
@@ -596,7 +616,7 @@ async def proxy_openai_compat_request(request: Request, raw_body: dict) -> Respo
         async def stream_translated():
             try:
                 async for anthropic_chunk in openai_compat.translate_openai_stream_to_anthropic_sse(
-                    openai_line_iter(), requested_model
+                    openai_line_iter(), requested_model, raw_body.get("stop_sequences")
                 ):
                     yield anthropic_chunk
             finally:
@@ -608,7 +628,7 @@ async def proxy_openai_compat_request(request: Request, raw_body: dict) -> Respo
             openai_resp = json.loads(res.content)
         except json.JSONDecodeError:
             return Response(content=res.content, status_code=502, media_type=JSON_MEDIA_TYPE)
-        anthropic_resp = openai_compat.openai_to_anthropic_response(openai_resp, requested_model)
+        anthropic_resp = openai_compat.openai_to_anthropic_response(openai_resp, requested_model, raw_body.get("stop_sequences"))
         log_usage(session_id, anthropic_resp.get("usage"))
         _fire_and_forget(db.record_usage_event(session_id, "openai_compat", requested_model, anthropic_resp.get("usage")))
         return Response(content=json.dumps(anthropic_resp), status_code=200, media_type=JSON_MEDIA_TYPE)
