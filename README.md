@@ -286,6 +286,25 @@ pooling, TTLs, capacity bounds, batch sizes, and more — is documented in
 **[CONFIGURATION.md](CONFIGURATION.md)**.
 
 ---
+
+## 🧩 Agent Context Cache
+
+A standalone proxy, separate from `Runtime`, that sits in front of the
+Anthropic API. Point Claude Code (or any Anthropic API client) at it and it
+injects prompt-cache breakpoints and dedupes repeated large text blocks
+within a session, cutting token spend without any client-side changes.
+
+```bash
+pip install byoai-runtime
+byoai-agent-context-cache
+export ANTHROPIC_BASE_URL=http://localhost:8787
+```
+
+It listens on `:8787` by default and uses Redis for session/dedup state if
+`REDIS_URL` is set (falls back to an in-process store otherwise). Full env
+var reference in **[CONFIGURATION.md](CONFIGURATION.md#agent-context-cache--byoai-agent-context-cache)**.
+
+---
 # Contributing
 
 ByoAI welcomes AI-assisted development as well as human contributions. See

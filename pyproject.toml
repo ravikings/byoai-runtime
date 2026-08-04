@@ -28,6 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.100", "sse-starlette>=1.6"]
+agent-context-cache = ["fastapi>=0.100", "uvicorn>=0.30", "redis>=5.0"]
 robyn = ["robyn>=0.60"]
 mcp = ["mcp>=1.0"]
 flask = ["flask>=3.0"]
@@ -38,7 +39,7 @@ pgvector = ["asyncpg>=0.29"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp>=1.20"]
 bedrock = ["anthropic[bedrock]>=0.40"]
 vertex = ["anthropic[vertex]>=0.40"]
-all = ["byoai-runtime[fastapi,robyn,mcp,flask,perf,semantic,redis,pgvector,otel,bedrock,vertex]"]
+all = ["byoai-runtime[fastapi,robyn,mcp,flask,perf,semantic,redis,pgvector,otel,bedrock,vertex,agent-context-cache]"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 dev = [
     "pytest>=8.0",
@@ -48,6 +49,9 @@ dev = [
     "pyright>=1.1",
     "build>=1.2",
 ]
+
+[project.scripts]
+byoai-agent-context-cache = "byoai.agent_context_cache.main:run"
 
 [project.urls]
 Homepage = "https://github.com/ravikings/byoai-runtime"

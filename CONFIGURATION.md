@@ -470,6 +470,47 @@ to configure beyond framing.
 
 ---
 
+## Agent Context Cache — `byoai-agent-context-cache`
+
+A standalone FastAPI proxy (`byoai.agent_context_cache`) you run in front of
+the Anthropic API. It sits between a client (e.g. Claude Code) and
+`api.anthropic.com`, injecting prompt-cache breakpoints and deduplicating
+repeated large text blocks within a session to cut token spend.
+It is a separate process from `Runtime`, started via its own console script,
+not something you configure through `build_*` dicts.
+
+Start it with:
+
+```bash
+byoai-agent-context-cache
+```
+
+Then point any Anthropic API client at it, e.g. for Claude Code:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8787
+```
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `BYOAI_HOST` | `0.0.0.0` | Bind address |
+| `BYOAI_PORT` | `8787` | Bind port |
+| `REDIS_URL` | `redis://localhost:6379/0` | Session/dedup state; falls back to an in-process store if unreachable (lost on restart, not shared across processes) |
+| `BYOAI_SQLITE_PATH` | `byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`) |
+| `BYOAI_SESSION_TTL_SECONDS` | `28800` (8h) | How long a session's dedup hash set lives in Redis |
+| `BYOAI_BENCHMARK_SAMPLE_RATE` | `0.1` | Fraction of requests sampled for before/after token-count comparison |
+| `BYOAI_READ_TIMEOUT_SECONDS` | `600` | Upstream request read timeout |
+| `BYOAI_OPENAI_COMPAT_MODELS` | *(empty)* | Comma-separated model names to route to an OpenAI-compatible backend instead of Anthropic |
+| `BYOAI_OPENAI_COMPAT_BASE_URL` / `BYOAI_OPENAI_COMPAT_API_KEY` | *(empty)* | Target for the above |
+
+Session identity (`derive_session_id` in `main.py`) prefers an explicit
+`X-Byoai-Session-Id` / `X-Session-Id` header; without one it derives an id
+scoped to the caller's API key plus the request's system prompt + first
+message, so two different API keys never share dedup state even with
+byte-identical content.
+
+---
+
 ## Plugins
 
 Unknown `provider` names in any `build_*` config dict resolve through Python
