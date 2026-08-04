@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import hashlib
+import hmac
 import json
 import os
 import random
@@ -42,6 +43,19 @@ OPENAI_COMPAT_API_KEY = os.getenv("BYOAI_OPENAI_COMPAT_API_KEY", "")
 # TTL is refreshed; if nobody calls in with that session for this long,
 # Redis reaps the key on its own.
 SESSION_TTL_SECONDS = int(os.getenv("BYOAI_SESSION_TTL_SECONDS", str(8 * 60 * 60)))  # 8h default
+
+# Optional shared-secret gate. When set, every request must present the token —
+# so the proxy can be exposed through a public tunnel (ngrok/Cloudflare) for a
+# remote client (Claude web/mobile, a phone) without becoming an open relay to
+# Anthropic (or, if OpenAI-compat is configured, leaking that server-side key).
+# Empty (the default) = no gate, suitable for a localhost-only deployment.
+#
+# The token is accepted two ways so it works even with clients that only let you
+# set the base URL and not custom headers (e.g. Claude's web/mobile apps):
+#   * header  `x-byoai-proxy-token: <token>`
+#   * URL path prefix — set ANTHROPIC_BASE_URL to https://<host>/<token>, and the
+#     leading /<token> segment is stripped before routing.
+PROXY_TOKEN = os.getenv("BYOAI_PROXY_TOKEN", "")
 
 # httpx defaults to a 5-SECOND total timeout when none is set. That's fine
 # for a typical REST call but far too aggressive for LLM streaming
@@ -162,6 +176,54 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="byoai-runtime Context Optimizer", lifespan=lifespan)
+
+
+# Health is intentionally ungated so a tunnel/monitor can probe liveness without
+# the secret.
+_AUTH_EXEMPT_PATHS = frozenset({"/health"})
+
+
+@app.middleware("http")
+async def _proxy_auth_gate(request: Request, call_next):
+    """Enforce the optional BYOAI_PROXY_TOKEN shared secret when configured.
+
+    Accepts the token via the ``x-byoai-proxy-token`` header or a leading URL
+    path segment (``/<token>/v1/messages``), stripping that segment so the
+    normal routes still match. No-op when the token is empty.
+    """
+    # Read the module global (not a captured copy) so tests and runtime env
+    # both take effect.
+    token = PROXY_TOKEN
+    if token and request.url.path not in _AUTH_EXEMPT_PATHS:
+        authed = False
+        header_tok = request.headers.get("x-byoai-proxy-token", "")
+        if header_tok and hmac.compare_digest(header_tok, token):
+            authed = True
+        else:
+            # Path-prefix form: /<token>/<rest>. Constant-time compare the first
+            # segment; on match, rewrite the path so downstream routing is
+            # unchanged.
+            stripped = request.url.path.lstrip("/")
+            first, _, rest = stripped.partition("/")
+            if hmac.compare_digest(first, token):
+                new_path = "/" + rest
+                request.scope["path"] = new_path
+                request.scope["raw_path"] = new_path.encode()
+                authed = True
+        if not authed:
+            return Response(
+                content=json.dumps(
+                    {
+                        "error": {
+                            "type": "authentication_error",
+                            "message": "byoai-runtime: missing or invalid proxy token",
+                        }
+                    }
+                ),
+                status_code=401,
+                media_type=JSON_MEDIA_TYPE,
+            )
+    return await call_next(request)
 
 
 def estimate_tokens(data: dict) -> int:

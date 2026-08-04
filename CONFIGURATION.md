@@ -502,6 +502,7 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 | --- | --- | --- |
 | `BYOAI_HOST` | `0.0.0.0` | Bind address |
 | `BYOAI_PORT` | `8787` | Bind port |
+| `BYOAI_PROXY_TOKEN` | _(empty — no gate)_ | Shared secret required on every request when set, so the proxy can be exposed via a public tunnel (ngrok/Cloudflare) without being an open relay. Supply it as an `x-byoai-proxy-token` header or a leading URL path segment (`ANTHROPIC_BASE_URL=https://host/<token>`). `/health` is exempt. |
 | `REDIS_URL` | `redis://localhost:6379/0` | Session/dedup state; falls back to an in-process store if unreachable (lost on restart, not shared across processes) |
 | `BYOAI_SQLITE_PATH` | `~/.byoai/byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`); absolute default so data survives launching from any directory |
 | `BYOAI_SESSION_TTL_SECONDS` | `28800` (8h) | How long a session's dedup hash set lives in Redis |
