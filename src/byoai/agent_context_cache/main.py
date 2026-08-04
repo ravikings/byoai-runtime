@@ -1,17 +1,20 @@
-import os
-import json
-import time
-import copy
-import random
 import asyncio
+import copy
 import hashlib
-import httpx
+import json
+import os
+import random
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, Response
-import redis.asyncio as redis
 
+import httpx
+import redis.asyncio as redis
+from fastapi import FastAPI, Request
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel
+
+from ..session_hash import RedisHashStore
+from ..stages import PromptCacheInjection, SessionDedup
+from ..stages import _count_cache_control_markers as _stage_count_cache_control_markers
 from . import db, openai_compat
 
 # Configuration
@@ -49,7 +52,9 @@ SESSION_TTL_SECONDS = int(os.getenv("BYOAI_SESSION_TTL_SECONDS", str(8 * 60 * 60
 # gracefully. Read timeout is intentionally generous; connect/write stay
 # tight since those really should be fast.
 REQUEST_READ_TIMEOUT_SECONDS = float(os.getenv("BYOAI_READ_TIMEOUT_SECONDS", "600"))
-HTTP_TIMEOUT = httpx.Timeout(connect=10.0, write=300.0, pool=10.0, read=REQUEST_READ_TIMEOUT_SECONDS)
+HTTP_TIMEOUT = httpx.Timeout(
+    connect=10.0, write=300.0, pool=10.0, read=REQUEST_READ_TIMEOUT_SECONDS
+)
 
 # Real-tokenizer benchmarking. estimate_tokens() (len(json)//4) is a rough
 # heuristic — fine for a live console readout, not defensible as a public
@@ -89,10 +94,23 @@ JSON_MEDIA_TYPE = "application/json"
 # Redis Connection Pool & in-memory backup (used only if Redis is unreachable)
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
-# Fallback store when Redis is down: per-session {hash_set, last_touched_ts}.
-# Bounded/pruned so it can't grow forever during an extended Redis outage.
-_local_session_hashes: dict[str, dict] = {}
-_LOCAL_SESSION_MAX = 500  # cap on distinct sessions kept in memory
+
+# Runtime primitives (byoai.stages) are the single source of truth for
+# request-side optimization on the live /v1/messages path. The legacy inline
+# implementations (ensure_cache_control / optimize_payload / is_duplicate_hash
+# / add_hash) have been deleted; PromptCacheInjection and SessionDedup now own
+# this logic. One module-level store + dedup stage so per-session dedup state
+# persists across requests. The store resolves the module-level `r` lazily
+# (via _LazyRedisClient) rather than capturing it at import time, so a test
+# that monkeypatches `acc_main.r` — or a runtime redis reconnect — is honored
+# on the live path.
+class _LazyRedisClient:
+    def __getattr__(self, name):
+        return getattr(r, name)
+
+
+_session_hash_store = RedisHashStore(_LazyRedisClient(), ttl_seconds=SESSION_TTL_SECONDS)
+_session_dedup_stage = SessionDedup(_session_hash_store)
 
 # Shared, connection-pooled HTTP client reused across every request to
 # Anthropic. Creating a fresh httpx.AsyncClient() per request (the prior
@@ -176,75 +194,15 @@ def log_usage(session_id: str, usage: dict | None):
     print(f" ├─ input={input_tok:,} output={output_tok:,}")
     print(f" ├─ cache_read={cache_read:,}  cache_write={cache_write:,}")
     if cache_read == 0 and cache_write == 0:
-        print(" └─ No prompt caching detected on this call (no cache_control hit or the request doesn't use it).")
+        print(
+            " └─ No prompt caching detected on this call "
+            "(no cache_control hit or the request doesn't use it)."
+        )
     else:
-        print(f" └─ Cache hit rate: {cache_hit_pct:.1f}% of context served from cache (cheap) vs fresh (full price).")
-
-
-# Anthropic allows at most 4 cache_control breakpoints per request. We
-# leave headroom for whatever the client itself may have already set
-# (e.g. on message content) rather than assuming all 4 are ours to use.
-MAX_CACHE_CONTROL_BREAKPOINTS = 4
-OUR_CACHE_CONTROL_BUDGET = 2  # system + tools, at most
-
-
-def _count_cache_control_markers(node) -> int:
-    """Recursively count existing cache_control occurrences anywhere in the body."""
-    count = 0
-    if isinstance(node, dict):
-        if "cache_control" in node:
-            count += 1
-        for v in node.values():
-            count += _count_cache_control_markers(v)
-    elif isinstance(node, list):
-        for item in node:
-            count += _count_cache_control_markers(item)
-    return count
-
-
-def ensure_cache_control(body: dict) -> dict:
-    """
-    Inject cache_control breakpoints on the system prompt and tool
-    definitions if the client didn't already set any.
-
-    Why this matters: Anthropic's prompt cache is keyed purely on exact
-    content match — it has no concept of "session" at all. Subagent calls
-    routed through this proxy typically share the same fixed system
-    prompt and tool schema across many otherwise-unrelated invocations.
-    If those requests never carry a cache_control breakpoint, none of
-    that shared prefix is ever cached, and every subagent call pays full
-    price for it — which is exactly the cache_read=0, cache_write=0
-    pattern seen in production logs. Adding a breakpoint here lets
-    separate subagent calls that share the same system+tools prefix
-    reuse each other's cache entry, even though this proxy tracks them
-    as unrelated sessions for dedup purposes.
-
-    Safe no-op if the client already set cache_control anywhere (we
-    don't want to blow past Anthropic's 4-breakpoint limit or clash with
-    intentional client-side cache strategy).
-    """
-    if _count_cache_control_markers(body) > 0:
-        return body  # client already manages its own cache_control; don't interfere
-
-    breakpoints_used = 0
-
-    system = body.get("system")
-    if system and breakpoints_used < OUR_CACHE_CONTROL_BUDGET:
-        if isinstance(system, str):
-            body["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
-            breakpoints_used += 1
-        elif isinstance(system, list) and system:
-            system[-1] = {**system[-1], "cache_control": {"type": "ephemeral"}}
-            breakpoints_used += 1
-
-    tools = body.get("tools")
-    if tools and isinstance(tools, list) and breakpoints_used < OUR_CACHE_CONTROL_BUDGET:
-        tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
-        breakpoints_used += 1
-
-    return body
+        print(
+            f" └─ Cache hit rate: {cache_hit_pct:.1f}% of context served "
+            "from cache (cheap) vs fresh (full price)."
+        )
 
 
 def derive_session_id(request: Request, body: dict) -> str:
@@ -265,7 +223,7 @@ def derive_session_id(request: Request, body: dict) -> str:
     happen to start with a byte-identical system prompt and first message
     (common for subagent/Task-tool calls, which reuse a fixed boilerplate
     opening message) would otherwise collide onto the same session id — and
-    since dedup state controls whether optimize_payload deletes content as
+    since dedup state controls whether SessionDedup deletes content as
     "already seen", a collision means one conversation's genuinely-first-seen
     file content gets silently replaced with a stale-duplicate placeholder.
     Scoping by API key makes that cross-account collision impossible. The one
@@ -325,7 +283,14 @@ async def real_token_count(count_token_headers: dict, body: dict | None) -> int 
         # and metadata/stream are NOT, so allow-list rather than exclude a
         # few — an exclude-list breaks again the next time the client sends
         # some other field this endpoint doesn't recognize.
-        COUNT_TOKENS_ALLOWED_FIELDS = {"model", "messages", "system", "tools", "tool_choice", "thinking"}
+        COUNT_TOKENS_ALLOWED_FIELDS = {
+            "model",
+            "messages",
+            "system",
+            "tools",
+            "tool_choice",
+            "thinking",
+        }
         count_body = {k: v for k, v in body.items() if k in COUNT_TOKENS_ALLOWED_FIELDS}
         res = await get_http_client().post(
             f"{ANTHROPIC_UPSTREAM}/v1/messages/count_tokens",
@@ -334,169 +299,17 @@ async def real_token_count(count_token_headers: dict, body: dict | None) -> int 
             timeout=30.0,
         )
         if res.status_code != 200:
-            print(f"[byoai-runtime 🔬 BENCHMARK ERROR] count_tokens returned {res.status_code}: {res.content[:500]!r}")
+            print(
+                f"[byoai-runtime 🔬 BENCHMARK ERROR] count_tokens returned "
+                f"{res.status_code}: {res.content[:500]!r}"
+            )
             return None
         return json.loads(res.content).get("input_tokens")
     except Exception as e:
-        print(f"[byoai-runtime 🔬 BENCHMARK ERROR] count_tokens call raised {type(e).__name__}: {e}")
+        print(
+            f"[byoai-runtime 🔬 BENCHMARK ERROR] count_tokens call raised {type(e).__name__}: {e}"
+        )
         return None
-
-
-def _prune_local_sessions():
-    if len(_local_session_hashes) <= _LOCAL_SESSION_MAX:
-        return
-    # Drop the oldest-touched sessions first.
-    ordered = sorted(_local_session_hashes.items(), key=lambda kv: kv[1]["touched"])
-    for sid, _ in ordered[: len(ordered) - _LOCAL_SESSION_MAX]:
-        _local_session_hashes.pop(sid, None)
-
-
-def _local_get_session(session_id: str) -> set:
-    now = time.time()
-    entry = _local_session_hashes.get(session_id)
-    if entry is None or (now - entry["touched"]) > SESSION_TTL_SECONDS:
-        entry = {"hashes": set(), "touched": now}
-        _local_session_hashes[session_id] = entry
-        _prune_local_sessions()
-    entry["touched"] = now
-    return entry["hashes"]
-
-
-async def is_duplicate_hash(session_id: str, doc_hash: str) -> bool:
-    key = f"byoai:hashes:{session_id}"
-    try:
-        is_member = bool(await r.sismember(key, doc_hash))
-        # Refresh idle TTL on every touch so an active conversation never
-        # loses its dedup state mid-stream, while a conversation that goes
-        # quiet gets reaped automatically.
-        await r.expire(key, SESSION_TTL_SECONDS)
-        return is_member
-    except Exception:
-        return doc_hash in _local_get_session(session_id)
-
-
-async def add_hash(session_id: str, doc_hash: str):
-    _local_get_session(session_id).add(doc_hash)
-    key = f"byoai:hashes:{session_id}"
-    try:
-        await r.sadd(key, doc_hash)
-        await r.expire(key, SESSION_TTL_SECONDS)
-    except Exception:
-        pass
-
-
-# Tools whose output is genuinely log-shaped (test runners, shell
-# commands) where "keep only the error lines" is a reasonable lossy
-# summary. Everything else — file reads, greps, edits, anything that
-# returns source/document content — must never be classified by keyword
-# guessing, since ordinary code very plausibly contains the substrings
-# "ERROR", "Exception", etc. with zero relation to a test failure.
-# Match is case-insensitive and case-insensitive-substring on tool name so
-# this survives minor naming differences (e.g. "Bash", "bash_command").
-NOISY_LOG_TOOLS = {"bash", "shell", "execute", "run", "runtests", "runcommand", "terminal"}
-
-
-def _tool_name_is_noisy_log_source(tool_name: str) -> bool:
-    name = (tool_name or "").lower()
-    return any(marker in name for marker in NOISY_LOG_TOOLS)
-
-
-def _build_tool_use_name_map(messages: list) -> dict:
-    """tool_use_id -> tool name, so a tool_result can be traced back to
-    the tool that produced it (the tool_result block itself only carries
-    tool_use_id, not the tool's name)."""
-    id_to_name = {}
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    tid = block.get("id")
-                    if tid:
-                        id_to_name[tid] = block.get("name", "")
-    return id_to_name
-
-
-def _truncate_generic(text: str, limit: int = 4000) -> str:
-    """
-    Safe fallback for non-log tool output that's still oversized: keep a
-    head and tail slice rather than guessing at "errors" or discarding the
-    middle blind. Never applies keyword reclassification — this is purely
-    length-based, so it can't mislabel or gut ordinary file content the
-    way the old logic could.
-    """
-    if len(text) <= limit:
-        return text
-    head = text[: limit // 2]
-    tail = text[-limit // 2 :]
-    return f"{head}\n\n[...byoai-runtime: {len(text) - limit:,} chars omitted from middle (non-log tool output, safe length cap only)...]\n\n{tail}"
-
-
-def _truncate_log_like(text: str) -> str:
-    """Only for known log/test-runner tool output: safe to keep just the
-    error-shaped lines since that's the pattern this class of tool output
-    actually follows (pytest, npm, git, CI logs)."""
-    if len(text) <= 1200:
-        return text
-    lines = text.split("\n")
-    errors = [l for l in lines if any(k in l for k in ["FAIL", "ERROR", "Traceback", "Exception"])]
-    if errors:
-        return "\n".join(errors[-25:]) + "\n\n[...byoai-runtime: Verbose test/log output pruned to error lines...]"
-    return text[:600] + "\n\n[...byoai-runtime: Large log-like tool output truncated...]"
-
-
-async def optimize_payload(body: dict, session_id: str) -> tuple[dict, int, int]:
-    """
-    Cleans tool output noise and deduplicates repeated file snapshots
-    *within this same conversation only*.
-    Returns: (optimized_body, orig_tokens, opt_tokens)
-    """
-    orig_tokens = estimate_tokens(body)
-    messages = body.get("messages", [])
-    tool_name_by_id = _build_tool_use_name_map(messages)
-
-    for msg in messages:
-        if msg.get("role") == "user" and isinstance(msg.get("content"), list):
-            for block in msg["content"]:
-                # 1. Truncate Excessive Tool Outputs — but only apply the
-                # error-keyword heuristic to tools we know produce
-                # log-shaped output. Anything else gets a safe, purely
-                # length-based head/tail truncation that can't misfire on
-                # ordinary source code.
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    content = block.get("content", "")
-                    tool_name = tool_name_by_id.get(block.get("tool_use_id"), "")
-                    is_log_source = _tool_name_is_noisy_log_source(tool_name)
-
-                    if isinstance(content, str) and len(content) > 1200:
-                        block["content"] = (
-                            _truncate_log_like(content) if is_log_source else _truncate_generic(content)
-                        )
-
-                    elif isinstance(content, list):
-                        for sub_block in content:
-                            if isinstance(sub_block, dict) and sub_block.get("type") == "text":
-                                sub_text = sub_block.get("text", "")
-                                if len(sub_text) > 1200:
-                                    sub_block["text"] = (
-                                        _truncate_log_like(sub_text) if is_log_source else _truncate_generic(sub_text)
-                                    )
-
-                # 2. SHA-256 Deduplication for Repeated Large File Snapshots
-                # Scoped to this conversation's session_id — never cross-
-                # conversation, so we can't reference content the model in
-                # THIS conversation never actually saw.
-                elif isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text", "")
-                    if len(text) > 2000:
-                        doc_hash = hashlib.sha256(text.encode()).hexdigest()
-                        if await is_duplicate_hash(session_id, doc_hash):
-                            block["text"] = f"[byoai-runtime: Duplicate file snapshot detected (SHA: {doc_hash[:8]}). Content retained in earlier turns.]"
-                        else:
-                            await add_hash(session_id, doc_hash)
-
-    opt_tokens = estimate_tokens(body)
-    return body, orig_tokens, opt_tokens
 
 
 @app.get("/health")
@@ -534,7 +347,8 @@ async def proxy_count_tokens(request: Request):
             )
 
     headers = {
-        k: v for k, v in request.headers.items()
+        k: v
+        for k, v in request.headers.items()
         if k.lower() not in ("host", "content-length", "accept-encoding", "connection")
     }
     upstream_url = f"{ANTHROPIC_UPSTREAM}/v1/messages/count_tokens"
@@ -555,10 +369,12 @@ async def proxy_count_tokens(request: Request):
         content=res.content,
         status_code=res.status_code,
         headers=clean_response_headers(dict(res.headers)),
-        )
+    )
 
 
-async def proxy_openai_compat_request(request: Request, raw_body: dict) -> Response | StreamingResponse:
+async def proxy_openai_compat_request(
+    request: Request, raw_body: dict
+) -> Response | StreamingResponse:
     """
     Handle a request whose model is configured to route to an OpenAI-spec
     backend instead of Anthropic. Client still sent (and expects back) the
@@ -574,14 +390,23 @@ async def proxy_openai_compat_request(request: Request, raw_body: dict) -> Respo
 
     if not OPENAI_COMPAT_BASE_URL:
         return Response(
-            content=json.dumps({"error": {"type": "invalid_request_error",
-                                           "message": f"Model '{requested_model}' is configured for OpenAI-compat "
-                                                      f"routing but BYOAI_OPENAI_COMPAT_BASE_URL is not set."}}),
+            content=json.dumps(
+                {
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": f"Model '{requested_model}' is configured for OpenAI-compat "
+                        f"routing but BYOAI_OPENAI_COMPAT_BASE_URL is not set.",
+                    }
+                }
+            ),
             status_code=500,
             media_type=JSON_MEDIA_TYPE,
         )
 
-    print(f"[byoai-runtime 🌉 OPENAI-COMPAT] session={session_id} model={requested_model} -> {OPENAI_COMPAT_BASE_URL}")
+    print(
+        f"[byoai-runtime 🌉 OPENAI-COMPAT] session={session_id} "
+        f"model={requested_model} -> {OPENAI_COMPAT_BASE_URL}"
+    )
 
     try:
         res = await openai_compat.forward_to_openai_compatible(
@@ -590,7 +415,14 @@ async def proxy_openai_compat_request(request: Request, raw_body: dict) -> Respo
     except httpx.HTTPError as e:
         print(f"[byoai-runtime ❌ OPENAI-COMPAT ERROR] session={session_id}: {e}")
         return Response(
-            content=json.dumps({"error": {"type": "api_error", "message": f"Upstream OpenAI-compat backend unreachable: {e}"}}),
+            content=json.dumps(
+                {
+                    "error": {
+                        "type": "api_error",
+                        "message": f"Upstream OpenAI-compat backend unreachable: {e}",
+                    }
+                }
+            ),
             status_code=502,
             media_type=JSON_MEDIA_TYPE,
         )
@@ -599,10 +431,14 @@ async def proxy_openai_compat_request(request: Request, raw_body: dict) -> Respo
         body_preview = res.content if not is_stream else b"<streamed>"
         print(f"[byoai-runtime ❌ UPSTREAM {res.status_code}] openai-compat session={session_id}")
         print(f" └─ body: {body_preview[:1000]!r}")
-        return Response(content=res.content if not is_stream else b"", status_code=res.status_code,
-                         media_type=JSON_MEDIA_TYPE)
+        return Response(
+            content=res.content if not is_stream else b"",
+            status_code=res.status_code,
+            media_type=JSON_MEDIA_TYPE,
+        )
 
     if is_stream:
+
         async def openai_line_iter():
             buffer = ""
             async for chunk in res.aiter_bytes():
@@ -622,16 +458,26 @@ async def proxy_openai_compat_request(request: Request, raw_body: dict) -> Respo
             finally:
                 await res.aclose()
 
-        return StreamingResponse(stream_translated(), status_code=200, media_type="text/event-stream")
+        return StreamingResponse(
+            stream_translated(), status_code=200, media_type="text/event-stream"
+        )
     else:
         try:
             openai_resp = json.loads(res.content)
         except json.JSONDecodeError:
             return Response(content=res.content, status_code=502, media_type=JSON_MEDIA_TYPE)
-        anthropic_resp = openai_compat.openai_to_anthropic_response(openai_resp, requested_model, raw_body.get("stop_sequences"))
+        anthropic_resp = openai_compat.openai_to_anthropic_response(
+            openai_resp, requested_model, raw_body.get("stop_sequences")
+        )
         log_usage(session_id, anthropic_resp.get("usage"))
-        _fire_and_forget(db.record_usage_event(session_id, "openai_compat", requested_model, anthropic_resp.get("usage")))
-        return Response(content=json.dumps(anthropic_resp), status_code=200, media_type=JSON_MEDIA_TYPE)
+        _fire_and_forget(
+            db.record_usage_event(
+                session_id, "openai_compat", requested_model, anthropic_resp.get("usage")
+            )
+        )
+        return Response(
+            content=json.dumps(anthropic_resp), status_code=200, media_type=JSON_MEDIA_TYPE
+        )
 
 
 async def _apply_optimizer(
@@ -642,23 +488,25 @@ async def _apply_optimizer(
     it's sampled for tokenizer-verified benchmarking.
 
     Returns (body, is_benchmark_sample, pre_optimize_snapshot). `body` is
-    `raw_body` unchanged when the optimizer is off, or optimize_payload's
+    `raw_body` unchanged when the optimizer is off, or the SessionDedup stage's
     mutated-in-place result when it's on.
     """
-    # Snapshot BEFORE optimize_payload runs — it mutates the body's nested
+    # Snapshot BEFORE the dedup stage runs — it mutates the body's nested
     # blocks in place, so by the time it returns, the "original" is already
     # gone. Only pay the deepcopy cost when this request is actually
     # sampled for benchmarking.
     # random() picks whether this request gets sampled for benchmarking —
     # not security-sensitive, so the default PRNG is fine here.
-    is_benchmark_sample = is_enabled and BENCHMARK_SAMPLE_RATE > 0 and random.random() < BENCHMARK_SAMPLE_RATE  # noqa: S311
+    is_benchmark_sample = (
+        is_enabled and BENCHMARK_SAMPLE_RATE > 0 and random.random() < BENCHMARK_SAMPLE_RATE
+    )  # noqa: S311
     pre_optimize_snapshot = copy.deepcopy(raw_body) if is_benchmark_sample else None
 
     if not is_enabled:
         print("\n[byoai-runtime 🔴 OPTIMIZER OFF - Direct Pass-Through]\n")
         return raw_body, is_benchmark_sample, pre_optimize_snapshot
 
-    body, orig_tok, opt_tok = await optimize_payload(raw_body, session_id)
+    body, orig_tok, opt_tok = await _session_dedup_stage.optimize(raw_body, session_id)
     saved_tok = max(0, orig_tok - opt_tok)
 
     await safe_redis_incrby("byoai:stats:tokens_original", orig_tok)
@@ -670,7 +518,10 @@ async def _apply_optimizer(
 
     print(f"\n[byoai-runtime ⚡ OPTIMIZER ON] session={session_id}")
     print(f" ├─ Payload: {orig_tok:,} tok  ➔  {opt_tok:,} tok (estimate)")
-    print(f" ├─ Turn Savings: {saved_tok:,} tok ({pct_saved:.1f}%) (estimate — see /v1/stats/benchmark for tokenizer-verified numbers)")
+    print(
+        f" ├─ Turn Savings: {saved_tok:,} tok ({pct_saved:.1f}%) "
+        "(estimate — see /v1/stats/benchmark for tokenizer-verified numbers)"
+    )
     print(f" └─ Lifetime Saved: {int(cum_saved):,} tokens (estimate)\n")
 
     return body, is_benchmark_sample, pre_optimize_snapshot
@@ -693,8 +544,10 @@ async def _maybe_run_benchmark_sample(
         return
 
     count_token_headers = {
-        k: v for k, v in headers.items()
-        if k.lower() in ("x-api-key", "authorization", "anthropic-version", "anthropic-beta", "content-type")
+        k: v
+        for k, v in headers.items()
+        if k.lower()
+        in ("x-api-key", "authorization", "anthropic-version", "anthropic-beta", "content-type")
     }
     count_token_headers.setdefault("content-type", JSON_MEDIA_TYPE)
     real_orig, real_opt = await asyncio.gather(
@@ -702,7 +555,10 @@ async def _maybe_run_benchmark_sample(
         real_token_count(count_token_headers, body),
     )
     if real_orig is None or real_opt is None:
-        print("[byoai-runtime 🔬 BENCHMARK] sample discarded — count_tokens call failed, not counted toward stats\n")
+        print(
+            "[byoai-runtime 🔬 BENCHMARK] sample discarded — count_tokens "
+            "call failed, not counted toward stats\n"
+        )
         return
 
     real_saved = max(0, real_orig - real_opt)
@@ -714,11 +570,19 @@ async def _maybe_run_benchmark_sample(
     # Fire-and-forget: the durable SQLite row is the permanent record; don't
     # make the live response wait on a disk write.
     _fire_and_forget(
-        db.record_benchmark_sample(session_id, body.get("model", requested_model), real_orig, real_opt, real_saved)
+        db.record_benchmark_sample(
+            session_id, body.get("model", requested_model), real_orig, real_opt, real_saved
+        )
     )
     print("[byoai-runtime 🔬 REAL BENCHMARK — Anthropic tokenizer, not an estimate]")
-    print(f" ├─ real_orig={real_orig:,}  real_opt={real_opt:,}  real_saved={real_saved:,} ({real_pct:.1f}%)")
-    print(f" └─ via /v1/messages/count_tokens (not billed as a completion) — persisted to {db.DB_PATH}\n")
+    print(
+        f" ├─ real_orig={real_orig:,}  real_opt={real_opt:,}  "
+        f"real_saved={real_saved:,} ({real_pct:.1f}%)"
+    )
+    print(
+        f" └─ via /v1/messages/count_tokens (not billed as a completion) "
+        f"— persisted to {db.DB_PATH}\n"
+    )
 
 
 @app.api_route("/v1/messages", methods=["GET", "POST"])
@@ -729,16 +593,18 @@ async def proxy_claude_messages(request: Request):
         return Response(
             content=json.dumps({"status": "ok", "message": "byoai-runtime proxy active"}),
             status_code=200,
-            media_type=JSON_MEDIA_TYPE
+            media_type=JSON_MEDIA_TYPE,
         )
 
     try:
         raw_body = json.loads(body_bytes)
     except json.JSONDecodeError:
         return Response(
-            content=json.dumps({"error": {"type": "invalid_request_error", "message": "Invalid JSON payload"}}),
+            content=json.dumps(
+                {"error": {"type": "invalid_request_error", "message": "Invalid JSON payload"}}
+            ),
             status_code=400,
-            media_type=JSON_MEDIA_TYPE
+            media_type=JSON_MEDIA_TYPE,
         )
 
     requested_model = raw_body.get("model", "")
@@ -751,24 +617,27 @@ async def proxy_claude_messages(request: Request):
         raw_body["model"] = remapped
         print(f"[byoai-runtime 🔄 REMAP] '{requested_model}' ➔ '{remapped}'")
 
-    had_cache_control_already = _count_cache_control_markers(raw_body) > 0
-    raw_body = ensure_cache_control(raw_body)
-    if not had_cache_control_already and _count_cache_control_markers(raw_body) > 0:
+    had_cache_control_already = _stage_count_cache_control_markers(raw_body) > 0
+    raw_body = PromptCacheInjection.inject(raw_body)
+    if not had_cache_control_already and _stage_count_cache_control_markers(raw_body) > 0:
         print("[byoai-runtime 📌 CACHE] Injected cache_control breakpoint(s) — client sent none.")
 
     # NOTE: if this upstream traffic uses prompt caching (cache_control
     # breakpoints — including the ones we may have just injected above),
     # mutating cached blocks below busts the cache for everything after
-    # that point in the prompt on every call. optimize_payload only
+    # that point in the prompt on every call. The SessionDedup stage only
     # touches tool_result/text blocks inside individual user messages, not
     # the system/tools blocks we cache here, so the two don't conflict —
-    # but keep that boundary in mind if optimize_payload is ever extended.
+    # but keep that boundary in mind if SessionDedup is ever extended.
     is_enabled = (await safe_redis_get(REDIS_KEY_ENABLED, default="1")) != "0"
     session_id = derive_session_id(request, raw_body)
-    body, is_benchmark_sample, pre_optimize_snapshot = await _apply_optimizer(raw_body, session_id, is_enabled)
+    body, is_benchmark_sample, pre_optimize_snapshot = await _apply_optimizer(
+        raw_body, session_id, is_enabled
+    )
 
     headers = {
-        k: v for k, v in request.headers.items()
+        k: v
+        for k, v in request.headers.items()
         if k.lower() not in ("host", "content-length", "accept-encoding", "connection")
     }
 
@@ -790,7 +659,14 @@ async def proxy_claude_messages(request: Request):
         except httpx.HTTPError as e:
             print(f"[byoai-runtime ❌ CONNECT {type(e).__name__}] session={log_session_id}: {e}")
             return Response(
-                content=json.dumps({"error": {"type": "api_error", "message": f"byoai-runtime: could not reach upstream: {e}"}}),
+                content=json.dumps(
+                    {
+                        "error": {
+                            "type": "api_error",
+                            "message": f"byoai-runtime: could not reach upstream: {e}",
+                        }
+                    }
+                ),
                 status_code=502,
                 media_type=JSON_MEDIA_TYPE,
             )
@@ -818,13 +694,22 @@ async def proxy_claude_messages(request: Request):
                             if not line.startswith("data:"):
                                 continue
                             try:
-                                payload = json.loads(line[len("data:"):].strip())
+                                payload = json.loads(line[len("data:") :].strip())
                             except json.JSONDecodeError:
                                 continue
-                            msg_usage = payload.get("message", {}).get("usage") or payload.get("usage")
+                            msg_usage = payload.get("message", {}).get("usage") or payload.get(
+                                "usage"
+                            )
                             if msg_usage:
-                                usage_seen.update({k: v for k, v in msg_usage.items() if v is not None})
-            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError, httpx.ConnectError) as e:
+                                usage_seen.update(
+                                    {k: v for k, v in msg_usage.items() if v is not None}
+                                )
+            except (
+                httpx.ReadTimeout,
+                httpx.ConnectTimeout,
+                httpx.RemoteProtocolError,
+                httpx.ConnectError,
+            ) as e:
                 # Upstream connection dropped/stalled mid-stream. Don't let
                 # this crash the ASGI response (that's what was happening
                 # before — an unhandled httpx.ReadTimeout propagating up
@@ -835,7 +720,13 @@ async def proxy_claude_messages(request: Request):
                 print(f"[byoai-runtime ❌ STREAM {type(e).__name__}] session={log_session_id}: {e}")
                 error_event = {
                     "type": "error",
-                    "error": {"type": "api_error", "message": f"byoai-runtime: upstream connection {type(e).__name__} mid-stream: {e}"},
+                    "error": {
+                        "type": "api_error",
+                        "message": (
+                            f"byoai-runtime: upstream connection "
+                            f"{type(e).__name__} mid-stream: {e}"
+                        ),
+                    },
                 }
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             finally:
@@ -844,15 +735,22 @@ async def proxy_claude_messages(request: Request):
                 # long-lived pooled client reused across every request.
                 if usage_seen:
                     log_usage(log_session_id, usage_seen)
-                    _fire_and_forget(db.record_usage_event(log_session_id, "anthropic", body.get("model"), usage_seen))
+                    _fire_and_forget(
+                        db.record_usage_event(
+                            log_session_id, "anthropic", body.get("model"), usage_seen
+                        )
+                    )
                 if not stream_error and res.status_code >= 400:
                     print(f"[byoai-runtime ❌ UPSTREAM {res.status_code}] session={log_session_id}")
-                    print(f" └─ retry-after={dict(res.headers).get('retry-after', 'n/a')}  (see client for error body; streamed responses aren't buffered here)")
+                    print(
+                        f" └─ retry-after={dict(res.headers).get('retry-after', 'n/a')}  "
+                        "(see client for error body; streamed responses aren't buffered here)"
+                    )
 
         return StreamingResponse(
             stream_and_close(),
             status_code=res.status_code,
-            headers=clean_response_headers(dict(res.headers))
+            headers=clean_response_headers(dict(res.headers)),
         )
     else:
         try:
@@ -864,7 +762,14 @@ async def proxy_claude_messages(request: Request):
         except httpx.HTTPError as e:
             print(f"[byoai-runtime ❌ CONNECT {type(e).__name__}] session={log_session_id}: {e}")
             return Response(
-                content=json.dumps({"error": {"type": "api_error", "message": f"byoai-runtime: could not reach upstream: {e}"}}),
+                content=json.dumps(
+                    {
+                        "error": {
+                            "type": "api_error",
+                            "message": f"byoai-runtime: could not reach upstream: {e}",
+                        }
+                    }
+                ),
                 status_code=502,
                 media_type=JSON_MEDIA_TYPE,
             )
@@ -876,13 +781,17 @@ async def proxy_claude_messages(request: Request):
             try:
                 resp_json = json.loads(res.content)
                 log_usage(log_session_id, resp_json.get("usage"))
-                _fire_and_forget(db.record_usage_event(log_session_id, "anthropic", body.get("model"), resp_json.get("usage")))
+                _fire_and_forget(
+                    db.record_usage_event(
+                        log_session_id, "anthropic", body.get("model"), resp_json.get("usage")
+                    )
+                )
             except (json.JSONDecodeError, AttributeError):
                 pass
         return Response(
             content=res.content,
             status_code=res.status_code,
-            headers=clean_response_headers(dict(res.headers))
+            headers=clean_response_headers(dict(res.headers)),
         )
 
 
@@ -905,9 +814,10 @@ async def get_stats():
         "tokens_original": tokens_orig,
         "tokens_sent": tokens_sent,
         "savings_percentage": f"{pct_saved:.2f}%",
-        "methodology": "ESTIMATE ONLY — len(json.dumps(body)) // 4, a rough character-count heuristic. "
-                        "Not Anthropic's real tokenizer. Do not use this endpoint's numbers in external/marketing "
-                        "claims — use /v1/stats/benchmark instead, which is tokenizer-verified.",
+        "methodology": "ESTIMATE ONLY — len(json.dumps(body)) // 4, "
+        "a rough character-count heuristic. "
+        "Not Anthropic's real tokenizer. Do not use this endpoint's numbers in external/marketing "
+        "claims — use /v1/stats/benchmark instead, which is tokenizer-verified.",
     }
 
 
@@ -934,14 +844,17 @@ async def get_benchmark_stats():
         "real_tokens_sent": real_sent,
         "real_tokens_saved": real_saved,
         "real_savings_percentage": f"{pct:.2f}%",
-        "methodology": "Each sampled request's raw and optimized payload were independently submitted to "
-                        "Anthropic's own /v1/messages/count_tokens endpoint (a real tokenizer call, not billed "
-                        "as a completion) and compared. This measures payload-size reduction only.",
-        "scope_note": "This does NOT include prompt-cache savings, which are typically the larger cost lever "
-                       "and are tracked separately per-request in the console log (cache_read/cache_write), not "
-                       "aggregated here yet.",
-        "sample_size_caveat": "Treat this as directional until sample_count is reasonably large (dozens+ of "
-                               "sampled requests spanning varied payload sizes) before citing externally.",
+        "methodology": "Each sampled request's raw and optimized payload "
+        "were independently submitted to "
+        "Anthropic's own /v1/messages/count_tokens endpoint (a real tokenizer call, not billed "
+        "as a completion) and compared. This measures payload-size reduction only.",
+        "scope_note": "This does NOT include prompt-cache savings, which are "
+        "typically the larger cost lever "
+        "and are tracked separately per-request in the console log (cache_read/cache_write), not "
+        "aggregated here yet.",
+        "sample_size_caveat": "Treat this as directional until sample_count "
+        "is reasonably large (dozens+ of "
+        "sampled requests spanning varied payload sizes) before citing externally.",
     }
 
 
@@ -971,9 +884,10 @@ async def get_permanent_stats():
             "real_savings_percentage": f"{pct:.2f}%",
         },
         "usage_totals": usage,
-        "methodology": "Identical measurement methodology to /v1/stats/benchmark (Anthropic's real tokenizer via "
-                        "count_tokens), but persisted to disk on every sample rather than kept only in Redis — "
-                        "survives restarts, Redis flushes, and infrastructure changes.",
+        "methodology": "Identical measurement methodology to "
+        "/v1/stats/benchmark (Anthropic's real tokenizer via "
+        "count_tokens), but persisted to disk on every sample rather than kept only in Redis — "
+        "survives restarts, Redis flushes, and infrastructure changes.",
     }
 
 
@@ -1033,7 +947,8 @@ async def proxy_catch_all(request: Request, path: str):
     """
     body_bytes = await request.body()
     headers = {
-        k: v for k, v in request.headers.items()
+        k: v
+        for k, v in request.headers.items()
         if k.lower() not in ("host", "content-length", "accept-encoding", "connection")
     }
     upstream_url = f"{ANTHROPIC_UPSTREAM}/v1/{path}"

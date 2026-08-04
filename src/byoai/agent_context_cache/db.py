@@ -26,10 +26,10 @@ open a fresh connection per call (check_same_thread=False) rather than
 sharing one connection across threads.
 """
 
-import os
-import time
-import sqlite3
 import asyncio
+import os
+import sqlite3
+import time
 
 DB_PATH = os.getenv("BYOAI_SQLITE_PATH", "byoai_runtime.db")
 
@@ -96,13 +96,17 @@ def _insert_benchmark_sync(session_id, model, real_orig, real_sent, real_saved):
         conn.close()
 
 
-async def record_benchmark_sample(session_id: str, model: str, real_orig: int, real_sent: int, real_saved: int):
+async def record_benchmark_sample(
+    session_id: str, model: str, real_orig: int, real_sent: int, real_saved: int
+):
     """Best-effort: a DB write failure must never break the request it
     rides alongside. Caller is expected to fire this without blocking the
     response (see main.py's use of asyncio.create_task)."""
     try:
         async with _lock:
-            await asyncio.to_thread(_insert_benchmark_sync, session_id, model, real_orig, real_sent, real_saved)
+            await asyncio.to_thread(
+                _insert_benchmark_sync, session_id, model, real_orig, real_sent, real_saved
+            )
     except Exception as e:
         print(f"[byoai-runtime 🗄️ DB WARNING] failed to persist benchmark sample: {e}")
 
@@ -112,10 +116,14 @@ def _insert_usage_sync(session_id, backend, model, usage):
     try:
         conn.execute(
             "INSERT INTO usage_events "
-            "(ts, session_id, backend, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) "
+            "(ts, session_id, backend, model, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                time.time(), session_id, backend, model,
+                time.time(),
+                session_id,
+                backend,
+                model,
                 usage.get("input_tokens", 0) or 0,
                 usage.get("output_tokens", 0) or 0,
                 usage.get("cache_read_input_tokens", 0) or 0,
@@ -166,14 +174,19 @@ def _recent_benchmark_samples_sync(limit):
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT ts, session_id, model, real_tokens_original, real_tokens_sent, real_tokens_saved "
+            "SELECT ts, session_id, model, real_tokens_original, "
+            "real_tokens_sent, real_tokens_saved "
             "FROM benchmark_samples ORDER BY ts DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [
             {
-                "ts": r[0], "session_id": r[1], "model": r[2],
-                "real_tokens_original": r[3], "real_tokens_sent": r[4], "real_tokens_saved": r[5],
+                "ts": r[0],
+                "session_id": r[1],
+                "model": r[2],
+                "real_tokens_original": r[3],
+                "real_tokens_sent": r[4],
+                "real_tokens_saved": r[5],
             }
             for r in rows
         ]

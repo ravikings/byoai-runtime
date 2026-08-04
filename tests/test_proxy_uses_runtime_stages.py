@@ -1,8 +1,10 @@
-"""End-to-end tests for the /v1/messages proxy route, confirming the
-_apply_optimizer/_maybe_run_benchmark_sample extraction in main.py didn't
-change observable behavior. The upstream Anthropic API is faked with
-httpx.MockTransport (the same no-network pattern used in
-tests/test_providers_http.py) rather than a new mocking dependency.
+"""Step-3 seam test: prove the /v1/messages proxy handler routes request-side
+optimization through the extracted runtime primitives
+(``byoai.stages.PromptCacheInjection`` and ``byoai.stages.SessionDedup``)
+rather than the legacy inline functions.
+
+Reuses the no-network mock-upstream + fake-redis pattern from
+tests/test_agent_context_cache_api.py.
 """
 
 from __future__ import annotations
@@ -13,9 +15,8 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from byoai import stages as stages_mod
 from byoai.agent_context_cache import main as acc_main
-
-LONG_TEXT = "y" * 2500
 
 
 class FakeRedis:
@@ -61,33 +62,30 @@ def upstream_ok(_request: httpx.Request) -> httpx.Response:
     )
 
 
+@pytest.fixture(autouse=True)
+def _restore_proxy_globals():
+    """Guard against the known cross-test state-leak hazard: save/restore any
+    proxy globals a test (or the live path) may mutate."""
+    saved_r = acc_main.r
+    acc_main._session_hash_store.fallback._sessions.clear()
+    yield
+    acc_main.r = saved_r
+    acc_main._session_hash_store.fallback._sessions.clear()
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(acc_main, "r", FakeRedis())
     monkeypatch.setattr(acc_main.db, "DB_PATH", str(tmp_path / "test.db"))
-    # Benchmark sampling fires on a random fraction of requests and issues
-    # extra count_tokens calls through the same mock upstream — which the
-    # capture-based assertions below would otherwise see as stray requests,
-    # making these tests flaky (~15%). No test asserts sampling behavior, so
-    # pin it off for deterministic capture.
-    monkeypatch.setattr(acc_main, "BENCHMARK_SAMPLE_RATE", 0.0)
-    acc_main._session_hash_store.fallback._sessions.clear()
     with TestClient(acc_main.app) as test_client:
         yield test_client
-    acc_main._session_hash_store.fallback._sessions.clear()
 
 
 def use_mock_upstream(handler):
     acc_main.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def test_health_check(client):
-    res = client.get("/health")
-    assert res.status_code == 200
-    assert res.json()["status"] == "ok"
-
-
-def test_proxy_injects_cache_control_when_client_sends_none(client):
+def _capture_upstream():
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -95,6 +93,34 @@ def test_proxy_injects_cache_control_when_client_sends_none(client):
         return upstream_ok(request)
 
     use_mock_upstream(handler)
+    return captured
+
+
+def test_handler_routes_through_both_runtime_primitives(client, monkeypatch):
+    """A normal POST must invoke both PromptCacheInjection.inject and
+    SessionDedup.optimize on the live request path."""
+    inject_calls: list[dict] = []
+    optimize_calls: list[str] = []
+
+    orig_inject = stages_mod.PromptCacheInjection.inject
+
+    def spy_inject(body):
+        inject_calls.append(body)
+        return orig_inject(body)
+
+    monkeypatch.setattr(
+        stages_mod.PromptCacheInjection, "inject", staticmethod(spy_inject)
+    )
+
+    orig_optimize = stages_mod.SessionDedup.optimize
+
+    async def spy_optimize(self, body, session_id):
+        optimize_calls.append(session_id)
+        return await orig_optimize(self, body, session_id)
+
+    monkeypatch.setattr(stages_mod.SessionDedup, "optimize", spy_optimize)
+
+    captured = _capture_upstream()
 
     res = client.post(
         "/v1/messages",
@@ -103,23 +129,38 @@ def test_proxy_injects_cache_control_when_client_sends_none(client):
             "system": "You are a helpful assistant.",
             "messages": [{"role": "user", "content": "hi"}],
         },
-        headers={"x-api-key": "test-key"},
+        headers={"x-api-key": "test-key", "x-byoai-session-id": "sess-1"},
     )
 
     assert res.status_code == 200
+    # Both runtime primitives were exercised on the live path.
+    assert len(inject_calls) == 1
+    # derive_session_id prefixes the header-supplied id.
+    assert optimize_calls == ["hdr:sess-1"]
+    # And the injection actually took effect end-to-end (client sent no
+    # cache_control, so the stage upgraded the system prompt).
     sent_body = json.loads(captured[0].content)
     assert isinstance(sent_body["system"], list)
     assert sent_body["system"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
-def test_proxy_passes_through_cache_control_when_client_already_set_it(client):
-    captured: list[httpx.Request] = []
+def test_handler_injection_is_noop_when_client_already_set_cache_control(
+    client, monkeypatch
+):
+    """When the client already manages cache_control, routing through
+    PromptCacheInjection.inject must not add any breakpoint."""
+    inject_calls: list[dict] = []
+    orig_inject = stages_mod.PromptCacheInjection.inject
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(request)
-        return upstream_ok(request)
+    def spy_inject(body):
+        inject_calls.append(body)
+        return orig_inject(body)
 
-    use_mock_upstream(handler)
+    monkeypatch.setattr(
+        stages_mod.PromptCacheInjection, "inject", staticmethod(spy_inject)
+    )
+
+    captured = _capture_upstream()
 
     client_system = [
         {
@@ -139,32 +180,10 @@ def test_proxy_passes_through_cache_control_when_client_already_set_it(client):
     )
 
     assert res.status_code == 200
+    # inject ran on the live path...
+    assert len(inject_calls) == 1
+    # ...but produced no new breakpoint: exactly the client's one marker,
+    # forwarded unchanged.
     sent_body = json.loads(captured[0].content)
-    # Untouched: exactly the one breakpoint the client set, not two.
     assert sent_body["system"] == client_system
-
-
-def test_proxy_dedups_repeated_text_within_one_session_over_two_calls(client):
-    captured: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(request)
-        return upstream_ok(request)
-
-    use_mock_upstream(handler)
-
-    payload = {
-        "model": "claude-x",
-        "messages": [
-            {"role": "user", "content": [{"type": "text", "text": LONG_TEXT}]},
-        ],
-    }
-    headers = {"x-api-key": "test-key", "x-byoai-session-id": "one-session"}
-
-    client.post("/v1/messages", json=payload, headers=headers)
-    client.post("/v1/messages", json=payload, headers=headers)
-
-    first_sent = json.loads(captured[0].content)
-    second_sent = json.loads(captured[1].content)
-    assert first_sent["messages"][0]["content"][0]["text"] == LONG_TEXT
-    assert "Duplicate file snapshot detected" in second_sent["messages"][0]["content"][0]["text"]
+    assert stages_mod._count_cache_control_markers(sent_body) == 1

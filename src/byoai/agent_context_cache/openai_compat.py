@@ -17,17 +17,17 @@ This module has no FastAPI/httpx-app dependency of its own; main.py wires
 it in via BACKENDS routing and passes in the shared http_client.
 """
 
-import json
-import time
 import hashlib
-from typing import AsyncIterator
-
+import json
+from collections.abc import AsyncIterator
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Request translation: Anthropic Messages -> OpenAI Chat Completions
 # ---------------------------------------------------------------------------
 
-def _anthropic_content_to_openai_parts(content) -> tuple[list, list]:
+
+def _anthropic_content_to_openai_parts(content) -> tuple[list | str, list, list]:
     """
     Split a single Anthropic message's content into:
       - content_parts: OpenAI-style content parts (text / image_url) for a
@@ -40,7 +40,7 @@ def _anthropic_content_to_openai_parts(content) -> tuple[list, list]:
     Returns (content_parts, extra_messages, tool_calls).
     """
     if isinstance(content, str):
-        return content, []
+        return content, [], []
 
     content_parts = []
     extra_messages = []
@@ -54,20 +54,24 @@ def _anthropic_content_to_openai_parts(content) -> tuple[list, list]:
             source = block.get("source", {})
             media_type = source.get("media_type", "image/png")
             data = source.get("data", "")
-            content_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{media_type};base64,{data}"},
-            })
+            content_parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{media_type};base64,{data}"},
+                }
+            )
         elif btype == "tool_use":
             # Assistant-side tool call -> OpenAI tool_calls on the assistant message
-            tool_calls.append({
-                "id": block.get("id", ""),
-                "type": "function",
-                "function": {
-                    "name": block.get("name", ""),
-                    "arguments": json.dumps(block.get("input", {})),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": block.get("name", ""),
+                        "arguments": json.dumps(block.get("input", {})),
+                    },
+                }
+            )
         elif btype == "tool_result":
             # User-side tool result -> its own OpenAI role="tool" message
             result_content = block.get("content", "")
@@ -76,21 +80,31 @@ def _anthropic_content_to_openai_parts(content) -> tuple[list, list]:
                 # aren't representable in a plain "tool" message under the
                 # OpenAI spec, so we keep text only (documented limitation).
                 result_content = "\n".join(
-                    b.get("text", "") for b in result_content
+                    b.get("text", "")
+                    for b in result_content
                     if isinstance(b, dict) and b.get("type") == "text"
                 )
-            extra_messages.append({
-                "role": "tool",
-                "tool_call_id": block.get("tool_use_id", ""),
-                "content": result_content if isinstance(result_content, str) else json.dumps(result_content),
-            })
+            extra_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": block.get("tool_use_id", ""),
+                    "content": result_content
+                    if isinstance(result_content, str)
+                    else json.dumps(result_content),
+                }
+            )
         elif btype == "document":
             # No direct OpenAI equivalent for a raw document block; degrade
             # to a text marker rather than silently dropping it unnoticed.
-            content_parts.append({
-                "type": "text",
-                "text": f"[byoai-runtime: document block present but not translatable to OpenAI format]",
-            })
+            content_parts.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "[byoai-runtime: document block present but not "
+                        "translatable to OpenAI format]"
+                    ),
+                }
+            )
 
     return content_parts, extra_messages, tool_calls
 
@@ -114,10 +128,14 @@ def anthropic_to_openai_request(body: dict) -> dict:
     for msg in body.get("messages", []):
         role = msg.get("role")
         content = msg.get("content", "")
-        parts, extra_messages, tool_calls = _anthropic_content_to_openai_parts(content) if isinstance(content, list) else (content, [], [])
+        parts, extra_messages, tool_calls = (
+            _anthropic_content_to_openai_parts(content)
+            if isinstance(content, list)
+            else (content, [], [])
+        )
 
         if role == "assistant":
-            assistant_msg = {"role": "assistant"}
+            assistant_msg: dict[str, Any] = {"role": "assistant"}
             if isinstance(parts, str):
                 assistant_msg["content"] = parts if parts else None
             else:
@@ -132,8 +150,9 @@ def anthropic_to_openai_request(body: dict) -> dict:
             # OpenAI expects tool results immediately after the assistant
             # turn that requested them.
             openai_messages.extend(extra_messages)
-            remaining_parts = [p for p in (parts if isinstance(parts, list) else []) ] if not isinstance(parts, str) else parts
-            has_real_content = (isinstance(parts, str) and parts) or (isinstance(parts, list) and len(parts) > 0)
+            has_real_content = (isinstance(parts, str) and parts) or (
+                isinstance(parts, list) and len(parts) > 0
+            )
             if has_real_content:
                 openai_messages.append({"role": "user", "content": parts})
 
@@ -194,7 +213,9 @@ _FINISH_REASON_MAP = {
 }
 
 
-def _detect_stop_sequence(text: str | None, stop_sequences: list | None, choice: dict | None = None) -> str | None:
+def _detect_stop_sequence(
+    text: str | None, stop_sequences: list | None, choice: dict | None = None
+) -> str | None:
     """
     OpenAI's `finish_reason: "stop"` covers BOTH a natural end-of-turn and
     generation halting because it hit one of the caller's `stop` strings —
@@ -225,7 +246,9 @@ def _detect_stop_sequence(text: str | None, stop_sequences: list | None, choice:
     return None
 
 
-def openai_to_anthropic_response(openai_resp: dict, requested_model: str, stop_sequences: list | None = None) -> dict:
+def openai_to_anthropic_response(
+    openai_resp: dict, requested_model: str, stop_sequences: list | None = None
+) -> dict:
     """Translate one complete (non-streaming) OpenAI chat.completion response
     into an Anthropic Messages API response body."""
     choice = (openai_resp.get("choices") or [{}])[0]
@@ -242,19 +265,27 @@ def openai_to_anthropic_response(openai_resp: dict, requested_model: str, stop_s
             tool_input = json.loads(func.get("arguments") or "{}")
         except json.JSONDecodeError:
             tool_input = {}
-        content_blocks.append({
-            "type": "tool_use",
-            "id": tc.get("id", ""),
-            "name": func.get("name", ""),
-            "input": tool_input,
-        })
+        content_blocks.append(
+            {
+                "type": "tool_use",
+                "id": tc.get("id", ""),
+                "name": func.get("name", ""),
+                "input": tool_input,
+            }
+        )
 
     usage = openai_resp.get("usage", {})
-    resp_id = openai_resp.get("id") or ("msg_" + hashlib.sha256(json.dumps(openai_resp).encode()).hexdigest()[:24])
+    resp_id = openai_resp.get("id") or (
+        "msg_" + hashlib.sha256(json.dumps(openai_resp).encode()).hexdigest()[:24]
+    )
 
     finish_reason = choice.get("finish_reason")
-    matched_stop = _detect_stop_sequence(text, stop_sequences, choice) if finish_reason == "stop" else None
-    stop_reason = "stop_sequence" if matched_stop else _FINISH_REASON_MAP.get(finish_reason, "end_turn")
+    matched_stop = (
+        _detect_stop_sequence(text, stop_sequences, choice) if finish_reason == "stop" else None
+    )
+    stop_reason = (
+        "stop_sequence" if matched_stop else _FINISH_REASON_MAP.get(finish_reason, "end_turn")
+    )
 
     return {
         "id": resp_id,
@@ -274,6 +305,7 @@ def openai_to_anthropic_response(openai_resp: dict, requested_model: str, stop_s
 # ---------------------------------------------------------------------------
 # Streaming translation: OpenAI SSE chunks -> Anthropic SSE events
 # ---------------------------------------------------------------------------
+
 
 async def translate_openai_stream_to_anthropic_sse(
     openai_lines: AsyncIterator[str], requested_model: str, stop_sequences: list | None = None
@@ -295,15 +327,22 @@ async def translate_openai_stream_to_anthropic_sse(
     def sse(event: str, data: dict) -> bytes:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
-    yield sse("message_start", {
-        "type": "message_start",
-        "message": {
-            "id": msg_id, "type": "message", "role": "assistant",
-            "model": requested_model, "content": [],
-            "stop_reason": None, "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0},
+    yield sse(
+        "message_start",
+        {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "model": requested_model,
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
         },
-    })
+    )
 
     text_block_open = False
     text_block_index = None
@@ -317,7 +356,7 @@ async def translate_openai_stream_to_anthropic_sse(
     async for line in openai_lines:
         if not line.startswith("data:"):
             continue
-        payload_str = line[len("data:"):].strip()
+        payload_str = line[len("data:") :].strip()
         if payload_str == "[DONE]":
             break
         try:
@@ -335,18 +374,26 @@ async def translate_openai_stream_to_anthropic_sse(
 
         if "content" in delta and delta["content"]:
             if not text_block_open:
-                yield sse("content_block_start", {
-                    "type": "content_block_start", "index": next_block_index,
-                    "content_block": {"type": "text", "text": ""},
-                })
+                yield sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": next_block_index,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
                 text_block_open = True
                 text_block_index = next_block_index
                 next_block_index += 1
             accumulated_text += delta["content"]
-            yield sse("content_block_delta", {
-                "type": "content_block_delta", "index": text_block_index,
-                "delta": {"type": "text_delta", "text": delta["content"]},
-            })
+            yield sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": text_block_index,
+                    "delta": {"type": "text_delta", "text": delta["content"]},
+                },
+            )
 
         for tc_delta in delta.get("tool_calls", []) or []:
             idx = tc_delta.get("index", 0)
@@ -355,39 +402,56 @@ async def translate_openai_stream_to_anthropic_sse(
                 next_block_index += 1
                 tool_blocks_open[idx] = anthropic_idx
                 func = tc_delta.get("function", {})
-                yield sse("content_block_start", {
-                    "type": "content_block_start", "index": anthropic_idx,
-                    "content_block": {
-                        "type": "tool_use",
-                        "id": tc_delta.get("id", ""),
-                        "name": func.get("name", ""),
-                        "input": {},
+                yield sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": anthropic_idx,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": tc_delta.get("id", ""),
+                            "name": func.get("name", ""),
+                            "input": {},
+                        },
                     },
-                })
+                )
             anthropic_idx = tool_blocks_open[idx]
             func = tc_delta.get("function", {})
             if func.get("arguments"):
-                yield sse("content_block_delta", {
-                    "type": "content_block_delta", "index": anthropic_idx,
-                    "delta": {"type": "input_json_delta", "partial_json": func["arguments"]},
-                })
+                yield sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": anthropic_idx,
+                        "delta": {"type": "input_json_delta", "partial_json": func["arguments"]},
+                    },
+                )
 
     if text_block_open:
         yield sse("content_block_stop", {"type": "content_block_stop", "index": text_block_index})
     for anthropic_idx in tool_blocks_open.values():
         yield sse("content_block_stop", {"type": "content_block_stop", "index": anthropic_idx})
 
-    matched_stop = _detect_stop_sequence(accumulated_text, stop_sequences, finish_choice) if finish_reason == "stop" else None
-    stream_stop_reason = "stop_sequence" if matched_stop else _FINISH_REASON_MAP.get(finish_reason, "end_turn")
+    matched_stop = (
+        _detect_stop_sequence(accumulated_text, stop_sequences, finish_choice)
+        if finish_reason == "stop"
+        else None
+    )
+    stream_stop_reason = (
+        "stop_sequence" if matched_stop else _FINISH_REASON_MAP.get(finish_reason, "end_turn")
+    )
 
-    yield sse("message_delta", {
-        "type": "message_delta",
-        "delta": {"stop_reason": stream_stop_reason, "stop_sequence": matched_stop},
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
+    yield sse(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": stream_stop_reason, "stop_sequence": matched_stop},
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            },
         },
-    })
+    )
     yield sse("message_stop", {"type": "message_stop"})
 
 
@@ -395,8 +459,13 @@ async def translate_openai_stream_to_anthropic_sse(
 # Backend forwarding helper (uses the caller's shared httpx.AsyncClient)
 # ---------------------------------------------------------------------------
 
+
 async def forward_to_openai_compatible(
-    http_client, base_url: str, api_key: str, anthropic_body: dict, extra_headers: dict = None
+    http_client,
+    base_url: str,
+    api_key: str,
+    anthropic_body: dict,
+    extra_headers: dict | None = None,
 ):
     """
     Translate `anthropic_body`, POST it to `{base_url}/chat/completions`,
