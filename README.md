@@ -296,26 +296,64 @@ within a session, cutting token spend without any client-side changes.
 
 ```bash
 pip install byoai-runtime
-byoai-agent-context-cache
+byoai-cache                                    # runs in the foreground
 export ANTHROPIC_BASE_URL=http://localhost:8787
 ```
 
-It listens on `:8787` by default and uses Redis for session/dedup state if
-`REDIS_URL` is set (falls back to an in-process store otherwise). Full env
-var reference in **[CONFIGURATION.md](CONFIGURATION.md#agent-context-cache--byoai-agent-context-cache)**.
+Prefer to keep it running without holding a terminal open? Start it detached:
+
+```bash
+byoai-cache start      # background; survives closing the terminal
+byoai-cache status     # running (pid …) → http://localhost:8787
+byoai-cache stop
+```
+
+`start` writes its pid and logs under `~/.byoai/` (`proxy.pid`, `proxy.log`).
+Both `byoai-cache` and the longer `byoai-agent-context-cache` are the same
+command. Override the bind address/port with `--host` / `--port` (or the
+`BYOAI_HOST` / `BYOAI_PORT` env vars). It listens on `:8787` by default and
+uses Redis for session/dedup state if `REDIS_URL` is set (falls back to an
+in-process store otherwise). Full env var reference in
+**[CONFIGURATION.md](CONFIGURATION.md#agent-context-cache--byoai-agent-context-cache)**.
+
+### Reaching the proxy from a remote client (ngrok)
+
+`localhost` only works for a client on the *same* machine. To route a remote
+client — Claude's web/mobile apps, a phone, a cloud agent — through the proxy,
+expose it with a tunnel such as [ngrok](https://ngrok.com):
+
+```bash
+BYOAI_PROXY_TOKEN=$(openssl rand -hex 16) byoai-cache start   # gate it first
+ngrok http 8787                                               # public https URL
+```
+
+**Set `BYOAI_PROXY_TOKEN` before exposing the proxy.** Without it, a public URL
+is an open relay to `api.anthropic.com` (and, if you configured the OpenAI-compat
+backend, anyone could spend your `BYOAI_OPENAI_COMPAT_API_KEY`). With it set,
+every request must carry the token, supplied either way:
+
+- **Header** — `x-byoai-proxy-token: <token>` (for clients that allow custom headers).
+- **URL path** — put the token in the base URL, for clients that only let you set
+  one: `ANTHROPIC_BASE_URL=https://<id>.ngrok-free.app/<token>`. The leading
+  `/<token>` segment is stripped before routing.
+
+`/health` stays reachable without the token so a tunnel can probe liveness. For a
+private, always-on setup between your own devices, [Tailscale](https://tailscale.com)
+(point clients at the proxy host's tailnet IP) avoids a public endpoint entirely.
 
 ### Inspecting token-savings data
 
 The proxy keeps a durable SQLite log of per-request usage and tokenizer-verified
-benchmark samples at `BYOAI_SQLITE_PATH` (default `byoai_runtime.db`). The
-`/v1/stats`, `/v1/stats/benchmark`, `/v1/stats/permanent`, and `/v1/stats/history`
-endpoints expose these numbers as JSON. To browse the raw tables without writing
-SQL, open the file in [`sqlite-web`](https://github.com/coleifer/sqlite-web), a
-small browser-based SQLite viewer:
+benchmark samples at `BYOAI_SQLITE_PATH` (default `~/.byoai/byoai_runtime.db`).
+The `/v1/stats`, `/v1/stats/benchmark`, `/v1/stats/permanent`, and
+`/v1/stats/history` endpoints expose these numbers as JSON. To browse the raw
+tables without writing SQL, open the file in
+[`sqlite-web`](https://github.com/coleifer/sqlite-web), a small browser-based
+SQLite viewer:
 
 ```bash
 pip install sqlite-web
-sqlite-web byoai_runtime.db   # opens a UI at http://localhost:8080
+sqlite-web ~/.byoai/byoai_runtime.db   # opens a UI at http://localhost:8080
 ```
 
 `sqlite-web` is an optional dev convenience, not a dependency of `byoai-runtime`.

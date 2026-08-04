@@ -479,11 +479,18 @@ repeated large text blocks within a session to cut token spend.
 It is a separate process from `Runtime`, started via its own console script,
 not something you configure through `build_*` dicts.
 
-Start it with:
+Start it with `byoai-cache` (the long `byoai-agent-context-cache` name is an
+alias for the same command):
 
 ```bash
-byoai-agent-context-cache
+byoai-cache                # foreground
+byoai-cache start          # background (detached; survives closing the terminal)
+byoai-cache status         # running (pid …) → http://localhost:8787
+byoai-cache stop
 ```
+
+`start` writes its pid and logs under `~/.byoai/` (`proxy.pid`, `proxy.log`).
+`--host` / `--port` override the `BYOAI_HOST` / `BYOAI_PORT` env vars below.
 
 Then point any Anthropic API client at it, e.g. for Claude Code:
 
@@ -495,8 +502,9 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 | --- | --- | --- |
 | `BYOAI_HOST` | `0.0.0.0` | Bind address |
 | `BYOAI_PORT` | `8787` | Bind port |
+| `BYOAI_PROXY_TOKEN` | _(empty — no gate)_ | Shared secret required on every request when set, so the proxy can be exposed via a public tunnel (ngrok/Cloudflare) without being an open relay. Supply it as an `x-byoai-proxy-token` header or a leading URL path segment (`ANTHROPIC_BASE_URL=https://host/<token>`). `/health` is exempt. |
 | `REDIS_URL` | `redis://localhost:6379/0` | Session/dedup state; falls back to an in-process store if unreachable (lost on restart, not shared across processes) |
-| `BYOAI_SQLITE_PATH` | `byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`) |
+| `BYOAI_SQLITE_PATH` | `~/.byoai/byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`); absolute default so data survives launching from any directory |
 | `BYOAI_SESSION_TTL_SECONDS` | `28800` (8h) | How long a session's dedup hash set lives in Redis |
 | `BYOAI_BENCHMARK_SAMPLE_RATE` | `0.1` | Fraction of requests sampled for before/after token-count comparison |
 | `BYOAI_READ_TIMEOUT_SECONDS` | `600` | Upstream request read timeout |
