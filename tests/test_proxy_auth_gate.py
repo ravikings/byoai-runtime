@@ -125,3 +125,16 @@ def test_health_is_exempt_from_gate(client, monkeypatch):
     res = client.get("/health")
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
+
+
+def test_root_is_exempt_from_gate(client, monkeypatch):
+    monkeypatch.setattr(acc_main, "PROXY_TOKEN", TOKEN)
+    res = client.get("/")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+
+def test_root_supports_head(client):
+    # The 404 that motivated the root route came from a bare `HEAD /` probe.
+    res = client.head("/")
+    assert res.status_code == 200
