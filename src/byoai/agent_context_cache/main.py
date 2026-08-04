@@ -178,9 +178,9 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="byoai-runtime Context Optimizer", lifespan=lifespan)
 
 
-# Health is intentionally ungated so a tunnel/monitor can probe liveness without
-# the secret.
-_AUTH_EXEMPT_PATHS = frozenset({"/health"})
+# Root and health are intentionally ungated so a tunnel/monitor/browser can
+# probe liveness without the secret.
+_AUTH_EXEMPT_PATHS = frozenset({"/", "/health"})
 
 
 @app.middleware("http")
@@ -372,6 +372,24 @@ async def real_token_count(count_token_headers: dict, body: dict | None) -> int 
             f"[byoai-runtime 🔬 BENCHMARK ERROR] count_tokens call raised {type(e).__name__}: {e}"
         )
         return None
+
+
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root():
+    """A small landing/liveness response so a bare probe of ``/`` (browsers,
+    tunnel health checks, uptime monitors) gets a friendly 200 instead of a
+    confusing 404. HEAD is included because many probes use it."""
+    return {
+        "service": "byoai-agent-context-cache",
+        "status": "ok",
+        "docs": "https://github.com/ravikings/byoai-runtime#-agent-context-cache",
+        "endpoints": {
+            "messages": "/v1/messages",
+            "count_tokens": "/v1/messages/count_tokens",
+            "health": "/health",
+            "stats": "/v1/stats",
+        },
+    }
 
 
 @app.get("/health")
