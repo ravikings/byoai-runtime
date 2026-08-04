@@ -19,6 +19,7 @@ import copy
 
 import pytest
 
+from byoai.context import RequestContext
 from byoai.session_hash import InMemoryHashStore, RedisHashStore
 from byoai.stages import (
     STATE_ANTHROPIC_BODY,
@@ -27,7 +28,6 @@ from byoai.stages import (
     SessionDedup,
     _count_cache_control_markers,
 )
-from byoai.context import RequestContext
 
 LONG_TEXT = "x" * 2500
 HUGE_LOG = "line\n" * 500  # >1200 chars, log-shaped

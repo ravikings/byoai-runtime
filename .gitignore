@@ -183,3 +183,5 @@ internal_doc/
 .claude
 CLAUDE.md
 note.txt
+ai_context/
+*.db

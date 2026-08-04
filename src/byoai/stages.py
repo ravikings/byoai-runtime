@@ -714,9 +714,13 @@ def _truncate_log_like(text: str) -> str:
     if len(text) <= 1200:
         return text
     lines = text.split("\n")
-    errors = [l for l in lines if any(k in l for k in ["FAIL", "ERROR", "Traceback", "Exception"])]
+    markers = ("FAIL", "ERROR", "Traceback", "Exception")
+    errors = [line for line in lines if any(k in line for k in markers)]
     if errors:
-        return "\n".join(errors[-25:]) + "\n\n[...byoai-runtime: Verbose test/log output pruned to error lines...]"
+        return (
+            "\n".join(errors[-25:])
+            + "\n\n[...byoai-runtime: Verbose test/log output pruned to error lines...]"
+        )
     return text[:600] + "\n\n[...byoai-runtime: Large log-like tool output truncated...]"
 
 

@@ -15,8 +15,8 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from byoai.agent_context_cache import main as acc_main
 from byoai import stages as stages_mod
+from byoai.agent_context_cache import main as acc_main
 
 
 class FakeRedis:

@@ -121,7 +121,13 @@ def test_proxy_passes_through_cache_control_when_client_already_set_it(client):
 
     use_mock_upstream(handler)
 
-    client_system = [{"type": "text", "text": "You are a helpful assistant.", "cache_control": {"type": "ephemeral"}}]
+    client_system = [
+        {
+            "type": "text",
+            "text": "You are a helpful assistant.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
     res = client.post(
         "/v1/messages",
         json={
