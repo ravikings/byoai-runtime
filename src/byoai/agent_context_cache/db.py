@@ -31,7 +31,13 @@ import os
 import sqlite3
 import time
 
-DB_PATH = os.getenv("BYOAI_SQLITE_PATH", "byoai_runtime.db")
+# Default to a stable absolute path under the user's home dir so the durable
+# log survives across restarts regardless of which directory the proxy is
+# launched from. A relative default would silently create a fresh empty DB in
+# each new working directory, stranding earlier data. Override with an absolute
+# BYOAI_SQLITE_PATH to relocate it (e.g. to a shared volume).
+DEFAULT_DB_PATH = os.path.join(os.path.expanduser("~"), ".byoai", "byoai_runtime.db")
+DB_PATH = os.getenv("BYOAI_SQLITE_PATH", DEFAULT_DB_PATH)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS benchmark_samples (
@@ -64,6 +70,10 @@ _lock = asyncio.Lock()
 
 
 def _connect():
+    # Create the parent dir on demand so the default (~/.byoai/) or any nested
+    # BYOAI_SQLITE_PATH works without the user pre-creating it. dirname is "" for
+    # a bare relative filename — fall back to "." so makedirs stays valid.
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")  # readers don't block on an in-flight write
     return conn
