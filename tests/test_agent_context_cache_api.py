@@ -65,6 +65,12 @@ def upstream_ok(_request: httpx.Request) -> httpx.Response:
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(acc_main, "r", FakeRedis())
     monkeypatch.setattr(acc_main.db, "DB_PATH", str(tmp_path / "test.db"))
+    # Benchmark sampling fires on a random fraction of requests and issues
+    # extra count_tokens calls through the same mock upstream — which the
+    # capture-based assertions below would otherwise see as stray requests,
+    # making these tests flaky (~15%). No test asserts sampling behavior, so
+    # pin it off for deterministic capture.
+    monkeypatch.setattr(acc_main, "BENCHMARK_SAMPLE_RATE", 0.0)
     acc_main._local_session_hashes.clear()
     with TestClient(acc_main.app) as test_client:
         yield test_client

@@ -13,6 +13,9 @@ from fastapi.responses import StreamingResponse, Response
 import redis.asyncio as redis
 
 from . import db, openai_compat
+from ..stages import PromptCacheInjection, SessionDedup
+from ..stages import _count_cache_control_markers as _stage_count_cache_control_markers
+from ..session_hash import RedisHashStore
 
 # Configuration
 ANTHROPIC_UPSTREAM = "https://api.anthropic.com"
@@ -93,6 +96,24 @@ r = redis.from_url(REDIS_URL, decode_responses=True)
 # Bounded/pruned so it can't grow forever during an extended Redis outage.
 _local_session_hashes: dict[str, dict] = {}
 _LOCAL_SESSION_MAX = 500  # cap on distinct sessions kept in memory
+
+# Runtime primitives are the single source of truth for request-side
+# optimization on the live /v1/messages path. The legacy inline functions
+# (ensure_cache_control / optimize_payload / is_duplicate_hash / add_hash)
+# remain defined for the step-1 golden tests but are no longer called here.
+# One module-level store + dedup stage so per-session dedup state persists
+# across requests exactly like the legacy global did. The store resolves the
+# module-level `r` lazily (via _LazyRedisClient) rather than capturing it at
+# import time, so a test that monkeypatches `acc_main.r` — or a runtime redis
+# reconnect — is honored on the live path, matching the legacy inline logic
+# that referenced the global `r` on every call.
+class _LazyRedisClient:
+    def __getattr__(self, name):
+        return getattr(r, name)
+
+
+_session_hash_store = RedisHashStore(_LazyRedisClient(), ttl_seconds=SESSION_TTL_SECONDS)
+_session_dedup_stage = SessionDedup(_session_hash_store)
 
 # Shared, connection-pooled HTTP client reused across every request to
 # Anthropic. Creating a fresh httpx.AsyncClient() per request (the prior
@@ -658,7 +679,7 @@ async def _apply_optimizer(
         print("\n[byoai-runtime 🔴 OPTIMIZER OFF - Direct Pass-Through]\n")
         return raw_body, is_benchmark_sample, pre_optimize_snapshot
 
-    body, orig_tok, opt_tok = await optimize_payload(raw_body, session_id)
+    body, orig_tok, opt_tok = await _session_dedup_stage.optimize(raw_body, session_id)
     saved_tok = max(0, orig_tok - opt_tok)
 
     await safe_redis_incrby("byoai:stats:tokens_original", orig_tok)
@@ -751,9 +772,9 @@ async def proxy_claude_messages(request: Request):
         raw_body["model"] = remapped
         print(f"[byoai-runtime 🔄 REMAP] '{requested_model}' ➔ '{remapped}'")
 
-    had_cache_control_already = _count_cache_control_markers(raw_body) > 0
-    raw_body = ensure_cache_control(raw_body)
-    if not had_cache_control_already and _count_cache_control_markers(raw_body) > 0:
+    had_cache_control_already = _stage_count_cache_control_markers(raw_body) > 0
+    raw_body = PromptCacheInjection.inject(raw_body)
+    if not had_cache_control_already and _stage_count_cache_control_markers(raw_body) > 0:
         print("[byoai-runtime 📌 CACHE] Injected cache_control breakpoint(s) — client sent none.")
 
     # NOTE: if this upstream traffic uses prompt caching (cache_control
