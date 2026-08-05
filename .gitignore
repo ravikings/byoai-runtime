@@ -180,7 +180,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 internal_doc/
-.claude
+.claude/*
+!.claude/skills
+.claude/skills/*
+!.claude/skills/byoai-cache
 CLAUDE.md
 note.txt
 ai_context/
