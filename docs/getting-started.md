@@ -14,6 +14,7 @@ Optional integrations are extras — install only what you need:
 ```bash
 pip install --pre "byoai-runtime[fastapi]"   # FastAPI integration
 pip install --pre "byoai-runtime[robyn]"     # Robyn integration
+pip install --pre "byoai-runtime[flask]"     # Flask (WSGI) integration
 pip install --pre "byoai-runtime[mcp]"       # MCP tool-server integration
 pip install --pre "byoai-runtime[redis]"     # Redis cache / queue / shared semantic cache
 pip install --pre "byoai-runtime[pgvector]"  # pgvector vector store
@@ -22,6 +23,7 @@ pip install --pre "byoai-runtime[perf]"      # orjson hot-path JSON codec
 pip install --pre "byoai-runtime[otel]"      # OpenTelemetry export
 pip install --pre "byoai-runtime[bedrock]"   # Anthropic on AWS Bedrock
 pip install --pre "byoai-runtime[vertex]"    # Anthropic on Google Vertex AI
+pip install --pre "byoai-runtime[agent-context-cache]"  # the byoai-cache proxy
 pip install --pre "byoai-runtime[all]"       # everything above
 ```
 

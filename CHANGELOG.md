@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0a2] - 2026-08-07
+
+### Fixed
+- Docs told you to install the `byoai-cache` proxy with a bare `pip install byoai-runtime`, which
+  produces a console script that fails on import: the proxy needs FastAPI, uvicorn, and redis, and
+  the base package depends only on `httpx`. The correct install is
+  `pip install --pre "byoai-runtime[agent-context-cache]"`, now used in the README, CONFIGURATION,
+  and the getting-started extras list (which was also missing the `flask` and `agent-context-cache`
+  extras entirely).
+
 ### Breaking
 - Removed `Runtime(cache_ttl=...)`. TTL is now configured in exactly one place —
   `cache={"default_ttl": ...}`, or the matching arg on a pre-built `CacheStore`.
@@ -203,5 +215,6 @@ Initial alpha release.
   documented "a semantic-cache or embedder hiccup must never fail a request" guarantee.
   Broadened to catch any exception.
 
-[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a1...HEAD
+[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a2...HEAD
+[0.1.0a2]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/ravikings/byoai-runtime/releases/tag/v0.1.0a1

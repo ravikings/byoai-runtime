@@ -297,7 +297,7 @@ injects prompt-cache breakpoints and dedupes repeated large text blocks
 within a session, cutting token spend without any client-side changes.
 
 ```bash
-pip install --pre byoai-runtime
+pip install --pre "byoai-runtime[agent-context-cache]"
 byoai-cache                                    # runs in the foreground
 export ANTHROPIC_BASE_URL=http://localhost:8787
 ```

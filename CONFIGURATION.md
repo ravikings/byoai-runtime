@@ -479,6 +479,13 @@ repeated large text blocks within a session to cut token spend.
 It is a separate process from `Runtime`, started via its own console script,
 not something you configure through `build_*` dicts.
 
+The proxy needs FastAPI, uvicorn, and redis, so it ships behind its own extra —
+a base install has none of them and `byoai-cache` will fail to import:
+
+```bash
+pip install --pre "byoai-runtime[agent-context-cache]"
+```
+
 Start it with `byoai-cache` (the long `byoai-agent-context-cache` name is an
 alias for the same command):
 
