@@ -23,7 +23,13 @@ classifiers = [
     "Framework :: AsyncIO",
 ]
 dependencies = [
-    "httpx>=0.25",
+    # Upper bound is load-bearing, not defensive habit. Installing this package
+    # requires `pip install --pre` while it is an alpha, and --pre applies to
+    # every dependency in the resolve, not just this one — so an uncapped
+    # `httpx>=0.25` resolves to httpx 1.0.dev*, whose API drops `httpx.Timeout`
+    # and breaks the proxy on import. Raise the ceiling only after the code is
+    # verified against the 1.x API.
+    "httpx>=0.25,<1.0",
 ]
 
 [project.optional-dependencies]

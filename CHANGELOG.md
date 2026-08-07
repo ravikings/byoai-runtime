@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.1.0a3] - 2026-08-07
+
+### Fixed
+- Capped the core dependency at `httpx>=0.25,<1.0`. Installing an alpha requires `pip install
+  --pre`, and `--pre` allows pre-releases for *every* package in the resolve, not just this one —
+  so the uncapped requirement pulled `httpx 1.0.dev3`, whose API no longer has `httpx.Timeout`.
+  A clean `pip install --pre "byoai-runtime[agent-context-cache]"` on 0.1.0a2 therefore installed
+  a `byoai-cache` that raised `AttributeError` on import. Same hazard applies to any dependency
+  that publishes a pre-release; this is the one that bit.
+
 ## [0.1.0a2] - 2026-08-07
 
 ### Fixed
@@ -215,6 +225,7 @@ Initial alpha release.
   documented "a semantic-cache or embedder hiccup must never fail a request" guarantee.
   Broadened to catch any exception.
 
-[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a2...HEAD
+[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a3...HEAD
+[0.1.0a3]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a2...v0.1.0a3
 [0.1.0a2]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/ravikings/byoai-runtime/releases/tag/v0.1.0a1
