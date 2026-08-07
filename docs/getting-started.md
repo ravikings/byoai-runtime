@@ -3,23 +3,26 @@
 ## Installation
 
 ```bash
-pip install byoai-runtime
+pip install --pre byoai-runtime
 ```
+
+The current release is a pre-release (`0.1.0a1`), so `--pre` is required —
+without it pip reports that no matching distribution was found.
 
 Optional integrations are extras — install only what you need:
 
 ```bash
-pip install "byoai-runtime[fastapi]"   # FastAPI integration
-pip install "byoai-runtime[robyn]"     # Robyn integration
-pip install "byoai-runtime[mcp]"       # MCP tool-server integration
-pip install "byoai-runtime[redis]"     # Redis cache / queue / shared semantic cache
-pip install "byoai-runtime[pgvector]"  # pgvector vector store
-pip install "byoai-runtime[semantic]"  # in-process semantic (intent) cache
-pip install "byoai-runtime[perf]"      # orjson hot-path JSON codec
-pip install "byoai-runtime[otel]"      # OpenTelemetry export
-pip install "byoai-runtime[bedrock]"   # Anthropic on AWS Bedrock
-pip install "byoai-runtime[vertex]"    # Anthropic on Google Vertex AI
-pip install "byoai-runtime[all]"       # everything above
+pip install --pre "byoai-runtime[fastapi]"   # FastAPI integration
+pip install --pre "byoai-runtime[robyn]"     # Robyn integration
+pip install --pre "byoai-runtime[mcp]"       # MCP tool-server integration
+pip install --pre "byoai-runtime[redis]"     # Redis cache / queue / shared semantic cache
+pip install --pre "byoai-runtime[pgvector]"  # pgvector vector store
+pip install --pre "byoai-runtime[semantic]"  # in-process semantic (intent) cache
+pip install --pre "byoai-runtime[perf]"      # orjson hot-path JSON codec
+pip install --pre "byoai-runtime[otel]"      # OpenTelemetry export
+pip install --pre "byoai-runtime[bedrock]"   # Anthropic on AWS Bedrock
+pip install --pre "byoai-runtime[vertex]"    # Anthropic on Google Vertex AI
+pip install --pre "byoai-runtime[all]"       # everything above
 ```
 
 The Qdrant and Pinecone vector stores and the Gemini provider need no extra — they're built on

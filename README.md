@@ -52,8 +52,10 @@ ByoAI Runtime executes as an unopinionated, process-level orchestrator sitting a
 ### 1. Installation
 
 ```bash
-pip install byoai-runtime
+pip install --pre byoai-runtime
 ```
+
+`--pre` is required while the package is in pre-release (`0.1.0a1`).
 
 ### 2. Hello world
 
@@ -295,7 +297,7 @@ injects prompt-cache breakpoints and dedupes repeated large text blocks
 within a session, cutting token spend without any client-side changes.
 
 ```bash
-pip install byoai-runtime
+pip install --pre byoai-runtime
 byoai-cache                                    # runs in the foreground
 export ANTHROPIC_BASE_URL=http://localhost:8787
 ```
@@ -357,7 +359,6 @@ sqlite-web ~/.byoai/byoai_runtime.db   # opens a UI at http://localhost:8080
 ```
 
 `sqlite-web` is an optional dev convenience, not a dependency of `byoai-runtime`.
-
 ---
 # Contributing
 
