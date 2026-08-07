@@ -506,6 +506,7 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 | `REDIS_URL` | `redis://localhost:6379/0` | Session/dedup state; falls back to an in-process store if unreachable (lost on restart, not shared across processes) |
 | `BYOAI_SQLITE_PATH` | `~/.byoai/byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`); absolute default so data survives launching from any directory |
 | `BYOAI_SESSION_TTL_SECONDS` | `28800` (8h) | How long a session's dedup hash set lives in Redis |
+| `BYOAI_RETENTION_DAYS` | `90` | How long rows are kept in the durable SQLite log. Pruned once on each proxy start, or on demand with `byoai-cache prune`. Set to `0` to keep everything forever |
 | `BYOAI_BENCHMARK_SAMPLE_RATE` | `0.1` | Fraction of requests sampled for before/after token-count comparison |
 | `BYOAI_READ_TIMEOUT_SECONDS` | `600` | Upstream request read timeout |
 | `BYOAI_OPENAI_COMPAT_MODELS` | *(empty)* | Comma-separated model names to route to an OpenAI-compatible backend instead of Anthropic |

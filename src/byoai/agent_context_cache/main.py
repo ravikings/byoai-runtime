@@ -170,6 +170,24 @@ async def lifespan(_app: FastAPI):
         print(f"[byoai-runtime Warning] Redis offline on startup ({e}). Operating in memory mode.")
     await db.init_db()
     print(f">>> byoai-runtime control plane initialized. Durable record: {db.DB_PATH}")
+    # Apply the retention window once per start. Startup (rather than a
+    # periodic timer) is enough: the log grows slowly, and a proxy left running
+    # for months is exactly the case where an idle background task would be
+    # holding the event loop for no benefit. `byoai-cache prune` covers the
+    # long-uptime case on demand.
+    #
+    # vacuum=False here: this runs before `yield`, so nothing is served until
+    # it returns, and VACUUM rewrites the whole file under an exclusive lock —
+    # on a large DB that turns a restart into a visible outage. The DELETE
+    # alone is fast and bounded. Space is reclaimed by explicit
+    # `byoai-cache prune`, where the caller chose to pay the cost.
+    pruned = await db.prune(vacuum=False)
+    if pruned.get("deleted_rows"):
+        print(
+            f">>> byoai-runtime retention: removed {pruned['deleted_rows']} rows older than "
+            f"{pruned['retention_days']}d"
+            + (" (vacuumed)" if pruned.get("vacuumed") else "")
+        )
     yield
     await http_client.aclose()
     await r.close()
@@ -947,6 +965,12 @@ async def get_permanent_stats():
     sampling — Redis counters reset to zero silently on that; this table
     doesn't. Use this as the source of truth; /v1/stats/benchmark is a
     faster read of (hopefully) the same numbers.
+
+    Bounded, not unlimited: rows older than BYOAI_RETENTION_DAYS (default 90)
+    are pruned on each proxy start, so these totals cover the retention window
+    rather than all time. The response reports the window the last prune
+    actually enforced in `retention_days` (null if none has run, meaning the
+    totals are all-time) — set BYOAI_RETENTION_DAYS to 0 to keep everything.
     """
     bench = await db.benchmark_summary()
     usage = await db.usage_summary()
@@ -964,10 +988,18 @@ async def get_permanent_stats():
             "real_savings_percentage": f"{pct:.2f}%",
         },
         "usage_totals": usage,
+        # Surfaced in the response so a caller reading these totals can see the
+        # window they cover, instead of assuming they are all-time. This is the
+        # window the last prune actually enforced, not the current env var —
+        # editing BYOAI_RETENTION_DAYS without a restart changes what the *next*
+        # prune will do, not what this table already contains. null means no
+        # prune has run in this process, so the totals are all-time.
+        "retention_days": db.enforced_retention_days(),
         "methodology": "Identical measurement methodology to "
         "/v1/stats/benchmark (Anthropic's real tokenizer via "
         "count_tokens), but persisted to disk on every sample rather than kept only in Redis — "
-        "survives restarts, Redis flushes, and infrastructure changes.",
+        "survives restarts, Redis flushes, and infrastructure changes. Covers the last "
+        "retention_days days (0 = all time); older rows are pruned on proxy start.",
     }
 
 
@@ -1187,6 +1219,44 @@ def _cmd_status(args) -> int:
     return 0
 
 
+def _cmd_prune(args) -> int:
+    async def _run():
+        await db.init_db()  # a prune before the proxy's first run shouldn't error
+        return await db.prune(args.days, vacuum=not args.no_vacuum)
+
+    result = asyncio.run(_run())
+    if result.get("error"):
+        print(f"prune failed: {result['error']}")
+        return 1
+    if result.get("skipped"):
+        print("retention disabled (BYOAI_RETENTION_DAYS=0) — nothing pruned")
+        return 0
+    size_mb = result.get("size_bytes", 0) / (1024 * 1024)
+    print(
+        f"pruned {result['deleted_rows']} rows older than {result['retention_days']}d"
+        + (" (vacuumed)" if result.get("vacuumed") else "")
+        + f" → {db.DB_PATH} is now {size_mb:.1f} MB"
+    )
+    if result.get("vacuum_skipped"):
+        # The caller asked for a reclaim and isn't getting one. Say why, rather
+        # than printing output identical to a successful vacuum.
+        print(
+            f"note: skipped reclaiming space — only {result['deleted_rows']} rows were "
+            f"deleted (under the {db.VACUUM_MIN_DELETED_ROWS}-row threshold), and rewriting "
+            f"the whole file costs more than the space it would return."
+        )
+    if result.get("vacuum_error"):
+        # The rows are gone; only the space reclaim failed. Say so explicitly
+        # so this doesn't read as "the prune didn't happen".
+        print(
+            f"note: rows were deleted, but reclaiming space failed "
+            f"({result['vacuum_error']}). This usually means the proxy is "
+            f"running — stop it and re-run, or ignore it and let future rows "
+            f"reuse the freed pages."
+        )
+    return 0
+
+
 def cli(argv: list[str] | None = None) -> int:
     """Console-script entry point.
 
@@ -1216,6 +1286,24 @@ def cli(argv: list[str] | None = None) -> int:
     ):
         sub.add_parser(name, parents=[common], help=help_text)
 
+    # No --host/--port: prune operates on the SQLite file directly and needs no
+    # running proxy. Safe to run against a live instance — WAL mode means the
+    # delete doesn't block in-flight readers.
+    prune_p = sub.add_parser(
+        "prune",
+        help="delete durable-record rows older than the retention window",
+    )
+    prune_p.add_argument(
+        "--days",
+        type=int,
+        help=f"retention window (env BYOAI_RETENTION_DAYS, default {db.DEFAULT_RETENTION_DAYS})",
+    )
+    prune_p.add_argument(
+        "--no-vacuum",
+        action="store_true",
+        help="skip reclaiming file space (VACUUM rewrites the whole DB)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command in (None, "serve"):
@@ -1228,6 +1316,8 @@ def cli(argv: list[str] | None = None) -> int:
         return _cmd_stop(args)
     if args.command == "status":
         return _cmd_status(args)
+    if args.command == "prune":
+        return _cmd_prune(args)
     parser.print_help()
     return 2
 

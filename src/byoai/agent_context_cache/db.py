@@ -39,6 +39,48 @@ import time
 DEFAULT_DB_PATH = os.path.join(os.path.expanduser("~"), ".byoai", "byoai_runtime.db")
 DB_PATH = os.getenv("BYOAI_SQLITE_PATH", DEFAULT_DB_PATH)
 
+# How long rows are kept. "Permanent" was the original intent, but an
+# append-only log with no ceiling grows unboundedly with uptime (~700 KB/day at
+# a few thousand requests) and the unfiltered SUM() queries behind the console
+# get slower every week, since they scan the whole table. A long default keeps
+# the "point at a number later" use case intact while giving the file a bound.
+# Set BYOAI_RETENTION_DAYS=0 to disable pruning and restore the old behavior.
+DEFAULT_RETENTION_DAYS = 90
+
+
+def _retention_days() -> int:
+    """Read at call time, not import time, so tests and `byoai-cache prune`
+    can override the env var after this module is already imported."""
+    raw = os.getenv("BYOAI_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))
+    try:
+        days = int(raw)
+    except ValueError:
+        print(f"[byoai-runtime 🗄️ DB WARNING] invalid BYOAI_RETENTION_DAYS={raw!r}; ignoring")
+        return DEFAULT_RETENTION_DAYS
+    return max(0, days)
+
+
+# Reclaiming space means VACUUM, which rewrites the entire database file under
+# an EXCLUSIVE lock — unlike the plain DELETE, WAL mode does not let readers
+# through it, and a concurrent write from a running proxy can fail with
+# "database is locked". So it is opt-in (the startup path passes vacuum=False)
+# and, even when requested, only runs if the prune removed enough rows to be
+# worth the full-file rewrite.
+VACUUM_MIN_DELETED_ROWS = 1_000
+
+# The window actually enforced by the last prune in this process, or None if
+# none has run. Reported instead of the live env var: pruning happens once at
+# startup, so an operator who edits BYOAI_RETENTION_DAYS without restarting
+# would otherwise see stats claim a window that was never applied, while rows
+# outside it are still in the table and still counted in the totals.
+_last_enforced_retention_days: int | None = None
+
+
+def enforced_retention_days() -> int | None:
+    """The retention window the data actually reflects, or None if no prune
+    has run in this process."""
+    return _last_enforced_retention_days
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS benchmark_samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +132,84 @@ def _init_sync():
 
 async def init_db():
     await asyncio.to_thread(_init_sync)
+
+
+_PRUNE_TABLES = ("usage_events", "benchmark_samples")
+
+
+def _db_size_bytes() -> int:
+    """On-disk size including the WAL sidecars.
+
+    In WAL mode recent writes live in ``-wal`` until a checkpoint folds them
+    into the main file, so measuring the ``.db`` alone understates real disk
+    usage — which is the number a caller running `prune` is trying to move.
+    """
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        path = DB_PATH + suffix
+        if os.path.exists(path):
+            total += os.path.getsize(path)
+    return total
+
+
+def _prune_sync(retention_days, vacuum):
+    cutoff = time.time() - (retention_days * 86400)
+    conn = _connect()
+    try:
+        deleted = 0
+        for table in _PRUNE_TABLES:
+            cur = conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+            deleted += cur.rowcount or 0
+        conn.commit()
+        # The DELETE is committed, so this window is now what the data
+        # reflects — recorded even if the VACUUM below fails.
+        global _last_enforced_retention_days
+        _last_enforced_retention_days = retention_days
+        vacuumed = False
+        vacuum_error = None
+        vacuum_skipped = vacuum and deleted < VACUUM_MIN_DELETED_ROWS
+        if vacuum and deleted >= VACUUM_MIN_DELETED_ROWS:
+            # VACUUM cannot run inside a transaction; sqlite3's implicit one is
+            # already closed by the commit above. Its failure is reported
+            # separately rather than raised: the DELETE is already committed at
+            # this point, so treating a locked VACUUM as a failed prune would
+            # tell the caller nothing was deleted when the rows are in fact
+            # gone — prompting a pointless retry, or an automation that records
+            # the run as a no-op.
+            try:
+                conn.execute("VACUUM")
+                vacuumed = True
+            except Exception as e:
+                vacuum_error = str(e)
+        return {
+            "deleted_rows": deleted,
+            "vacuumed": vacuumed,
+            "vacuum_error": vacuum_error,
+            "vacuum_skipped": vacuum_skipped,
+            "cutoff_ts": cutoff,
+            "retention_days": retention_days,
+            "size_bytes": _db_size_bytes(),
+        }
+    finally:
+        conn.close()
+
+
+async def prune(retention_days: int | None = None, *, vacuum: bool = True) -> dict:
+    """Delete rows older than the retention window.
+
+    Returns a summary dict. ``retention_days`` defaults to
+    ``BYOAI_RETENTION_DAYS``; 0 disables pruning and is a no-op. Best-effort
+    like the write paths — a failure here must never take down the proxy.
+    """
+    days = _retention_days() if retention_days is None else max(0, retention_days)
+    if days == 0:
+        return {"deleted_rows": 0, "vacuumed": False, "retention_days": 0, "skipped": True}
+    try:
+        async with _lock:
+            return await asyncio.to_thread(_prune_sync, days, vacuum)
+    except Exception as e:
+        print(f"[byoai-runtime 🗄️ DB WARNING] retention prune failed: {e}")
+        return {"deleted_rows": 0, "vacuumed": False, "retention_days": days, "error": str(e)}
 
 
 def _insert_benchmark_sync(session_id, model, real_orig, real_sent, real_saved):

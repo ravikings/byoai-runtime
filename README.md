@@ -359,6 +359,45 @@ sqlite-web ~/.byoai/byoai_runtime.db   # opens a UI at http://localhost:8080
 ```
 
 `sqlite-web` is an optional dev convenience, not a dependency of `byoai-runtime`.
+
+### Keeping a long-running proxy small
+
+Two things would otherwise grow with uptime, and both are now bounded.
+
+The SQLite log is pruned to the last `BYOAI_RETENTION_DAYS` (default 90) once on
+every start. A day of heavy Claude Code use adds a few thousand rows and under a
+megabyte, so without a window the file reaches a few hundred MB a year and the
+unfiltered
+`SUM()` queries behind `/v1/stats/permanent` slow down as the table grows. To
+prune a proxy that has been up for months without restarting it:
+
+```bash
+byoai-cache prune              # delete old rows, then reclaim the freed space
+byoai-cache prune --days 30
+byoai-cache prune --no-vacuum  # delete only; safe against a running proxy
+```
+
+Reclaiming space is skipped when fewer than 1,000 rows were deleted — rewriting
+the whole file costs more than the space it returns. The command says so when it
+skips.
+
+The delete itself is safe to run against a live proxy: WAL mode keeps in-flight
+readers unblocked. Reclaiming the freed space is not — `VACUUM` rewrites the
+whole file under an exclusive lock, and a concurrent write from the running
+proxy can fail with "database is locked". Either stop the proxy first, or pass
+`--no-vacuum` and let the space be reused by future rows. Startup pruning never
+vacuums for this reason.
+
+Set `BYOAI_RETENTION_DAYS=0` to keep every row.
+
+In-process dedup state is capped on two axes: 500 concurrent sessions and 5,000
+content hashes per session, oldest evicted first. Evicting a hash costs at most
+one re-send of a block nobody has referenced in a long time. Redis, when
+configured, holds the same state; the in-process copy is kept as a complete
+mirror so an outage degrades dedup quality instead of breaking requests. Those
+two caps are what bound it — before them, a single long conversation could
+accumulate hashes for its entire 8-hour lifetime.
+
 ---
 # Contributing
 

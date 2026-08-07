@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built with no `default_ttl` no longer caches forever by accident.
 
 ### Added
+- `BYOAI_RETENTION_DAYS` (default `90`) caps how long rows live in the proxy's durable SQLite
+  log, applied once per proxy start. Previously the log was append-only with no ceiling, so the
+  file and the unfiltered `SUM()` queries behind `/v1/stats/permanent` both grew with uptime.
+  `0` restores the keep-forever behavior.
+- `byoai-cache prune [--days N] [--no-vacuum]` applies the retention window on demand, for a
+  proxy that has been running for months without a restart. The delete is safe against a live
+  instance; reclaiming the freed space is not, so pass `--no-vacuum` (or stop the proxy) if one
+  is running — `VACUUM` takes an exclusive lock that WAL mode does not let readers through.
+
 - `docs/guides/testing.md` — testing a `Runtime`-based app without a real API key, Redis, or
   Postgres, using the existing in-process adapters (`providers=`/`vector_store=`/`embedder=`
   bare functions, `cache={"provider": "memory"}`, `MemoryJobQueue`).
@@ -56,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `twine check --strict`.
 
 ### Changed
+- `InMemoryHashStore` now caps hashes per session (`max_hashes_per_session`, default 5,000,
+  oldest evicted first) in addition to the existing session cap, so peak memory is bounded by
+  the two caps rather than growing with the length of any single conversation.
+- `RedisHashStore` keeps mirroring every add into its in-memory fallback. Skipping the mirror
+  while Redis is healthy would save memory, but it makes correctness depend on detecting
+  recovery and replaying state between two stores; that was implemented, reviewed, and reverted
+  after each edge case (partial failures, per-session vs. store-wide health, TTL expiry,
+  concurrent writes mid-replay) turned out to be a way to silently report already-sent content
+  as new. The mirror's cost is bounded by the `InMemoryHashStore` caps above.
 - README's Quickstart now leads with a minimal "Hello world" example before the fuller
   "Production Setup" one.
 - `build_cache`, `PgVectorStore`, `make_redis_client`, and the `azure_openai`/`pinecone`
