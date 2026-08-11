@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0a4] - 2026-08-10
+
 ### Fixed
 - `SessionDedup` could replace an agent's task prompt with a dedup placeholder. It hashed every
   user-turn `text` block over 2,000 chars, but such a block is the *instruction*, not a file
@@ -240,7 +244,8 @@ Initial alpha release.
   documented "a semantic-cache or embedder hiccup must never fail a request" guarantee.
   Broadened to catch any exception.
 
-[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a3...HEAD
+[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a4...HEAD
+[0.1.0a4]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a3...v0.1.0a4
 [0.1.0a3]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a2...v0.1.0a3
 [0.1.0a2]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/ravikings/byoai-runtime/releases/tag/v0.1.0a1
