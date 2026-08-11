@@ -680,6 +680,49 @@ def _tool_name_is_noisy_log_source(tool_name: str) -> bool:
     return any(marker in name for marker in NOISY_LOG_TOOLS)
 
 
+# Payloads at or below this size aren't worth a placeholder — the notice would
+# cost a comparable number of tokens to the content it replaces.
+DEDUP_MIN_CHARS = 2000
+
+
+def _iter_tool_result_blocks(messages: list):
+    """Yield every ``tool_result`` block in a user turn.
+
+    Deliberately narrow: plain ``text`` blocks are user instructions and must
+    never be rewritten by this stage. See :class:`SessionDedup`.
+    """
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                yield block
+
+
+def _content_setter(block: dict):
+    def setter(value: str) -> None:
+        block["content"] = value
+
+    return setter
+
+
+def _text_setter(sub_block: dict):
+    def setter(value: str) -> None:
+        sub_block["text"] = value
+
+    return setter
+
+
+def _record_occurrence(occurrences: dict, text: str, setter: Any) -> None:
+    if not isinstance(text, str) or len(text) <= DEDUP_MIN_CHARS:
+        return
+    doc_hash = hashlib.sha256(text.encode()).hexdigest()
+    occurrences.setdefault(doc_hash, []).append(setter)
+
+
 def _build_tool_use_name_map(messages: list) -> dict:
     """tool_use_id -> tool name, so a tool_result can be traced back to the
     tool that produced it (a tool_result block carries only tool_use_id)."""
@@ -703,8 +746,8 @@ def _truncate_generic(text: str, limit: int = 4000) -> str:
     head = text[: limit // 2]
     tail = text[-limit // 2 :]
     return (
-        f"{head}\n\n[...byoai-runtime: {len(text) - limit:,} chars omitted from "
-        f"middle (non-log tool output, safe length cap only)...]\n\n{tail}"
+        f"{head}\n\n(byoai-runtime truncation notice: {len(text) - limit:,} chars omitted "
+        f"from middle here; non-log tool output, safe length cap only)\n\n{tail}"
     )
 
 
@@ -719,9 +762,9 @@ def _truncate_log_like(text: str) -> str:
     if errors:
         return (
             "\n".join(errors[-25:])
-            + "\n\n[...byoai-runtime: Verbose test/log output pruned to error lines...]"
+            + "\n\n(byoai-runtime truncation notice: verbose test/log output pruned to error lines)"
         )
-    return text[:600] + "\n\n[...byoai-runtime: Large log-like tool output truncated...]"
+    return text[:600] + "\n\n(byoai-runtime truncation notice: large log-like tool output truncated here)"
 
 
 def _estimate_tokens(data: dict) -> int:
@@ -784,72 +827,107 @@ class PromptCacheInjection:
 
 class SessionDedup:
     """Truncate noisy tool output and dedup repeated large file snapshots
-    *within one conversation only*.
+    *within a single request body*.
 
     Two behaviors, both loss-conscious:
 
     * Oversized ``tool_result`` content (>1200 chars) is truncated — error-line
       pruning for known log/test-runner tools, safe head/tail otherwise.
-    * A text block >2000 chars whose SHA-256 was already seen for this
-      ``session_id`` is collapsed to a short placeholder. Dedup state is scoped
-      per session via the injected :class:`~byoai.session_hash.SessionHashStore`,
-      so it can never reference content the model never saw in this conversation.
+    * When the same ``tool_result`` payload (>2000 chars) appears more than once
+      in one request's ``messages``, every occurrence *except the last* is
+      collapsed to a short placeholder pointing at the surviving copy.
+
+    Two deliberate constraints on the dedup pass, both learned the hard way:
+
+    * **Only ``tool_result`` blocks are candidates.** A plain ``text`` block in
+      a user turn is the *instruction*, not a file snapshot. An earlier version
+      of this stage hashed those too and would silently replace a long,
+      carefully-written prompt with a placeholder — the model then received a
+      dedup notice in place of its actual task.
+    * **Dedup is scoped to the request being sent, not to session history.**
+      Collapsing against a cross-request hash store made the stage
+      order-dependent and *not idempotent*: a client retrying an identical body
+      had the retry gutted, because the first attempt had already registered
+      the hashes. It also let the placeholder lie — claiming content was
+      "retained in earlier turns" when the only prior copy lived in a request
+      the model could no longer see. Comparing occurrences within one body
+      keeps the promise true by construction, and makes a resend a no-op.
+
+    ``store`` is retained for constructor compatibility (and is still used by
+    other consumers of :class:`~byoai.session_hash.SessionHashStore`); this
+    stage no longer consults it.
     """
 
     name = "session_dedup"
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any = None) -> None:
         self.store = store
 
-    async def optimize(self, body: dict, session_id: str) -> tuple[dict, int, int]:
-        """Mutate ``body`` in place; return ``(body, orig_tokens, opt_tokens)``."""
+    async def optimize(self, body: dict, session_id: str = "") -> tuple[dict, int, int]:
+        """Mutate ``body`` in place; return ``(body, orig_tokens, opt_tokens)``.
+
+        ``session_id`` is accepted for signature compatibility and unused: the
+        stage is a pure function of ``body`` (see the class docstring).
+        """
         orig_tokens = _estimate_tokens(body)
         messages = body.get("messages", [])
         tool_name_by_id = _build_tool_use_name_map(messages)
 
-        for msg in messages:
-            if msg.get("role") == "user" and isinstance(msg.get("content"), list):
-                for block in msg["content"]:
-                    # 1. Truncate oversized tool output — keyword heuristic only
-                    # for log-shaped tools, safe length cap otherwise.
-                    if isinstance(block, dict) and block.get("type") == "tool_result":
-                        content = block.get("content", "")
-                        tool_name = tool_name_by_id.get(block.get("tool_use_id"), "")
-                        is_log_source = _tool_name_is_noisy_log_source(tool_name)
-
-                        if isinstance(content, str) and len(content) > 1200:
-                            block["content"] = (
-                                _truncate_log_like(content)
-                                if is_log_source
-                                else _truncate_generic(content)
-                            )
-                        elif isinstance(content, list):
-                            for sub_block in content:
-                                if isinstance(sub_block, dict) and sub_block.get("type") == "text":
-                                    sub_text = sub_block.get("text", "")
-                                    if len(sub_text) > 1200:
-                                        sub_block["text"] = (
-                                            _truncate_log_like(sub_text)
-                                            if is_log_source
-                                            else _truncate_generic(sub_text)
-                                        )
-
-                    # 2. SHA-256 dedup for repeated large file snapshots, scoped
-                    # to this conversation's session_id.
-                    elif isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "")
-                        if len(text) > 2000:
-                            doc_hash = hashlib.sha256(text.encode()).hexdigest()
-                            if await self.store.is_duplicate(session_id, doc_hash):
-                                block["text"] = (
-                                    f"[byoai-runtime: Duplicate file snapshot detected "
-                                    f"(SHA: {doc_hash[:8]}). Content retained in earlier turns.]"
-                                )
-                            else:
-                                await self.store.add(session_id, doc_hash)
+        # Truncation runs first so dedup hashes the payload as it will actually
+        # be sent. Truncation is deterministic, so identical inputs still
+        # collapse together afterwards.
+        self._truncate_oversized_tool_results(messages, tool_name_by_id)
+        self._collapse_repeated_tool_results(messages)
 
         opt_tokens = _estimate_tokens(body)
         return body, orig_tokens, opt_tokens
+
+    @staticmethod
+    def _truncate_oversized_tool_results(messages: list, tool_name_by_id: dict) -> None:
+        """Cap oversized tool output — keyword heuristic only for log-shaped
+        tools, safe head/tail otherwise."""
+        for block in _iter_tool_result_blocks(messages):
+            tool_name = tool_name_by_id.get(block.get("tool_use_id"), "")
+            is_log_source = _tool_name_is_noisy_log_source(tool_name)
+            truncate = _truncate_log_like if is_log_source else _truncate_generic
+
+            content = block.get("content", "")
+            if isinstance(content, str) and len(content) > 1200:
+                block["content"] = truncate(content)
+            elif isinstance(content, list):
+                for sub_block in content:
+                    if isinstance(sub_block, dict) and sub_block.get("type") == "text":
+                        sub_text = sub_block.get("text", "")
+                        if len(sub_text) > 1200:
+                            sub_block["text"] = truncate(sub_text)
+
+    @staticmethod
+    def _collapse_repeated_tool_results(messages: list) -> None:
+        """Collapse every repeat of a large tool_result payload except the last
+        one, so the surviving full copy is the most recent — the version the
+        model is most likely to be reasoning about."""
+        # hash -> [setter, ...] in document order. A setter writes the
+        # placeholder back to whichever slot (str content, or a text sub-block)
+        # the payload came from.
+        occurrences: dict[str, list[Any]] = {}
+
+        for block in _iter_tool_result_blocks(messages):
+            content = block.get("content", "")
+            if isinstance(content, str):
+                _record_occurrence(occurrences, content, _content_setter(block))
+            elif isinstance(content, list):
+                for sub_block in content:
+                    if isinstance(sub_block, dict) and sub_block.get("type") == "text":
+                        _record_occurrence(
+                            occurrences, sub_block.get("text", ""), _text_setter(sub_block)
+                        )
+
+        for doc_hash, setters in occurrences.items():
+            for setter in setters[:-1]:  # keep the last copy intact
+                setter(
+                    f"(byoai-runtime dedup notice: identical tool output appears in full "
+                    f"later in this request; SHA {doc_hash[:8]})"
+                )
 
     async def execute(self, ctx: RequestContext) -> None:
         body = ctx.state.get(STATE_ANTHROPIC_BODY)

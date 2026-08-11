@@ -5,15 +5,15 @@ description: Start, stop, or check the local BYOAI caching proxy that sits in fr
 
 # byoai-cache
 
-`byoai-cache` is a local FastAPI proxy (installed as a console script by this repo's `pyproject.toml`) that sits between a client like Claude Code and `api.anthropic.com`. It injects Anthropic prompt-cache breakpoints and dedupes repeated context within a session to reduce token spend. Full reference: `CONFIGURATION.md` (search "byoai-cache" / "BYOAI_PROXY").
+`byoai-cache` is a local FastAPI proxy (installed as a console script by this repo's `pyproject.toml`) that sits between a client like Claude Code and `api.anthropic.com`. It injects Anthropic prompt-cache breakpoints, truncates oversized tool output, and collapses repeated large tool results within a request to reduce token spend. It never rewrites user instructions, and keeps no state between requests. Full reference: `CONFIGURATION.md` (search "byoai-cache" / "BYOAI_PROXY").
 
 ## Prerequisite
 
 The CLI must be installed (it ships with this package):
 
 ```bash
-pip install -e .          # inside this repo, or
-pip install byoai-runtime # from PyPI
+pip install -e ".[agent-context-cache]"          # inside this repo, or
+pip install --pre "byoai-runtime[agent-context-cache]"  # from PyPI
 ```
 
 Verify it's on PATH: `command -v byoai-cache`. If missing, install first — don't try to invoke `python -m ...` as a substitute; use the console script.
@@ -71,4 +71,6 @@ This skill only depends on the `byoai-cache` console script being installed — 
 cp -r .claude/skills/byoai-cache /path/to/other-repo/.claude/skills/
 ```
 
-Then `pip install byoai-runtime` in that project's environment so the `byoai-cache` command resolves.
+Then `pip install --pre "byoai-runtime[agent-context-cache]"` in that project's environment so the
+`byoai-cache` command resolves. The bare package does not pull in FastAPI/uvicorn/redis, so
+without the extra the command exists but fails to import.

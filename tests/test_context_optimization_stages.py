@@ -190,7 +190,7 @@ async def test_session_dedup_generic_truncates_non_log_tool_output():
         make_tool_result_body("Read", big), "s"
     )
     text = _tool_result_text(body)
-    assert "chars omitted from middle (non-log tool output" in text
+    assert "chars omitted from middle here; non-log tool output" in text
     assert len(text) < len(big)
 
 
@@ -203,22 +203,79 @@ async def test_session_dedup_execute_records_token_stats():
     assert isinstance(orig, int) and isinstance(opt, int)
 
 
-async def test_session_dedup_collapses_repeat_within_session():
-    store = InMemoryHashStore()
-    dedup = SessionDedup(store)
-    b1, *_ = await dedup.optimize(make_body(LONG_TEXT), "s")
-    b2, *_ = await dedup.optimize(make_body(LONG_TEXT), "s")
-    assert b1["messages"][0]["content"][0]["text"] == LONG_TEXT
-    assert "Duplicate file snapshot detected" in b2["messages"][0]["content"][0]["text"]
+def make_repeated_tool_result_body(tool_name: str, output: str, times: int) -> dict:
+    """A body where the same tool output comes back `times` times over."""
+    messages: list = []
+    for i in range(times):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": f"tid-{i}", "name": tool_name}],
+            }
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": f"tid-{i}", "content": output}
+                ],
+            }
+        )
+    return {"model": "claude-x", "messages": messages}
 
 
-async def test_session_dedup_isolates_sessions():
-    store = InMemoryHashStore()
-    dedup = SessionDedup(store)
-    a, *_ = await dedup.optimize(make_body(LONG_TEXT), "a")
-    b, *_ = await dedup.optimize(make_body(LONG_TEXT), "b")
-    assert a["messages"][0]["content"][0]["text"] == LONG_TEXT
-    assert b["messages"][0]["content"][0]["text"] == LONG_TEXT
+def _tool_result_texts(body: dict) -> list:
+    return [
+        block["content"]
+        for msg in body["messages"]
+        if msg["role"] == "user"
+        for block in msg["content"]
+    ]
+
+
+async def test_session_dedup_collapses_repeats_within_one_request():
+    """Repeats of one payload collapse to a placeholder; the LAST copy survives
+    in full, which is what the placeholder points the model at."""
+    snapshot = "z" * 3000
+    body, *_ = await SessionDedup().optimize(
+        make_repeated_tool_result_body("Read", snapshot, 3), "s"
+    )
+    first, second, third = _tool_result_texts(body)
+    assert "dedup notice" in first and "dedup notice" in second
+    assert third.startswith("z" * 100)  # survivor kept (head/tail truncation aside)
+
+
+async def test_session_dedup_leaves_long_user_prompt_untouched():
+    """REGRESSION: a long user instruction is not a file snapshot. Hashing plain
+    text blocks used to replace an agent's whole task prompt with a notice."""
+    prompt = "Do the thing. " * 500
+    body, *_ = await SessionDedup().optimize(make_body(prompt), "s")
+    assert body["messages"][0]["content"][0]["text"] == prompt
+
+
+async def test_session_dedup_is_idempotent_across_identical_requests():
+    """REGRESSION: a retried identical body must survive. Cross-request hash
+    state used to gut the second attempt."""
+    dedup = SessionDedup()
+    prompt = "Do the thing. " * 500
+    b1, *_ = await dedup.optimize(make_body(prompt), "s")
+    b2, *_ = await dedup.optimize(make_body(prompt), "s")
+    assert b1 == b2
+
+    snapshot = "z" * 3000
+    r1, *_ = await dedup.optimize(make_tool_result_body("Read", snapshot), "s")
+    r2, *_ = await dedup.optimize(make_tool_result_body("Read", snapshot), "s")
+    assert r1 == r2
+    assert "dedup notice" not in _tool_result_text(r1)  # single copy, nothing to dedup
+
+
+async def test_session_dedup_does_not_depend_on_session_id():
+    """The stage is a pure function of the body; session_id no longer scopes it."""
+    snapshot = "z" * 3000
+    dedup = SessionDedup()
+    a, *_ = await dedup.optimize(make_repeated_tool_result_body("Read", snapshot, 2), "a")
+    b, *_ = await dedup.optimize(make_repeated_tool_result_body("Read", snapshot, 2), "b")
+    assert a == b
 
 
 # --------------------------------------------------------------------------

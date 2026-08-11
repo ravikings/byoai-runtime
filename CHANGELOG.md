@@ -8,7 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- `SessionDedup` could replace an agent's task prompt with a dedup placeholder. It hashed every
+  user-turn `text` block over 2,000 chars, but such a block is the *instruction*, not a file
+  snapshot — a long prompt sent through the proxy came out the other side as
+  `[byoai-runtime: Duplicate file snapshot detected (SHA: ...)]` and the model never saw the task.
+  Dedup now considers `tool_result` blocks only and never rewrites user text.
+- Dedup is no longer keyed on cross-request session state, which made it non-idempotent: the hash
+  was recorded on first sight, so resending an identical body had the *second* copy collapsed. A
+  client retrying a failed call therefore got a gutted request, and the failure looked like the
+  environment was eating prompts. Occurrences are now compared within a single request body, so
+  an identical resend produces an identical upstream request. This also makes the placeholder's
+  claim true by construction — the surviving full copy is always present in the same request,
+  where the old wording could point at content the model could no longer see.
+
+  Consequence: `REDIS_URL` and `BYOAI_SESSION_TTL_SECONDS` no longer influence dedup. The hash
+  stores are unchanged and still exported; dedup simply doesn't consult them.
 
 ## [0.1.0a3] - 2026-08-07
 
