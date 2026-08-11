@@ -389,6 +389,41 @@ proxy can fail with "database is locked". Either stop the proxy first, or pass
 `--no-vacuum` and let the space be reused by future rows. Startup pruning never
 vacuums for this reason.
 
+### Tamper-evident recording (opt-in)
+
+Turn on `BYOAI_RECORDER_ENABLED` and the proxy also seals every `tool_use` /
+`tool_result` pair the agent exchanges with the model into a local
+hash-chained ledger, signed in checkpoints by a device-held Ed25519 key. This
+is off by default and separate from the caching/dedup behavior above — the
+usage/benchmark stats keep working whether or not it's on.
+
+```bash
+pip install --pre "byoai-runtime[recorder]"
+BYOAI_RECORDER_ENABLED=1 byoai-cache
+coriqo-verify ~/.byoai/recorder/ledger.db   # check it offline, anytime
+```
+
+`coriqo-verify` re-derives every hash from the stored ledger rather than
+trusting what's on disk, so it catches a tampered row, a deleted one, or a
+forged checkpoint signature. It also flags a `tool_use` the agent sent that
+never got a matching `tool_result` — and, the sharper case, a `tool_result`
+with no `tool_use` behind it.
+
+Sync the ledger to a Coriqo instance instead of leaving it local-only:
+
+```bash
+byoai-recorder-enroll --coriqo-url https://coriqo.example.com \
+    --token cik_live_... --key-dir ~/.byoai/recorder
+```
+
+Enrollment sends Coriqo the device's public key and a single-use token —
+never the private key — and gets back a `device_id`. From then on, starting
+the recorder also starts a background shipper that batches unsynced entries
+and ships them with at-least-once, server-deduped delivery; skip this step
+and the recorder just keeps writing to the local ledger. Full env var
+reference in
+**[CONFIGURATION.md](CONFIGURATION.md#agent-recorder--tamper-evident-capture-byoairecorder)**.
+
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
 Dedup itself no longer uses this state. It compares occurrences inside a single

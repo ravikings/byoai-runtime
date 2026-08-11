@@ -532,6 +532,71 @@ scoped to the caller's API key plus the request's system prompt + first
 message. Dedup no longer keys off this id at all (it is request-scoped), so
 session identity now only affects stats and cache accounting.
 
+### Agent recorder — tamper-evident capture (`byoai.recorder`)
+
+Opt-in, off by default. When enabled, `byoai-cache` extracts every
+`tool_use`/`tool_result` pair the agent exchanges with the model and appends
+it to a local hash-chained SQLite ledger, signed in checkpoints with a
+device-held Ed25519 key. It never blocks or delays the token stream — the
+extractor tees already-forwarded bytes — and by default a recording failure
+is logged, not fatal to the request (see `BYOAI_RECORDER_STRICT` below).
+
+Requires the `cryptography` package, behind its own extra:
+
+```bash
+pip install --pre "byoai-runtime[recorder]"
+export BYOAI_RECORDER_ENABLED=1
+```
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `BYOAI_RECORDER_ENABLED` | `0` | Set to `1` to turn the recorder on. Everything below is a no-op while it's off |
+| `BYOAI_RECORDER_DIR` | `~/.byoai/recorder` | Where the device key and ledger (`ledger.db`) live |
+| `BYOAI_RECORDER_STRICT` | `0` | `1` = a ledger write failure returns `503` to the client instead of being logged and skipped — for deployments where an unrecorded action is unacceptable |
+
+Verify a ledger offline, independent of the running proxy:
+
+```bash
+coriqo-verify ~/.byoai/recorder/ledger.db
+```
+
+Reports broken hash links, seq gaps, invalid checkpoint signatures, and
+tool-call pairing findings (a `tool_use` with no matching `tool_result`, or a
+`tool_result` with none — see the recorder's `verify.py` docstring for what
+each finding means). Exit code `0` on a clean ledger, `1` on any integrity
+failure, `2` if the file can't be read at all.
+
+#### Syncing to Coriqo (opt-in, requires enrollment)
+
+The ledger is fully useful offline (`coriqo-verify` needs no network), but a
+device can also ship it to a Coriqo instance for centralized storage. This is
+a two-step, opt-in flow on top of everything above:
+
+```bash
+byoai-recorder-enroll --coriqo-url https://coriqo.example.com \
+    --token cik_live_... --key-dir ~/.byoai/recorder
+```
+
+This generates (or reuses) the device's Ed25519 keypair locally and sends
+only the **public** key plus the single-use enrollment token to Coriqo —
+the private key never leaves the machine. Coriqo replies with a `device_id`,
+persisted alongside the key as `~/.byoai/recorder/enrollment.json`.
+
+Once enrolled, the next time the recorder starts (`BYOAI_RECORDER_ENABLED=1`)
+it launches a background shipper thread automatically — no separate command
+needed. It batches unsynced ledger entries (100 events, 1&nbsp;MB, or 5s,
+whichever comes first), gzips and signs each batch, and `POST`s it to
+`{coriqo_base_url}/v1/ingest/batch`. Delivery is at-least-once with
+server-side dedup, so a retried or resent batch after a crash or timeout is
+harmless; a sync watermark stored in the ledger itself only advances past
+entries Coriqo has confirmed, so a restart never silently drops unsynced
+rows. Network failures never block the proxy — the shipper retries with
+exponential backoff (honoring `Retry-After`) and simply queues locally in
+the meantime.
+
+Without enrollment, the recorder stays local-only: it writes the ledger and
+makes no network calls.
+
 ---
 
 ## Plugins

@@ -45,7 +45,8 @@ pgvector = ["asyncpg>=0.29"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp>=1.20"]
 bedrock = ["anthropic[bedrock]>=0.40"]
 vertex = ["anthropic[vertex]>=0.40"]
-all = ["byoai-runtime[fastapi,robyn,mcp,flask,perf,semantic,redis,pgvector,otel,bedrock,vertex,agent-context-cache]"]
+recorder = ["cryptography>=42"]
+all = ["byoai-runtime[fastapi,robyn,mcp,flask,perf,semantic,redis,pgvector,otel,bedrock,vertex,agent-context-cache,recorder]"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 dev = [
     "pytest>=8.0",
@@ -54,12 +55,15 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1",
     "build>=1.2",
+    "cryptography>=42",
 ]
 
 [project.scripts]
 byoai-cache = "byoai.agent_context_cache.main:cli"
 # Long-form alias kept for backward compatibility.
 byoai-agent-context-cache = "byoai.agent_context_cache.main:cli"
+coriqo-verify = "byoai.recorder.cli:main"
+byoai-recorder-enroll = "byoai.recorder.enroll:enroll_cli"
 
 [project.urls]
 Homepage = "https://github.com/ravikings/byoai-runtime"
