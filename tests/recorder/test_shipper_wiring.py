@@ -20,6 +20,48 @@ def test_no_shipper_without_enrollment(tmp_path):
         recorder.close()
 
 
+def test_record_after_close_does_not_crash_in_non_strict_mode(tmp_path):
+    # Non-strict mode's contract is "recording must never crash the
+    # caller." A closed ledger (e.g. a shutdown race) is a write failure
+    # like any other and must be swallowed the same way, not raise.
+    import time
+
+    from byoai.recorder.extract import PartialEvent
+    from byoai.recorder.schema import EventKind
+
+    recorder = Recorder(dir=tmp_path, strict_mode=False)
+    recorder.close()
+
+    recorder.record(
+        PartialEvent(
+            session_id="sess_1",
+            kind=EventKind.TOOL_USE.value,
+            ts_device="2026-08-10T12:00:00.000000Z",
+            ts_monotonic_ns=time.monotonic_ns(),
+            tool_use_id="toolu_1",
+            tool_name="Bash",
+            payload={"command": "ls"},
+            model=None,
+        )
+    )
+
+
+def test_no_shipper_when_enrollment_state_is_corrupt(tmp_path):
+    # A truncated/corrupt enrollment.json must degrade to "not shipping,"
+    # not crash Recorder construction and take local recording down with it.
+    recorder = Recorder(dir=tmp_path)
+    recorder.close()
+
+    (tmp_path / ENROLLMENT_FILENAME).write_text("{not valid json")
+
+    recorder2 = Recorder(dir=tmp_path)
+    try:
+        assert recorder2._shipper is None
+        assert recorder2._shipper_thread is None
+    finally:
+        recorder2.close()
+
+
 def test_shipper_starts_when_enrolled(tmp_path):
     # Enroll manually (no network) by writing enrollment.json the same way
     # enroll() would, using this recorder's own device_id once it exists.

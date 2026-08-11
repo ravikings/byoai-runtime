@@ -186,6 +186,12 @@ class Shipper:
 
         first_gap_seq: int | None = None
         for start, _end in gaps:
+            if start <= current:
+                # Already synced past this gap in an earlier batch (or the
+                # server is echoing a stale/unrelated historical gap) — it
+                # has nothing to do with this batch and must not block it
+                # from ever advancing again.
+                continue
             if first_gap_seq is None or start < first_gap_seq:
                 first_gap_seq = start
 

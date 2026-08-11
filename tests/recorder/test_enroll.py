@@ -165,6 +165,24 @@ def test_load_enrollment_state_missing_returns_none(tmp_path):
     assert load_enrollment_state(tmp_path / "nowhere") is None
 
 
+def test_load_enrollment_state_corrupt_json_raises_enrollment_error(tmp_path):
+    key_dir = tmp_path / "device"
+    key_dir.mkdir(parents=True)
+    (key_dir / "enrollment.json").write_text("{not valid json")
+
+    with pytest.raises(EnrollmentError):
+        load_enrollment_state(key_dir)
+
+
+def test_load_enrollment_state_missing_field_raises_enrollment_error(tmp_path):
+    key_dir = tmp_path / "device"
+    key_dir.mkdir(parents=True)
+    (key_dir / "enrollment.json").write_text(json.dumps({"device_id": "dev_X"}))
+
+    with pytest.raises(EnrollmentError):
+        load_enrollment_state(key_dir)
+
+
 def test_enroll_cli_success(tmp_path, capsys):
     key_dir = tmp_path / "device"
 
@@ -187,6 +205,37 @@ def test_enroll_cli_success(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "dev_CLI" in out
     assert load_enrollment_state(key_dir).device_id == "dev_CLI"
+
+
+def test_enroll_cli_insecure_key_permissions_returns_nonzero(tmp_path, capsys):
+    # load_or_create_device_key raises InsecureKeyPermissions (a
+    # PermissionError, not an EnrollmentError) when an existing key file on
+    # disk has overly-permissive mode bits. The CLI must turn that into the
+    # same clean "enrollment failed: ..." exit, not an uncaught traceback.
+    from byoai.recorder.keys import PRIVATE_KEY_FILENAME, load_or_create_device_key
+
+    key_dir = tmp_path / "device"
+    load_or_create_device_key(key_dir)
+    (key_dir / PRIVATE_KEY_FILENAME).chmod(0o644)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not reach the network with an insecure key")
+
+    with _mocked_httpx_client(handler):
+        rc = enroll_cli(
+            [
+                "--coriqo-url",
+                "https://coriqo.example.com",
+                "--token",
+                "cik_live_abc123",
+                "--key-dir",
+                str(key_dir),
+            ]
+        )
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "enrollment failed" in err
 
 
 def test_enroll_cli_failure_returns_nonzero(tmp_path, capsys):

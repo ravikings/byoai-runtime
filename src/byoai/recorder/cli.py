@@ -60,7 +60,19 @@ def format_report(report: VerifyReport) -> str:
     lines.append("")
 
     if report.ok and not report.unpaired_tool_uses:
-        lines.append("VERDICT: record complete and unaltered.")
+        if report.signatures_verified:
+            lines.append("VERDICT: record complete and unaltered.")
+        else:
+            # Without a public key, a chain that is internally consistent
+            # end-to-end is not distinguishable from one that was fully
+            # rewritten and re-hashed by whoever controls the file — only a
+            # verified checkpoint signature can rule that out. Say so
+            # instead of claiming an integrity guarantee this pass can't
+            # back up.
+            lines.append(
+                "VERDICT: record internally consistent, but NOT cryptographically "
+                "verified — rerun with --pubkey to rule out a wholesale rewrite."
+            )
         return "\n".join(lines)
 
     lines.append("FINDINGS")

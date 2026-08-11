@@ -69,10 +69,14 @@ class Recorder:
         # Shipping requires both an enrolled device (we need a device_id
         # Coriqo recognizes) and a configured Coriqo URL. Either being
         # absent just means "not shipping yet" — not an error.
-        from .enroll import load_enrollment_state
+        from .enroll import EnrollmentError, load_enrollment_state
         from .shipper import Shipper
 
-        state = load_enrollment_state(base)
+        try:
+            state = load_enrollment_state(base)
+        except EnrollmentError:
+            log.exception("recorder: enrollment state is corrupt, shipper disabled")
+            return
         if state is None:
             log.info("recorder: not enrolled, shipper disabled (run byoai-recorder-enroll)")
             return

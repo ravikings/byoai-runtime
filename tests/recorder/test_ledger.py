@@ -454,12 +454,37 @@ def test_checkpoints_roundtrip(ledger_path):
 
 
 def test_close_is_idempotent_and_blocks_further_writes(ledger_path):
-    led = Ledger(ledger_path, DEVICE)
+    led = Ledger(ledger_path, DEVICE, strict_mode=True)
     led.append(make_event())
     led.close()
     led.close()
     with pytest.raises(LedgerWriteError):
         led.append(make_event())
+
+
+def test_append_after_close_is_swallowed_in_non_strict_mode(ledger_path):
+    # A closed ledger is a write failure like any other: non-strict mode
+    # must never let it crash the caller, same as any other append failure.
+    led = Ledger(ledger_path, DEVICE, strict_mode=False)
+    led.append(make_event())
+    led.close()
+
+    assert led.append(make_event()) is None
+
+
+def test_appends_after_close_do_not_grow_pending_failures_forever(ledger_path):
+    # A closed ledger can never append again, so it can never drain a queued
+    # record_failure marker either — queuing one per dropped append would
+    # leak memory for the lifetime of a long-lived process that keeps a
+    # stale Ledger reference around after close().
+    led = Ledger(ledger_path, DEVICE, strict_mode=False)
+    led.append(make_event())
+    led.close()
+
+    for _ in range(5):
+        assert led.append(make_event()) is None
+
+    assert led._pending_failures == []
 
 
 def test_seq_is_bound_into_the_digest(ledger_path):

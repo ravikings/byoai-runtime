@@ -251,6 +251,14 @@ def estimate_tokens(data: dict) -> int:
     return len(json.dumps(data)) // 4
 
 
+def _recorder_write_failed_response(exc: LedgerWriteError) -> Response:
+    return Response(
+        content=json.dumps({"error": {"type": "api_error", "message": f"byoai-runtime: {exc}"}}),
+        status_code=503,
+        media_type=JSON_MEDIA_TYPE,
+    )
+
+
 def clean_response_headers(headers: dict) -> dict:
     """Strips transfer/encoding headers so FastAPI/Starlette doesn't corrupt streams."""
     return {k: v for k, v in headers.items() if k.lower() not in UNSAFE_RESPONSE_HEADERS}
@@ -757,13 +765,7 @@ async def proxy_claude_messages(request: Request):
         try:
             recorder.record_request_body(body, session_id=log_session_id)
         except LedgerWriteError as e:
-            return Response(
-                content=json.dumps(
-                    {"error": {"type": "api_error", "message": f"byoai-runtime: {e}"}}
-                ),
-                status_code=503,
-                media_type=JSON_MEDIA_TYPE,
-            )
+            return _recorder_write_failed_response(e)
 
     if is_stream:
         req = get_http_client().build_request("POST", upstream_url, json=body, headers=headers)
@@ -929,13 +931,7 @@ async def proxy_claude_messages(request: Request):
             except (json.JSONDecodeError, AttributeError):
                 pass
             except LedgerWriteError as e:
-                return Response(
-                    content=json.dumps(
-                        {"error": {"type": "api_error", "message": f"byoai-runtime: {e}"}}
-                    ),
-                    status_code=503,
-                    media_type=JSON_MEDIA_TYPE,
-                )
+                return _recorder_write_failed_response(e)
         return Response(
             content=res.content,
             status_code=res.status_code,

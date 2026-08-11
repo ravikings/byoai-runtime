@@ -29,6 +29,7 @@ __all__ = [
     "PRIVATE_KEY_FILENAME",
     "PUBLIC_KEY_FILENAME",
     "SIG_PREFIX",
+    "atomic_write_bytes",
     "derive_device_id",
     "load_or_create_device_key",
 ]
@@ -145,29 +146,38 @@ def load_or_create_device_key(dir: Path | str) -> DeviceKey:  # noqa: A002 - con
     return device_key
 
 
-def _write_private_key(key_path: Path, private_key: Ed25519PrivateKey) -> None:
-    """Write the raw private key atomically, never wider than 0600."""
-    raw = private_key.private_bytes_raw()
-    fd, tmp_name = tempfile.mkstemp(dir=str(key_path.parent), prefix=".devkey-")
+def atomic_write_bytes(path: Path, data: bytes, *, mode: int, prefix: str) -> None:
+    """Write ``data`` to ``path`` atomically (tmp file + rename) at file
+    permission ``mode``, so a crash or a full disk mid-write can never leave
+    a truncated or wide-open file behind."""
+    path = Path(path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=prefix)
     tmp_path = Path(tmp_name)
     try:
         try:
-            os.chmod(fd if os.name == "posix" else tmp_name, _PRIVATE_KEY_MODE)
+            os.chmod(fd if os.name == "posix" else tmp_name, mode)
         except BaseException:
             # fdopen() below would normally take ownership of fd and close
             # it; since we haven't reached it yet, close it ourselves.
             os.close(fd)
             raise
         with os.fdopen(fd, "wb") as fh:
-            fh.write(raw)
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp_path, key_path)
+        os.replace(tmp_path, path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
     if os.name == "posix":
-        key_path.chmod(_PRIVATE_KEY_MODE)
+        path.chmod(mode)
+
+
+def _write_private_key(key_path: Path, private_key: Ed25519PrivateKey) -> None:
+    """Write the raw private key atomically, never wider than 0600."""
+    atomic_write_bytes(
+        key_path, private_key.private_bytes_raw(), mode=_PRIVATE_KEY_MODE, prefix=".devkey-"
+    )
 
 
 def _load(key_path: Path) -> DeviceKey:

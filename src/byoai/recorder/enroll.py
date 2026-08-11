@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
-from byoai.recorder.keys import load_or_create_device_key
+from byoai.recorder.keys import (
+    InsecureKeyPermissions,
+    atomic_write_bytes,
+    load_or_create_device_key,
+)
 
 __all__ = [
     "ENROLLMENT_FILENAME",
@@ -114,43 +116,40 @@ def enroll(
 
 
 def load_enrollment_state(key_dir: Path) -> EnrollmentState | None:
-    """Load previously persisted enrollment state, if any."""
+    """Load previously persisted enrollment state, if any.
+
+    Raises ``EnrollmentError`` (rather than a raw ``json.JSONDecodeError``
+    or ``KeyError``) if ``enrollment.json`` exists but is truncated,
+    corrupt, or missing an expected field, so callers can distinguish
+    "not enrolled yet" (``None``) from "enrolled state is unreadable."
+    """
     state_path = Path(key_dir) / ENROLLMENT_FILENAME
     if not state_path.exists():
         return None
-    data = json.loads(state_path.read_text())
-    return EnrollmentState(
-        device_id=data["device_id"],
-        coriqo_base_url=data["coriqo_base_url"],
-        enrolled_at=data["enrolled_at"],
-    )
+    try:
+        data = json.loads(state_path.read_text())
+        return EnrollmentState(
+            device_id=data["device_id"],
+            coriqo_base_url=data["coriqo_base_url"],
+            enrolled_at=data["enrolled_at"],
+        )
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise EnrollmentError(f"enrollment state at {state_path} is corrupt: {exc}") from exc
 
 
 def _write_enrollment_state(key_dir: Path, state: EnrollmentState) -> None:
     """Write ``enrollment.json`` atomically (tmp file + rename) so a crash or
     a full disk mid-write can never leave a truncated, unparseable file
-    behind — same pattern as ``keys._write_private_key``."""
+    behind."""
     key_dir = Path(key_dir)
     key_dir.mkdir(parents=True, exist_ok=True)
     state_path = key_dir / ENROLLMENT_FILENAME
-    fd, tmp_name = tempfile.mkstemp(dir=str(key_dir), prefix=".enrollment-")
-    tmp_path = Path(tmp_name)
-    try:
-        try:
-            os.chmod(fd if os.name == "posix" else tmp_name, _ENROLLMENT_MODE)
-        except BaseException:
-            os.close(fd)
-            raise
-        with os.fdopen(fd, "w") as fh:
-            json.dump(asdict(state), fh)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp_path, state_path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    if os.name == "posix":
-        state_path.chmod(_ENROLLMENT_MODE)
+    atomic_write_bytes(
+        state_path,
+        json.dumps(asdict(state)).encode("utf-8"),
+        mode=_ENROLLMENT_MODE,
+        prefix=".enrollment-",
+    )
 
 
 def enroll_cli(argv: list[str] | None = None) -> int:
@@ -190,7 +189,7 @@ def enroll_cli(argv: list[str] | None = None) -> int:
             key_dir=args.key_dir,
             force=args.force,
         )
-    except EnrollmentError as exc:
+    except (EnrollmentError, InsecureKeyPermissions) as exc:
         print(f"enrollment failed: {exc}", file=sys.stderr)
         return 1
 

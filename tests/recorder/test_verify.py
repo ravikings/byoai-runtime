@@ -305,6 +305,26 @@ def test_deleted_range_reports_the_whole_gap(tmp_path, keypair):
     assert "seq 3–4 missing (2 events)" in format_report(report)
 
 
+def test_deleted_prefix_is_reported_as_a_gap(tmp_path, keypair):
+    # A gap is defined as "the chain starts at seq 1"; deleting the leading
+    # rows (not just a middle hole) must be caught the same way
+    # Ledger.missing_ranges() already catches it, not silently ignored just
+    # because there is no earlier row to compare against.
+    priv, pub = keypair
+    db = tmp_path / "prefix.db"
+    build_ledger(db, priv=priv)
+
+    conn = sqlite3.connect(db)
+    conn.execute("DELETE FROM agent_events WHERE seq IN (1, 2)")
+    conn.commit()
+    conn.close()
+
+    report = verify_ledger(db, public_key_b64=pub)
+
+    assert report.ok is False
+    assert report.gaps == [(1, 2)]
+
+
 def test_forged_checkpoint_signature_fails(tmp_path, keypair):
     priv, pub = keypair
     db = tmp_path / "forged.db"

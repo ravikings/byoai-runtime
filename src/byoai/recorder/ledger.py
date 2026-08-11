@@ -195,7 +195,21 @@ class Ledger:
         there is no honest entry to return when nothing was persisted).
         """
         with self._lock:
-            self._require_open()
+            if self._closed:
+                # A closed ledger is a write failure like any other — route
+                # it through _on_write_failure so strict_mode governs it
+                # too, instead of _require_open()'s unconditional raise
+                # (which would crash the request path even in the default,
+                # non-strict "never break the caller" mode). But a closed
+                # ledger will never append again, so it can never drain a
+                # queued record_failure marker either — queuing one here
+                # would just grow _pending_failures forever. _on_write_failure
+                # already logs loudly, which is the only durable record a
+                # closed ledger can still produce.
+                self._on_write_failure(
+                    event, RuntimeError(f"ledger {self.path} is closed"), queue=False
+                )
+                return None
             if self._pending_failures:
                 self._drain_failures()
             try:
@@ -261,7 +275,7 @@ class Ledger:
             event=stamped,
         )
 
-    def _on_write_failure(self, event: AgentEvent, exc: Exception) -> None:
+    def _on_write_failure(self, event: AgentEvent, exc: Exception, *, queue: bool = True) -> None:
         log.error(
             "ledger write failed for event %s (kind=%s, session=%s): %s",
             getattr(event, "event_id", "?"),
@@ -273,6 +287,8 @@ class Ledger:
             raise LedgerWriteError(
                 f"failed to record event {getattr(event, 'event_id', '?')}: {exc}"
             ) from exc
+        if not queue:
+            return
         self._pending_failures.append(
             {
                 "event_id": getattr(event, "event_id", None),
@@ -333,18 +349,26 @@ class Ledger:
         return [_row_to_entry(r) for r in rows]
 
     def iter_entries(self) -> Iterator[LedgerEntry]:
-        """Stream the whole chain in seq order without loading it all at once."""
+        """Stream the whole chain in seq order without loading it all at once.
+
+        Only holds the lock while actually touching the connection (opening
+        the cursor, fetching each batch, closing it) — never across a
+        ``yield`` — so a slow consumer of this generator cannot block
+        concurrent ``append()`` calls for the duration of the scan.
+        """
         with self._lock:
             self._require_open()
             cur = self._conn.execute("SELECT * FROM agent_events ORDER BY seq")
-            try:
-                while True:
+        try:
+            while True:
+                with self._lock:
                     rows = cur.fetchmany(256)
-                    if not rows:
-                        return
-                    for row in rows:
-                        yield _row_to_entry(row)
-            finally:
+                if not rows:
+                    return
+                for row in rows:
+                    yield _row_to_entry(row)
+        finally:
+            with self._lock:
                 cur.close()
 
     def missing_ranges(self) -> list[tuple[int, int]]:

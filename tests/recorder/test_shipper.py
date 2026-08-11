@@ -172,6 +172,24 @@ def test_ship_once_gap_in_middle_does_not_advance_past_gap(ledger, key):
     assert unsynced_seqs == [3, 4, 5]
 
 
+def test_ship_once_stale_gap_below_watermark_does_not_stall_sync(ledger, key):
+    # A gap the server reports at a seq already behind the local watermark
+    # (an old, unrelated, or permanently-lost gap from before this batch)
+    # must never block this batch — or every batch after it — from syncing.
+    for _ in range(3):
+        ledger.append(make_event())
+    ledger.set_synced_up_to(2)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json={"accepted": 1, "duplicates": 0, "gaps": [[1, 1]]})
+
+    shipper = make_shipper(ledger, key, handler)
+    result = shipper.ship_once()
+
+    assert result.synced_up_to == 3
+    assert ledger.get_synced_up_to() == 3
+
+
 def test_ship_once_no_confirmation_leaves_watermark_unchanged(ledger, key):
     ledger.append(make_event())
 

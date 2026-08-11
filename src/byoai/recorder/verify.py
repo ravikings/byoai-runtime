@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
+from byoai.recorder.ledger import compute_entry_hash
 from byoai.recorder.schema import EventKind
 
 GENESIS_PREV_HASH = "sha256:" + "00" * 32
@@ -118,10 +119,6 @@ def _event_digest(event: dict[str, Any]) -> str:
     return sha256_hex(canonicalize(event))
 
 
-def _entry_hash(prev_hash: str, seq: int, digest: str) -> str:
-    return sha256_hex(canonicalize({"prev_hash": prev_hash, "seq": seq, "event_digest": digest}))
-
-
 # --------------------------------------------------------------------------
 # verification
 # --------------------------------------------------------------------------
@@ -161,7 +158,12 @@ def _verify(conn: sqlite3.Connection, public_key_b64: str | None) -> VerifyRepor
     for row in rows:
         seq = int(row["seq"])
 
-        if prev_seq is not None and seq != prev_seq + 1:
+        # The chain is defined to start at seq 1, so a missing prefix is a
+        # gap too, not just a hole between consecutive rows (matches
+        # Ledger.missing_ranges()'s definition of a gap).
+        if prev_seq is None and seq > 1:
+            gaps.append((1, seq - 1))
+        elif prev_seq is not None and seq != prev_seq + 1:
             gaps.append((prev_seq + 1, seq - 1))
 
         event = _row_to_event_dict(row, event_columns)
@@ -170,7 +172,7 @@ def _verify(conn: sqlite3.Connection, public_key_b64: str | None) -> VerifyRepor
 
         # Link check uses the *stored* previous hash so that a single tampered
         # row is reported once, at its own seq, instead of cascading.
-        derived_entry = _entry_hash(stored_prev, seq, _event_digest(event))
+        derived_entry = compute_entry_hash(stored_prev, seq, _event_digest(event))
         derived[seq] = derived_entry
 
         if stored_prev != prev_stored_hash or derived_entry != stored_entry:
@@ -239,11 +241,12 @@ def _checkpoint_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM checkpoints").fetchall()
     out: list[dict[str, Any]] = []
     for row in rows:
-        # A ledger may store the checkpoint as a JSON blob or as columns.
+        # The only schema this codebase writes stores each checkpoint as a
+        # JSON blob in a `body` column (see ledger.py's _SCHEMA). Fall back
+        # to reconstructing one from raw columns only for a ledger written
+        # by some other schema shape, not a case any writer here produces.
         if "body" in columns and row["body"]:
             cp = json.loads(row["body"])
-        elif "checkpoint" in columns and row["checkpoint"]:
-            cp = json.loads(row["checkpoint"])
         else:
             cp = {k: row[k] for k in columns if k not in {"id", "rowid"}}
         out.append(cp)
