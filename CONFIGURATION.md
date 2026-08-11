@@ -474,8 +474,15 @@ to configure beyond framing.
 
 A standalone FastAPI proxy (`byoai.agent_context_cache`) you run in front of
 the Anthropic API. It sits between a client (e.g. Claude Code) and
-`api.anthropic.com`, injecting prompt-cache breakpoints and deduplicating
-repeated large text blocks within a session to cut token spend.
+`api.anthropic.com`, injecting prompt-cache breakpoints, truncating oversized
+tool output, and collapsing repeated large tool results within a request to cut
+token spend.
+
+Dedup deliberately never rewrites a plain `text` block in a user turn: that
+block is the instruction, not a file snapshot. It also keeps no state between
+requests, so resending an identical body produces an identical upstream
+request. See the `SessionDedup` docstring in `byoai/stages.py` for why both
+constraints exist.
 It is a separate process from `Runtime`, started via its own console script,
 not something you configure through `build_*` dicts.
 
@@ -510,9 +517,9 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 | `BYOAI_HOST` | `0.0.0.0` | Bind address |
 | `BYOAI_PORT` | `8787` | Bind port |
 | `BYOAI_PROXY_TOKEN` | _(empty — no gate)_ | Shared secret required on every request when set, so the proxy can be exposed via a public tunnel (ngrok/Cloudflare) without being an open relay. Supply it as an `x-byoai-proxy-token` header or a leading URL path segment (`ANTHROPIC_BASE_URL=https://host/<token>`). `/health` is exempt. |
-| `REDIS_URL` | `redis://localhost:6379/0` | Session/dedup state; falls back to an in-process store if unreachable (lost on restart, not shared across processes) |
+| `REDIS_URL` | `redis://localhost:6379/0` | Session hash state; falls back to an in-process store if unreachable (lost on restart, not shared across processes). Not consulted by dedup, which is request-scoped |
 | `BYOAI_SQLITE_PATH` | `~/.byoai/byoai_runtime.db` | Durable log of usage + benchmark events (`db.py`); absolute default so data survives launching from any directory |
-| `BYOAI_SESSION_TTL_SECONDS` | `28800` (8h) | How long a session's dedup hash set lives in Redis |
+| `BYOAI_SESSION_TTL_SECONDS` | `28800` (8h) | How long a session's hash set lives in Redis |
 | `BYOAI_RETENTION_DAYS` | `90` | How long rows are kept in the durable SQLite log. Pruned once on each proxy start, or on demand with `byoai-cache prune`. Set to `0` to keep everything forever |
 | `BYOAI_BENCHMARK_SAMPLE_RATE` | `0.1` | Fraction of requests sampled for before/after token-count comparison |
 | `BYOAI_READ_TIMEOUT_SECONDS` | `600` | Upstream request read timeout |
@@ -522,8 +529,8 @@ export ANTHROPIC_BASE_URL=http://localhost:8787
 Session identity (`derive_session_id` in `main.py`) prefers an explicit
 `X-Byoai-Session-Id` / `X-Session-Id` header; without one it derives an id
 scoped to the caller's API key plus the request's system prompt + first
-message, so two different API keys never share dedup state even with
-byte-identical content.
+message. Dedup no longer keys off this id at all (it is request-scoped), so
+session identity now only affects stats and cache accounting.
 
 ---
 

@@ -144,7 +144,10 @@ def test_proxy_passes_through_cache_control_when_client_already_set_it(client):
     assert sent_body["system"] == client_system
 
 
-def test_proxy_dedups_repeated_text_within_one_session_over_two_calls(client):
+def test_proxy_never_rewrites_a_repeated_user_prompt_across_calls(client):
+    """End-to-end guard on the two dedup regressions: a plain user text block is
+    an instruction, not a file snapshot, and a resent identical body must reach
+    upstream byte-identical rather than being collapsed on the second attempt."""
     captured: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -167,4 +170,5 @@ def test_proxy_dedups_repeated_text_within_one_session_over_two_calls(client):
     first_sent = json.loads(captured[0].content)
     second_sent = json.loads(captured[1].content)
     assert first_sent["messages"][0]["content"][0]["text"] == LONG_TEXT
-    assert "Duplicate file snapshot detected" in second_sent["messages"][0]["content"][0]["text"]
+    assert second_sent["messages"][0]["content"][0]["text"] == LONG_TEXT
+    assert first_sent == second_sent

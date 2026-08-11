@@ -293,8 +293,9 @@ pooling, TTLs, capacity bounds, batch sizes, and more — is documented in
 
 A standalone proxy, separate from `Runtime`, that sits in front of the
 Anthropic API. Point Claude Code (or any Anthropic API client) at it and it
-injects prompt-cache breakpoints and dedupes repeated large text blocks
-within a session, cutting token spend without any client-side changes.
+injects prompt-cache breakpoints, truncates oversized tool output, and
+collapses repeated large tool results within a request, cutting token spend
+without any client-side changes.
 
 ```bash
 pip install --pre "byoai-runtime[agent-context-cache]"
@@ -390,12 +391,13 @@ vacuums for this reason.
 
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
-In-process dedup state is capped on two axes: 500 concurrent sessions and 5,000
-content hashes per session, oldest evicted first. Evicting a hash costs at most
-one re-send of a block nobody has referenced in a long time. Redis, when
-configured, holds the same state; the in-process copy is kept as a complete
-mirror so an outage degrades dedup quality instead of breaking requests. Those
-two caps are what bound it — before them, a single long conversation could
+Dedup itself no longer uses this state. It compares occurrences inside a single
+request body and remembers nothing between calls, which is what makes a retried
+request reach the API unchanged. The hash stores remain for other callers,
+capped on two axes: 500 concurrent sessions and 5,000 content hashes per
+session, oldest evicted first. Redis, when configured, holds the same state; the
+in-process copy is kept as a complete mirror so an outage can't break requests.
+Those two caps are what bound it — before them, a single long conversation could
 accumulate hashes for its entire 8-hour lifetime.
 
 ---
