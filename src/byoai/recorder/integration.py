@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +23,7 @@ from typing import TYPE_CHECKING
 from .canonical import canonicalize, sha256_hex
 from .extract import PartialEvent, StreamExtractor, extract_request_events, extract_response_events
 from .ledger import Ledger, LedgerWriteError
+from .redact import PayloadMode, apply_payload_mode
 from .schema import AgentEvent, new_event_id
 
 if TYPE_CHECKING:
@@ -41,7 +43,13 @@ def _default_dir() -> Path:
 class Recorder:
     """Promotes captured events into the sealed ledger for one device."""
 
-    def __init__(self, *, dir: Path | str | None = None, strict_mode: bool | None = None) -> None:  # noqa: A002
+    def __init__(
+        self,
+        *,
+        dir: Path | str | None = None,  # noqa: A002
+        strict_mode: bool | None = None,
+        payload_mode: PayloadMode = PayloadMode.REDACTED,
+    ) -> None:
         # Imported lazily: both need `cryptography`, which lives behind the
         # `byoai-runtime[recorder]` extra. A base install must be able to
         # import this module (and the rest of the proxy) without it —
@@ -56,6 +64,11 @@ class Recorder:
             if strict_mode is not None
             else os.getenv("BYOAI_RECORDER_STRICT", "0") == "1"
         )
+        self.payload_mode = payload_mode
+        # Per-process/session salt for low-entropy field hashing in redacted
+        # mode (spec §7.2). Generated once and held for the instance's
+        # lifetime — not per-event.
+        self._session_salt = secrets.token_hex(16)
         self.key: DeviceKey = load_or_create_device_key(base)
         self.ledger = Ledger(base / "ledger.db", self.key.device_id, strict_mode=self.strict_mode)
         self.checkpointer: Checkpointer = Checkpointer(self.ledger, self.key)
@@ -113,7 +126,12 @@ class Recorder:
     # ------------------------------------------------------------- capture
 
     def _promote(self, partial: PartialEvent) -> AgentEvent:
+        # payload_hash always commits to the RAW, unredacted payload —
+        # this must never change regardless of payload_mode.
         payload_hash = sha256_hex(canonicalize(partial.payload))
+        shipped_payload = apply_payload_mode(
+            partial.payload, self.payload_mode, session_salt=self._session_salt
+        )
         return AgentEvent(
             schema_version=partial.schema_version,
             event_id=new_event_id(),
@@ -125,7 +143,7 @@ class Recorder:
             ts_monotonic_ns=partial.ts_monotonic_ns,
             tool_use_id=partial.tool_use_id,
             tool_name=partial.tool_name,
-            payload=partial.payload,
+            payload=shipped_payload,
             payload_hash=payload_hash,
             model=partial.model,
             provider=partial.provider,
@@ -205,7 +223,16 @@ def get_recorder() -> Recorder | None:
     if os.getenv("BYOAI_RECORDER_ENABLED", "0") != "1":
         return None
     try:
-        _recorder = Recorder()
+        mode_raw = os.getenv("BYOAI_RECORDER_PAYLOAD_MODE", PayloadMode.REDACTED.value)
+        try:
+            payload_mode = PayloadMode(mode_raw)
+        except ValueError:
+            log.warning(
+                "recorder: unrecognized BYOAI_RECORDER_PAYLOAD_MODE=%r, falling back to redacted",
+                mode_raw,
+            )
+            payload_mode = PayloadMode.REDACTED
+        _recorder = Recorder(payload_mode=payload_mode)
     except Exception:  # noqa: BLE001
         log.exception("recorder: failed to initialize, recording disabled for this process")
         _recorder = None
