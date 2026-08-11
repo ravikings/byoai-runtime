@@ -764,7 +764,9 @@ def _truncate_log_like(text: str) -> str:
             "\n".join(errors[-25:])
             + "\n\n(byoai-runtime truncation notice: verbose test/log output pruned to error lines)"
         )
-    return text[:600] + "\n\n(byoai-runtime truncation notice: large log-like tool output truncated here)"
+    return text[:600] + (
+        "\n\n(byoai-runtime truncation notice: large log-like tool output truncated here)"
+    )
 
 
 def _estimate_tokens(data: dict) -> int:
