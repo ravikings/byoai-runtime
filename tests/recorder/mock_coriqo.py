@@ -24,9 +24,11 @@ import fastapi
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from byoai.recorder.checkpoint import verify_checkpoint
 from byoai.recorder.keys import DeviceKey, derive_device_id
+from byoai.recorder.merkle import InclusionProof, build_epoch_tree
 
-__all__ = ["EnrolledDevice", "StoredEntry", "MockCoriqo"]
+__all__ = ["EnrolledDevice", "StoredEntry", "StoredCheckpoint", "Epoch", "MockCoriqo"]
 
 
 @dataclass
@@ -45,11 +47,40 @@ class StoredEntry:
 
 
 @dataclass
+class StoredCheckpoint:
+    device_id: str
+    seq_end: int
+    body: dict
+    epoch_index: int | None = None  # which Epoch (if any) this is a leaf of
+
+
+@dataclass
+class Epoch:
+    """A tenant-level epoch tree built over checkpoints received so far
+    (spec section 6.2, level 3). Real Coriqo builds one every 10 minutes;
+    the mock builds one whenever ``MockCoriqo.build_epoch`` is called, since
+    tests control time explicitly rather than waiting on a wall clock."""
+
+    index: int
+    root: bytes
+    checkpoint_keys: list[tuple[str, int]]  # (device_id, seq_end), proof-index order
+    proofs: list[InclusionProof]
+
+    def proof_for(self, device_id: str, seq_end: int) -> InclusionProof | None:
+        try:
+            i = self.checkpoint_keys.index((device_id, seq_end))
+        except ValueError:
+            return None
+        return self.proofs[i]
+
+
+@dataclass
 class _DeviceState:
     device: EnrolledDevice
     entries_by_hash: dict[str, StoredEntry] = field(default_factory=dict)
     seqs: set[int] = field(default_factory=set)
     gapped_seqs: set[int] = field(default_factory=set)
+    checkpoints_by_seq_end: dict[int, StoredCheckpoint] = field(default_factory=dict)
 
 
 class MockCoriqo:
@@ -66,10 +97,12 @@ class MockCoriqo:
         self._consumed_tokens: set[str] = set()
         self._base_url = "http://mock-coriqo.test"
         self._devices: dict[str, _DeviceState] = {}
+        self._epochs: list[Epoch] = []
 
         app = FastAPI()
         app.post("/v1/enroll")(self._enroll)
         app.post("/v1/ingest/batch")(self._ingest_batch)
+        app.post("/v1/checkpoints/batch")(self._checkpoints_batch)
         self._app = app
 
     @property
@@ -86,6 +119,49 @@ class MockCoriqo:
         if state is None:
             return []
         return sorted(state.entries_by_hash.values(), key=lambda e: e.seq)
+
+    def checkpoints_for(self, device_id: str) -> list[StoredCheckpoint]:
+        state = self._devices.get(device_id)
+        if state is None:
+            return []
+        return sorted(state.checkpoints_by_seq_end.values(), key=lambda c: c.seq_end)
+
+    def epochs(self) -> list[Epoch]:
+        return list(self._epochs)
+
+    def build_epoch(self) -> Epoch | None:
+        """Build a tenant epoch tree over every checkpoint received so far
+        that isn't already a leaf of an earlier epoch (spec section 6.2,
+        level 3). Returns ``None`` if there is nothing pending.
+
+        Real Coriqo does this on a 10-minute timer across all devices in a
+        tenant; the mock exposes it as an explicit call so tests control
+        exactly when an epoch closes instead of racing a wall clock.
+        """
+        pending: list[StoredCheckpoint] = []
+        for state in self._devices.values():
+            pending.extend(
+                cp for cp in state.checkpoints_by_seq_end.values() if cp.epoch_index is None
+            )
+        if not pending:
+            return None
+
+        pending.sort(key=lambda cp: (cp.device_id, cp.seq_end))
+        bodies = [cp.body for cp in pending]
+        root, proofs = build_epoch_tree(bodies)
+
+        index = len(self._epochs)
+        for cp in pending:
+            cp.epoch_index = index
+
+        epoch = Epoch(
+            index=index,
+            root=root,
+            checkpoint_keys=[(cp.device_id, cp.seq_end) for cp in pending],
+            proofs=proofs,
+        )
+        self._epochs.append(epoch)
+        return epoch
 
     def inject_gap(self, device_id: str, seq: int) -> None:
         """Mark ``seq`` as permanently gapped: future ingest calls report it
@@ -198,6 +274,73 @@ class MockCoriqo:
 
         return JSONResponse(
             {"accepted": accepted, "duplicates": duplicates, "gaps": gaps},
+            status_code=202,
+        )
+
+    async def _checkpoints_batch(self, request: Request) -> JSONResponse:
+        device_id = request.headers.get("x-coriqo-device")
+        signature = request.headers.get("x-coriqo-signature")
+
+        if not device_id or not signature:
+            return JSONResponse(
+                {"error": "missing device/signature headers"}, status_code=401
+            )
+
+        state = self._devices.get(device_id)
+        if state is None:
+            return JSONResponse({"error": "unknown device_id"}, status_code=401)
+
+        raw_body = await request.body()
+        if request.headers.get("content-encoding") == "gzip":
+            try:
+                canonical_body = gzip.decompress(raw_body)
+            except OSError:
+                return JSONResponse({"error": "invalid gzip body"}, status_code=401)
+        else:
+            canonical_body = raw_body
+
+        if not DeviceKey.verify(state.device.public_key_b64, canonical_body, signature):
+            return JSONResponse({"error": "bad signature"}, status_code=401)
+
+        try:
+            payload = json.loads(canonical_body)
+        except ValueError:
+            return JSONResponse({"error": "body is not valid JSON"}, status_code=401)
+
+        if payload.get("device_id") != device_id:
+            return JSONResponse(
+                {"error": "device_id mismatch between header and body"},
+                status_code=401,
+            )
+
+        checkpoints = payload.get("checkpoints", [])
+
+        accepted = 0
+        duplicates = 0
+        for body in checkpoints:
+            seq_end = body["seq_end"]
+
+            if seq_end in state.checkpoints_by_seq_end:
+                duplicates += 1
+                continue
+
+            # The checkpoint's own signature (over its own fields, §6.2) is a
+            # separate check from the request signature above — a valid
+            # request signature only proves the device sent this batch, not
+            # that any individual checkpoint inside it is genuine.
+            if not verify_checkpoint(body, state.device.public_key_b64):
+                return JSONResponse(
+                    {"error": f"checkpoint seq_end {seq_end}: signature does not verify"},
+                    status_code=401,
+                )
+
+            state.checkpoints_by_seq_end[seq_end] = StoredCheckpoint(
+                device_id=device_id, seq_end=seq_end, body=body
+            )
+            accepted += 1
+
+        return JSONResponse(
+            {"accepted": accepted, "duplicates": duplicates},
             status_code=202,
         )
 

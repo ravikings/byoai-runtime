@@ -2,9 +2,11 @@
 
 Rotation replaces a device's Ed25519 keypair while preserving verifiable
 continuity of the ledger's hash chain across the key boundary: the OLD key
-cross-signs the NEW public key, and that cross-signature is sealed into the
-ledger as a ``KEY_ROTATED`` event — the last thing the retiring identity
-signs — before the on-disk key files are replaced.
+cross-signs the NEW public key, the new key files are written to disk, and
+only then is that cross-signature sealed into the ledger as a
+``KEY_ROTATED`` event — the last thing the retiring identity signs. The key
+files land before the event so a crash between them never strands a
+ledger-committed device_id whose private key was never durably written.
 
 Revocation reuses the same mechanism with ``reason="revocation"`` (or
 ``"compromise"``): the event's ``effective_epoch`` marks the point after
@@ -45,10 +47,15 @@ def rotate_key(
     """Rotate this device's Ed25519 key, cross-signed for chain continuity.
 
     Generates a new keypair, has the CURRENT on-disk key cross-sign the new
-    public key, appends a ``KEY_ROTATED`` event to ``ledger`` signed as the
-    OLD device (it's appended before the key files are replaced), then
-    atomically replaces the on-disk key files with the new key. Returns the
-    new :class:`DeviceKey`.
+    public key, atomically writes the new key files to disk, then appends a
+    ``KEY_ROTATED`` event to ``ledger`` signed as the OLD device. The key
+    files are written *before* the event is appended (not after) so a crash
+    in between never loses the only copy of the new private key: if the
+    event append fails or the process dies right after it, the new key
+    material is still safely on disk and the ledger just has one un-recorded
+    rotation to reconcile, rather than a KEY_ROTATED event whose
+    new_device_id can never be produced again because its private key never
+    made it to disk.
 
     ``ledger`` must belong to the same device being rotated (its
     ``device_id`` should match the old key's, since the event needs to be
@@ -98,17 +105,19 @@ def rotate_key(
         model=None,
         provider="recorder",
     )
+    # Written before the event is appended: the new private key only ever
+    # exists in memory until this call, so if the process dies before this
+    # completes, no ledger record commits to a device_id whose key was lost.
+    _write_new_key(key_dir, new_private, new_key)
+
     entry = ledger.append(event)
     if entry is None:
         raise RuntimeError(
-            "failed to append KEY_ROTATED event to the ledger — refusing to "
-            "rotate the on-disk key without a recorded, cross-signed handoff"
+            "failed to append KEY_ROTATED event to the ledger — the new key "
+            "is already on disk, but the cross-signed handoff was not "
+            "recorded; retry the append or investigate the ledger before "
+            "using the new key"
         )
-
-    # New key material must be the only thing left on disk afterwards — the
-    # old raw private key bytes are never written out again, and
-    # atomic_write_bytes handles the swap atomically (keys.py convention).
-    _write_new_key(key_dir, new_private, new_key)
 
     return new_key
 

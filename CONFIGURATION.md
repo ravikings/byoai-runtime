@@ -541,7 +541,8 @@ device-held Ed25519 key. It never blocks or delays the token stream — the
 extractor tees already-forwarded bytes — and by default a recording failure
 is logged, not fatal to the request (see `BYOAI_RECORDER_STRICT` below).
 
-Requires the `cryptography` package, behind its own extra:
+Requires the `cryptography` package (and, for verifying RFC 3161 anchor
+receipts, `rfc3161ng`), behind its own extra:
 
 ```bash
 pip install --pre "byoai-runtime[recorder]"

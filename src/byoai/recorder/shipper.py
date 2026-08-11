@@ -28,6 +28,7 @@ from byoai.recorder.keys import DeviceKey
 from byoai.recorder.ledger import Ledger
 
 __all__ = [
+    "CheckpointShipResult",
     "ShipError",
     "ShipResult",
     "Shipper",
@@ -36,6 +37,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _INGEST_PATH = "/v1/ingest/batch"
+_CHECKPOINT_INGEST_PATH = "/v1/checkpoints/batch"
 _MAX_BACKOFF_SECONDS = 60.0
 _INITIAL_BACKOFF_SECONDS = 1.0
 
@@ -46,6 +48,13 @@ class ShipResult:
     duplicates: int
     gaps: list[list[int]]
     synced_up_to: int
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointShipResult:
+    accepted: int
+    duplicates: int
+    synced_checkpoint_up_to: int
 
 
 class ShipError(RuntimeError):
@@ -177,6 +186,71 @@ class Shipper:
             synced_up_to=synced_up_to,
         )
 
+    def ship_checkpoints_once(self) -> CheckpointShipResult | None:
+        """One checkpoint batch attempt. Returns ``None`` if nothing was pending.
+
+        Checkpoints ship on their own watermark and their own endpoint,
+        independent of entry shipping — a checkpoint only becomes useful to
+        Coriqo (as a leaf in a tenant epoch tree, §6.2 level 3) once it
+        exists, regardless of whether the entries it summarizes have shipped
+        yet. Delivery is at-least-once, same as entries: the server dedupes
+        by ``(device_id, seq_end)``.
+
+        Raises :class:`ShipError` on any network failure or non-2xx
+        response; does not retry internally.
+        """
+        checkpoints = self._ledger.read_unsynced_checkpoints(limit=self._max_batch_events)
+        if not checkpoints:
+            return None
+
+        body = {"device_id": self._key.device_id, "checkpoints": checkpoints}
+        canonical_body = canonicalize(body)
+        signature = self._key.sign(canonical_body)
+        payload = gzip.compress(canonical_body)
+
+        try:
+            response = self._client.post(
+                f"{self._base_url}{_CHECKPOINT_INGEST_PATH}",
+                content=payload,
+                headers={
+                    "content-type": "application/json",
+                    "content-encoding": "gzip",
+                    "x-coriqo-device": self._key.device_id,
+                    "x-coriqo-signature": signature,
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise ShipError(f"checkpoint ingest request failed: {exc}") from exc
+
+        if response.status_code // 100 != 2:
+            retry_after = _parse_retry_after(response.headers.get("retry-after"))
+            raise ShipError(
+                f"checkpoint ingest rejected: HTTP {response.status_code} {response.text}",
+                retry_after=retry_after,
+            )
+
+        try:
+            resp_body = response.json()
+        except ValueError as exc:
+            raise ShipError(
+                f"checkpoint ingest response was not valid JSON: {response.text}"
+            ) from exc
+
+        accepted = int(resp_body.get("accepted", 0))
+        duplicates = int(resp_body.get("duplicates", 0))
+
+        target = max(cp["seq_end"] for cp in checkpoints)
+        current = self._ledger.get_synced_checkpoint_up_to()
+        if target > current:
+            self._ledger.set_synced_checkpoint_up_to(target)
+            current = target
+
+        return CheckpointShipResult(
+            accepted=accepted,
+            duplicates=duplicates,
+            synced_checkpoint_up_to=current,
+        )
+
     def _advance_watermark(self, shipped_seqs: list[int], gaps: list[list[int]]) -> int:
         """Advance the ledger's synced watermark up to (but never past) the
         first gapped seq in this batch, if any."""
@@ -225,6 +299,7 @@ class Shipper:
         while not stop.is_set():
             try:
                 self.ship_once()
+                self.ship_checkpoints_once()
                 backoff = _INITIAL_BACKOFF_SECONDS
             except ShipError as exc:
                 logger.warning("recorder shipper batch failed: %s", exc)

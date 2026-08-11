@@ -19,6 +19,12 @@ from typing import Any
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
 from byoai.recorder.ledger import compute_entry_hash
+from byoai.recorder.merkle import (
+    InclusionProof,
+    ProofStep,
+    checkpoint_leaf_hash,
+    verify_inclusion,
+)
 from byoai.recorder.schema import EventKind
 
 GENESIS_PREV_HASH = "sha256:" + "00" * 32
@@ -68,6 +74,28 @@ class VerifyReport:
 
 class VerifyError(RuntimeError):
     """The ledger file could not be read at all."""
+
+
+def verify_checkpoint_epoch_inclusion(
+    checkpoint: dict[str, Any], proof: InclusionProof, epoch_root: bytes
+) -> bool:
+    """The missing link in spec section 6.3's verification path: proves
+    ``checkpoint`` (already verified against the device chain and its own
+    signature by :func:`_verify_checkpoints` / the caller) was actually
+    included in the tenant epoch tree that ``epoch_root`` is the root of.
+
+    Re-derives the leaf hash from ``checkpoint`` itself rather than trusting
+    ``proof.leaf_hash`` — a proof carrying a leaf hash that doesn't match the
+    checkpoint it claims to cover is exactly the kind of substitution this
+    check exists to catch. No network access; the caller supplies the
+    checkpoint (from the local ledger), the proof, and the root (both
+    presumably from an exported bundle, once one exists).
+    """
+    if checkpoint_leaf_hash(checkpoint) != proof.leaf_hash:
+        return False
+    if proof.root != epoch_root:
+        return False
+    return verify_inclusion(proof)
 
 
 # --------------------------------------------------------------------------
@@ -186,18 +214,38 @@ def verify_ledger(
         conn.close()
 
 
-def _verify(
-    conn: sqlite3.Connection,
-    public_key_b64: str | None,
-    device_public_keys: dict[str, str],
-) -> VerifyReport:
-    all_columns = _columns(conn, "agent_events")
-    if not all_columns:
-        raise VerifyError("ledger has no agent_events table")
-    event_columns = [c for c in all_columns if c not in _CHAIN_COLUMNS]
+@dataclass
+class _ChainWalk:
+    """Everything a walk over normalized chain entries accumulates, shared
+    between the SQLite-backed ledger path and the JSON-bundle path so the two
+    can never silently drift apart on what counts as a finding."""
 
-    rows = conn.execute("SELECT * FROM agent_events ORDER BY seq ASC").fetchall()
+    entries_checked: int
+    broken_links: list[int]
+    gaps: list[tuple[int, int]]
+    device_ids: list[str]
+    session_ids: list[str]
+    ts_values: list[str]
+    unpaired_tool_uses: list[str]
+    orphan_tool_results: list[str]
+    key_rotations: list[dict[str, Any]]
+    stale_key_usage: list[int]
+    derived: dict[int, str]
+    notes: list[str]
 
+
+def _walk_chain(
+    entries: Iterable[dict[str, Any]], device_public_keys: dict[str, str]
+) -> _ChainWalk:
+    """Re-derive and check the hash chain over normalized entries.
+
+    Each item in ``entries`` must have ``seq`` (int), ``prev_hash`` (str),
+    ``entry_hash`` (str) and ``event`` (the event mapping, already parsed) —
+    the same shape whether it came from an ``agent_events`` row or a bundle's
+    ``entries`` array. This is the one chain-walking implementation; both
+    :func:`verify_ledger` and :func:`verify_bundle` call it so a finding in
+    one can never fail to appear in the other.
+    """
     broken_links: list[int] = []
     gaps: list[tuple[int, int]] = []
     device_ids: list[str] = []
@@ -218,8 +266,10 @@ def _verify(
     # that device_id is no longer a valid signer.
     retired_devices: dict[str, str] = {}
 
-    for row in rows:
-        seq = int(row["seq"])
+    entries_checked = 0
+    for entry in entries:
+        entries_checked += 1
+        seq = int(entry["seq"])
 
         # The chain is defined to start at seq 1, so a missing prefix is a
         # gap too, not just a hole between consecutive rows (matches
@@ -229,9 +279,9 @@ def _verify(
         elif prev_seq is not None and seq != prev_seq + 1:
             gaps.append((prev_seq + 1, seq - 1))
 
-        event = _row_to_event_dict(row, event_columns)
-        stored_prev = row["prev_hash"]
-        stored_entry = row["entry_hash"]
+        event = entry["event"]
+        stored_prev = entry["prev_hash"]
+        stored_entry = entry["entry_hash"]
 
         # Link check uses the *stored* previous hash so that a single tampered
         # row is reported once, at its own seq, instead of cascading.
@@ -285,11 +335,6 @@ def _verify(
         if t not in tool_uses or tool_uses[t] > result_seq
     )
 
-    bad_signatures, checkpoints_checked, cp_notes = _verify_checkpoints(
-        conn, derived, public_key_b64
-    )
-    notes.extend(cp_notes)
-
     for rotation in key_rotations:
         old_id = rotation.get("old_device_id")
         seq_note = f"key rotation {old_id} -> {rotation.get('new_device_id')}"
@@ -301,38 +346,95 @@ def _verify(
         elif not rotation["cross_signature_verified"]:
             notes.append(f"{seq_note}: cross-signature does NOT verify")
 
+    return _ChainWalk(
+        entries_checked=entries_checked,
+        broken_links=broken_links,
+        gaps=gaps,
+        device_ids=device_ids,
+        session_ids=session_ids,
+        ts_values=ts_values,
+        unpaired_tool_uses=unpaired_tool_uses,
+        orphan_tool_results=orphan_tool_results,
+        key_rotations=key_rotations,
+        stale_key_usage=stale_key_usage,
+        derived=derived,
+        notes=notes,
+    )
+
+
+def _verify(
+    conn: sqlite3.Connection,
+    public_key_b64: str | None,
+    device_public_keys: dict[str, str],
+) -> VerifyReport:
+    all_columns = _columns(conn, "agent_events")
+    if not all_columns:
+        raise VerifyError("ledger has no agent_events table")
+    event_columns = [c for c in all_columns if c not in _CHAIN_COLUMNS]
+
+    rows = conn.execute("SELECT * FROM agent_events ORDER BY seq ASC").fetchall()
+    entries = [
+        {
+            "seq": row["seq"],
+            "prev_hash": row["prev_hash"],
+            "entry_hash": row["entry_hash"],
+            "event": _row_to_event_dict(row, event_columns),
+        }
+        for row in rows
+    ]
+
+    walk = _walk_chain(entries, device_public_keys)
+
+    try:
+        checkpoints = _checkpoint_rows(conn)
+        checkpoint_notes: list[str] = []
+    except (sqlite3.DatabaseError, ValueError) as exc:
+        checkpoints = []
+        checkpoint_notes = [f"checkpoint table unreadable: {exc}"]
+
+    if checkpoint_notes:
+        bad_signatures: list[int] = []
+        checkpoints_checked = 0
+        cp_notes = checkpoint_notes
+    else:
+        bad_signatures, checkpoints_checked, cp_notes = _verify_checkpoints(
+            checkpoints, walk.derived, public_key_b64
+        )
+
+    notes = [*walk.notes, *cp_notes]
+
     forged_rotations = [
-        r for r in key_rotations if r["cross_signature_verified"] is False
+        r for r in walk.key_rotations if r["cross_signature_verified"] is False
     ]
 
     ok = not (
-        broken_links
+        walk.broken_links
         or bad_signatures
-        or gaps
-        or orphan_tool_results
-        or stale_key_usage
+        or walk.gaps
+        or walk.orphan_tool_results
+        or walk.stale_key_usage
         or forged_rotations
     )
 
     return VerifyReport(
         ok=ok,
-        entries_checked=len(rows),
-        broken_links=broken_links,
+        entries_checked=walk.entries_checked,
+        broken_links=walk.broken_links,
         bad_signatures=bad_signatures,
-        gaps=gaps,
-        unpaired_tool_uses=unpaired_tool_uses,
-        orphan_tool_results=orphan_tool_results,
-        device_ids=device_ids,
-        session_ids=session_ids,
-        seq_start=int(rows[0]["seq"]) if rows else None,
-        seq_end=int(rows[-1]["seq"]) if rows else None,
-        ts_first=min(ts_values) if ts_values else None,
-        ts_last=max(ts_values) if ts_values else None,
+        gaps=walk.gaps,
+        unpaired_tool_uses=walk.unpaired_tool_uses,
+        orphan_tool_results=walk.orphan_tool_results,
+        device_ids=walk.device_ids,
+        session_ids=walk.session_ids,
+        seq_start=int(entries[0]["seq"]) if entries else None,
+        seq_end=int(entries[-1]["seq"]) if entries else None,
+        ts_first=min(walk.ts_values) if walk.ts_values else None,
+        ts_last=max(walk.ts_values) if walk.ts_values else None,
         checkpoints_checked=checkpoints_checked,
         signatures_verified=bool(public_key_b64) and checkpoints_checked > 0,
         notes=notes,
-        key_rotations=key_rotations,
-        stale_key_usage=stale_key_usage,
+        key_rotations=walk.key_rotations,
+        stale_key_usage=walk.stale_key_usage,
     )
 
 
@@ -357,16 +459,12 @@ def _checkpoint_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def _verify_checkpoints(
-    conn: sqlite3.Connection,
+    checkpoints: list[dict[str, Any]],
     derived: dict[int, str],
     public_key_b64: str | None,
 ) -> tuple[list[int], int, list[str]]:
     bad: list[int] = []
     notes: list[str] = []
-    try:
-        checkpoints = _checkpoint_rows(conn)
-    except (sqlite3.DatabaseError, ValueError) as exc:
-        return [], 0, [f"checkpoint table unreadable: {exc}"]
 
     if not checkpoints:
         return [], 0, ["no checkpoints present in this ledger"]
@@ -409,3 +507,241 @@ def _verify_checkpoints(
             bad.append(seq_end)
 
     return bad, len(checkpoints), notes
+
+
+_EPOCH_SIGNED_FIELDS = ("epoch_index", "root", "epoch_start", "epoch_end", "tenant_id")
+
+
+def _verify_epoch_signature(epoch: dict[str, Any]) -> bool | None:
+    """Check an epoch root's tenant-KMS signature (spec §6.2 level 3).
+
+    Returns ``None`` — not checked, not failed — when the bundle carries no
+    ``tenant_sig``/``tenant_kms_public_key_b64`` for this epoch, matching the
+    existing "not checked" convention used for checkpoints without a
+    supplied public key. Uses the same Ed25519 primitive as everything else
+    in this codebase; a tenant KMS that signs with something else needs its
+    own verifier, not a change here.
+    """
+    sig = epoch.get("tenant_sig")
+    public_key_b64 = epoch.get("tenant_kms_public_key_b64")
+    if not isinstance(sig, str) or not isinstance(public_key_b64, str):
+        return None
+    signed_fields = {k: epoch.get(k) for k in _EPOCH_SIGNED_FIELDS}
+    return _verify_signature(public_key_b64, canonicalize(signed_fields), sig)
+
+
+def _verify_anchor(
+    anchor_type: str,
+    receipt: dict[str, Any],
+    epoch: dict[str, Any],
+    rekor_public_key_b64: str | None,
+) -> tuple[bool, list[str]]:
+    """Dispatch to the right external anchor verifier (spec §6.2 level 4).
+
+    Imported lazily for the same reason ``_verify_signature`` imports
+    ``keys`` lazily: callers who never verify anchors shouldn't be forced to
+    install ``rfc3161ng``.
+    """
+    from byoai.recorder import anchor as anchor_module
+
+    try:
+        epoch_root = bytes.fromhex(epoch["root"])
+    except (KeyError, ValueError) as exc:
+        return False, [f"cannot verify anchor: epoch root is missing/malformed ({exc})"]
+
+    if anchor_type == "rfc3161_tsa":
+        return anchor_module.verify_rfc3161_receipt(receipt, epoch_root)
+    if anchor_type == "sigstore_rekor":
+        inclusion = receipt.get("inclusion_proof") or {}
+        flat_receipt = {
+            **inclusion,
+            "signed_entry_timestamp": receipt.get("signed_entry_timestamp"),
+        }
+        return anchor_module.verify_rekor_receipt(
+            flat_receipt, epoch_root, rekor_public_key_b64=rekor_public_key_b64
+        )
+    return False, [f"unknown anchor type {anchor_type!r} — cannot verify"]
+
+
+@dataclass
+class BundleVerifyReport:
+    """Result of verifying an examiner export bundle (spec §10.3), covering
+    all five steps of the sketch in
+    ``internal_doc/recorder_contract_export_bundle.md``: chain,
+    checkpoint signatures, checkpoint-to-epoch inclusion, tenant epoch-root
+    signature, and (when ``check_anchors`` is set) the external anchor
+    receipt. An anchor of type ``"none"`` is legitimately unanchored, not a
+    failure — see :func:`verify_bundle`."""
+
+    ok: bool
+    entries_checked: int
+    broken_links: list[int]
+    bad_checkpoint_signatures: list[int]
+    bad_inclusions: list[int]  # checkpoint seq_end values whose proof did not verify
+    bad_epoch_signatures: list[int]  # epoch_index values whose tenant_sig did not verify
+    gaps: list[tuple[int, int]]
+    unpaired_tool_uses: list[str]
+    orphan_tool_results: list[str]
+    device_ids: list[str] = field(default_factory=list)
+    session_ids: list[str] = field(default_factory=list)
+    checkpoints_checked: int = 0
+    inclusions_checked: int = 0
+    epoch_signatures_checked: int = 0
+    anchors_checked: int = 0
+    bad_anchors: list[int] = field(default_factory=list)  # epoch_index values whose anchor failed
+    key_rotations: list[dict[str, Any]] = field(default_factory=list)
+    stale_key_usage: list[int] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["gaps"] = [list(g) for g in self.gaps]
+        return data
+
+
+def verify_bundle(
+    bundle: dict[str, Any],
+    *,
+    device_public_keys: dict[str, str] | None = None,
+    check_anchors: bool = True,
+    rekor_public_key_b64: str | None = None,
+) -> BundleVerifyReport:
+    """Offline verification of an examiner export bundle (spec §10.3).
+
+    Re-runs the same chain walk as :func:`verify_ledger`, over
+    ``bundle["entries"]`` instead of a SQLite cursor, then re-checks every
+    checkpoint's signature, its inclusion proof against ``bundle["epochs"]``,
+    each epoch's tenant signature, and — when ``check_anchors`` is set and an
+    epoch's ``anchor.type`` is not ``"none"`` — that epoch's external anchor
+    receipt (RFC 3161 TSA or Sigstore Rekor, via ``anchor.py``). This covers
+    all five steps of the verification path in spec §6.3. An epoch with
+    ``anchor.type == "none"`` is legitimately unanchored and is noted as such,
+    never silently treated as passing.
+    """
+    public_key_b64 = bundle.get("device", {}).get("public_key_b64")
+    entries = bundle.get("entries", [])
+
+    walk = _walk_chain(entries, device_public_keys or {})
+
+    bundle_checkpoints = bundle.get("checkpoints", [])
+    checkpoints = [bc["checkpoint"] for bc in bundle_checkpoints]
+    bad_signatures, checkpoints_checked, cp_notes = _verify_checkpoints(
+        checkpoints, walk.derived, public_key_b64
+    )
+
+    epoch_roots = {
+        epoch["epoch_index"]: bytes.fromhex(epoch["root"])
+        for epoch in bundle.get("epochs", [])
+    }
+
+    bad_inclusions: list[int] = []
+    inclusions_checked = 0
+    notes = [*walk.notes, *cp_notes]
+
+    for bc in bundle_checkpoints:
+        proof_json = bc.get("inclusion_proof")
+        epoch_index = bc.get("epoch_index")
+        seq_end = int(bc["checkpoint"].get("seq_end", -1))
+
+        if proof_json is None or epoch_index is None:
+            notes.append(
+                f"checkpoint ending at seq {seq_end}: not yet anchored to an "
+                "epoch — inclusion not checked"
+            )
+            continue
+
+        root = epoch_roots.get(epoch_index)
+        if root is None:
+            bad_inclusions.append(seq_end)
+            notes.append(
+                f"checkpoint ending at seq {seq_end}: references epoch "
+                f"{epoch_index}, which is not present in this bundle's epochs"
+            )
+            continue
+
+        inclusions_checked += 1
+        proof = InclusionProof(
+            leaf_index=proof_json["leaf_index"],
+            leaf_hash=checkpoint_leaf_hash(bc["checkpoint"]),
+            steps=tuple(
+                ProofStep(sibling=bytes.fromhex(step["sibling"]), side=step["side"])
+                for step in proof_json["steps"]
+            ),
+            root=root,
+        )
+        if not verify_checkpoint_epoch_inclusion(bc["checkpoint"], proof, root):
+            bad_inclusions.append(seq_end)
+            notes.append(f"checkpoint ending at seq {seq_end}: inclusion proof does not verify")
+
+    bad_epoch_signatures: list[int] = []
+    epoch_signatures_checked = 0
+    bad_anchors: list[int] = []
+    anchors_checked = 0
+    for epoch in bundle.get("epochs", []):
+        epoch_index = epoch["epoch_index"]
+        verified = _verify_epoch_signature(epoch)
+        if verified is None:
+            notes.append(
+                f"epoch {epoch_index}: tenant signature NOT checked — bundle carries "
+                "no tenant_sig/tenant_kms_public_key_b64 for it"
+            )
+        else:
+            epoch_signatures_checked += 1
+            if not verified:
+                bad_epoch_signatures.append(epoch_index)
+                notes.append(f"epoch {epoch_index}: tenant signature does NOT verify")
+
+        anchor = epoch.get("anchor") or {}
+        anchor_type = anchor.get("type", "none")
+        if anchor_type == "none":
+            continue
+        if not check_anchors:
+            notes.append(
+                f"epoch {epoch_index}: anchor receipt ({anchor_type}) NOT verified — "
+                "check_anchors=False"
+            )
+            continue
+
+        anchor_ok, anchor_notes = _verify_anchor(
+            anchor_type, anchor.get("receipt") or {}, epoch, rekor_public_key_b64
+        )
+        anchors_checked += 1
+        notes.extend(f"epoch {epoch_index}: anchor — {n}" for n in anchor_notes)
+        if not anchor_ok:
+            bad_anchors.append(epoch_index)
+
+    forged_rotations = [r for r in walk.key_rotations if r["cross_signature_verified"] is False]
+
+    ok = not (
+        walk.broken_links
+        or bad_signatures
+        or bad_inclusions
+        or bad_epoch_signatures
+        or bad_anchors
+        or walk.gaps
+        or walk.orphan_tool_results
+        or walk.stale_key_usage
+        or forged_rotations
+    )
+
+    return BundleVerifyReport(
+        ok=ok,
+        entries_checked=walk.entries_checked,
+        broken_links=walk.broken_links,
+        bad_checkpoint_signatures=bad_signatures,
+        bad_inclusions=bad_inclusions,
+        bad_epoch_signatures=bad_epoch_signatures,
+        anchors_checked=anchors_checked,
+        bad_anchors=bad_anchors,
+        gaps=walk.gaps,
+        unpaired_tool_uses=walk.unpaired_tool_uses,
+        orphan_tool_results=walk.orphan_tool_results,
+        device_ids=walk.device_ids,
+        session_ids=walk.session_ids,
+        checkpoints_checked=checkpoints_checked,
+        inclusions_checked=inclusions_checked,
+        epoch_signatures_checked=epoch_signatures_checked,
+        key_rotations=walk.key_rotations,
+        stale_key_usage=walk.stale_key_usage,
+        notes=notes,
+    )

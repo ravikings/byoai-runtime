@@ -15,15 +15,12 @@ failure here instead of silently passing a fake.
 
 from __future__ import annotations
 
-import time
-import uuid
-
 import httpx
 import pytest
 from tests.recorder.conftest import asgi_client as _shared_asgi_client
+from tests.recorder.conftest import make_event
 from tests.recorder.mock_coriqo import MockCoriqo
 
-from byoai.recorder.canonical import canonicalize, sha256_hex
 from byoai.recorder.enroll import (
     EnrollmentError,
     EnrollmentState,
@@ -32,33 +29,10 @@ from byoai.recorder.enroll import (
 )
 from byoai.recorder.keys import DeviceKey, load_or_create_device_key
 from byoai.recorder.ledger import Ledger
-from byoai.recorder.schema import EVENT_SCHEMA_VERSION, AgentEvent, EventKind
 from byoai.recorder.shipper import ShipError, Shipper
 from byoai.recorder.verify import verify_ledger
 
 CORIQO_BASE_URL = "https://coriqo.example.com"
-
-
-def make_event(
-    device_id: str, *, session_id: str = "sess_1", payload: dict | None = None
-) -> AgentEvent:
-    payload = {"command": "ls -la"} if payload is None else payload
-    return AgentEvent(
-        schema_version=EVENT_SCHEMA_VERSION,
-        event_id="evt_" + uuid.uuid4().hex,
-        device_id=device_id,
-        session_id=session_id,
-        seq=0,  # placeholder; the ledger assigns the real seq
-        kind=EventKind.TOOL_USE.value,
-        ts_device="2026-08-10T12:00:00.000000Z",
-        ts_monotonic_ns=time.monotonic_ns(),
-        tool_use_id="toolu_" + uuid.uuid4().hex[:8],
-        tool_name="Bash",
-        payload=payload,
-        payload_hash=sha256_hex(canonicalize(payload)),
-        model="claude-opus-4-20250514",
-        provider="anthropic",
-    )
 
 
 def asgi_client(mock: MockCoriqo) -> httpx.Client:

@@ -94,9 +94,10 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 -- Lives in the ledger itself (not shipper-process memory) so "what's been
 -- synced" survives a proxy restart exactly like the chain it describes.
 CREATE TABLE IF NOT EXISTS sync_state (
-    id               INTEGER PRIMARY KEY CHECK (id = 1),
-    synced_up_to_seq INTEGER NOT NULL DEFAULT 0,
-    updated_at       TEXT NOT NULL
+    id                          INTEGER PRIMARY KEY CHECK (id = 1),
+    synced_up_to_seq            INTEGER NOT NULL DEFAULT 0,
+    synced_checkpoint_up_to_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at                  TEXT NOT NULL
 );
 """
 
@@ -159,6 +160,16 @@ class Ledger:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        try:
+            # Ledgers created before checkpoint shipping existed have
+            # sync_state without this column; CREATE TABLE IF NOT EXISTS
+            # above is a no-op against them.
+            self._conn.execute(
+                "ALTER TABLE sync_state ADD COLUMN "
+                "synced_checkpoint_up_to_seq INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already present
 
         self._head, self._next_seq = self._resume()
 
@@ -362,6 +373,12 @@ class Ledger:
         try:
             while True:
                 with self._lock:
+                    # Re-check on every batch: close() can run between
+                    # batches (that's the whole point of not holding the
+                    # lock across yield), and fetchmany() on an already
+                    # -closed sqlite connection raises sqlite3.ProgrammingError
+                    # instead of the ledger's own closed-ledger error.
+                    self._require_open()
                     rows = cur.fetchmany(256)
                 if not rows:
                     return
@@ -369,7 +386,8 @@ class Ledger:
                     yield _row_to_entry(row)
         finally:
             with self._lock:
-                cur.close()
+                if not self._closed:
+                    cur.close()
 
     def missing_ranges(self) -> list[tuple[int, int]]:
         """Inclusive (start, end) seq ranges that should exist but do not.
@@ -494,6 +512,64 @@ class Ledger:
                 "SELECT body FROM checkpoints ORDER BY seq_end"
             ).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    # ---------------------------------------------------- checkpoint sync
+
+    def read_unsynced_checkpoints(self, limit: int | None = None) -> list[dict]:
+        """Checkpoints after the checkpoint sync watermark, in seq_end order.
+
+        Mirrors :meth:`read_unsynced` for entries: this is what a shipper
+        batches to ``/v1/checkpoints/batch``. Does not move the watermark.
+        """
+        with self._lock:
+            self._require_open()
+            sql = "SELECT body FROM checkpoints WHERE seq_end > ? ORDER BY seq_end"
+            params: tuple[Any, ...] = (self._get_synced_checkpoint_up_to_locked(),)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (*params, limit)
+            rows = self._conn.execute(sql, params).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def get_synced_checkpoint_up_to(self) -> int:
+        """Highest checkpoint ``seq_end`` Coriqo has confirmed receiving. 0 if never shipped."""
+        with self._lock:
+            self._require_open()
+            return self._get_synced_checkpoint_up_to_locked()
+
+    def _get_synced_checkpoint_up_to_locked(self) -> int:
+        row = self._conn.execute(
+            "SELECT synced_checkpoint_up_to_seq FROM sync_state WHERE id = 1"
+        ).fetchone()
+        return row[0] if row is not None else 0
+
+    def set_synced_checkpoint_up_to(self, seq: int) -> None:
+        """Advance the checkpoint watermark. Refuses to move it backwards or
+        past the newest checkpoint's seq_end, for the same reasons as
+        :meth:`set_synced_up_to`."""
+        with self._lock:
+            self._require_open()
+            current = self._get_synced_checkpoint_up_to_locked()
+            if seq < current:
+                raise ValueError(
+                    f"refusing to move checkpoint sync watermark backwards: {seq} < {current}"
+                )
+            latest = self._conn.execute(
+                "SELECT MAX(seq_end) FROM checkpoints"
+            ).fetchone()[0]
+            if latest is None or seq > latest:
+                raise ValueError(
+                    f"refusing to mark checkpoint seq_end {seq} synced: "
+                    f"latest checkpoint is at {latest}"
+                )
+            self._conn.execute(
+                "INSERT INTO sync_state (id, synced_up_to_seq, synced_checkpoint_up_to_seq, "
+                "updated_at) VALUES (1, 0, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "synced_checkpoint_up_to_seq = excluded.synced_checkpoint_up_to_seq, "
+                "updated_at = excluded.updated_at",
+                (seq, now_ts_device()),
+            )
 
     # ---------------------------------------------------------------- close
 

@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-import time
-import uuid
 
 import pytest
 
@@ -23,11 +21,12 @@ from byoai.recorder.ledger import (
     compute_entry_hash,
 )
 from byoai.recorder.schema import (
-    EVENT_SCHEMA_VERSION,
     AgentEvent,
     EventKind,
     event_digest,
 )
+
+from .conftest import make_event as _make_event
 
 DEVICE = "dev_test"
 
@@ -40,22 +39,15 @@ def make_event(
     tool_use_id: str | None = None,
     tool_name: str | None = "Bash",
 ) -> AgentEvent:
-    payload = {"command": "ls -la"} if payload is None else payload
-    return AgentEvent(
-        schema_version=EVENT_SCHEMA_VERSION,
-        event_id="evt_" + uuid.uuid4().hex,
-        device_id=DEVICE,
-        session_id=session_id,
-        seq=0,  # placeholder; the ledger assigns the real seq
-        kind=kind.value,
-        ts_device="2026-08-10T12:00:00.000000Z",
-        ts_monotonic_ns=time.monotonic_ns(),
-        tool_use_id=tool_use_id or ("toolu_" + uuid.uuid4().hex[:8]),
-        tool_name=tool_name,
+    """This file's events are all for the single fixed device ``DEVICE`` —
+    everything else is the shared shape in ``conftest.make_event``."""
+    return _make_event(
+        DEVICE,
+        session_id,
+        kind,
         payload=payload,
-        payload_hash=sha256_hex(canonicalize(payload)),
-        model="claude-opus-4-20250514",
-        provider="anthropic",
+        tool_use_id=tool_use_id,
+        tool_name=tool_name,
     )
 
 
@@ -449,6 +441,108 @@ def test_checkpoints_roundtrip(ledger_path):
         led.append_checkpoint(cp2)
         assert led.latest_checkpoint() == cp2
         assert [c["seq_end"] for c in led.iter_checkpoints()] == [3, 5]
+    finally:
+        led.close()
+
+
+def test_checkpoint_sync_watermark_roundtrip(ledger_path):
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        assert led.get_synced_checkpoint_up_to() == 0
+        assert led.read_unsynced_checkpoints() == []
+
+        for _ in range(3):
+            led.append(make_event())
+        cp1 = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 3,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp1)
+
+        for _ in range(2):
+            led.append(make_event())
+        cp2 = dict(cp1, seq_start=4, seq_end=5, chain_head=led.head, sig="ed25519:BBBB")
+        led.append_checkpoint(cp2)
+
+        assert led.read_unsynced_checkpoints() == [cp1, cp2]
+        assert led.read_unsynced_checkpoints(limit=1) == [cp1]
+
+        led.set_synced_checkpoint_up_to(3)
+        assert led.get_synced_checkpoint_up_to() == 3
+        assert led.read_unsynced_checkpoints() == [cp2]
+
+        led.set_synced_checkpoint_up_to(5)
+        assert led.read_unsynced_checkpoints() == []
+    finally:
+        led.close()
+
+
+def test_checkpoint_sync_watermark_refuses_to_move_backwards(ledger_path):
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        led.append(make_event())
+        cp = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 1,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp)
+        led.set_synced_checkpoint_up_to(1)
+        with pytest.raises(ValueError):
+            led.set_synced_checkpoint_up_to(0)
+    finally:
+        led.close()
+
+
+def test_checkpoint_sync_watermark_refuses_to_move_past_latest_checkpoint(ledger_path):
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        led.append(make_event())
+        cp = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 1,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp)
+        with pytest.raises(ValueError):
+            led.set_synced_checkpoint_up_to(2)
+    finally:
+        led.close()
+
+
+def test_checkpoint_sync_watermark_independent_of_entry_watermark(ledger_path):
+    # Shipping checkpoints and shipping entries are two different batches
+    # against two different endpoints; confirming one must never move the
+    # other's watermark.
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        led.append(make_event())
+        led.append(make_event())
+        cp = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 2,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp)
+
+        led.set_synced_up_to(2)
+        assert led.get_synced_checkpoint_up_to() == 0
+
+        led.set_synced_checkpoint_up_to(2)
+        assert led.get_synced_up_to() == 2
     finally:
         led.close()
 

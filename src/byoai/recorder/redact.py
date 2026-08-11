@@ -34,7 +34,6 @@ class PayloadMode(str, Enum):
 
 # ------------------------------------------------------------- detection
 
-_SECRET_KEY_NAME_RE = re.compile(r"token|key|secret|password|credential", re.IGNORECASE)
 _HIGH_ENTROPY_RE = re.compile(r"^[A-Za-z0-9_-]{32,}$")
 _SK_PREFIX_RE = re.compile(r"^sk-[A-Za-z0-9_-]+$")
 _BEARER_RE = re.compile(r"^Bearer\s+\S+$", re.IGNORECASE)
@@ -64,7 +63,7 @@ def _detect_credit_card(value: str) -> bool:
     return False
 
 
-def _detect_kind(key: str | None, value: str) -> str | None:
+def _detect_kind(value: str) -> str | None:
     """Return the redaction ``kind`` label if ``value`` matches a known secret/PII pattern."""
     if _SK_PREFIX_RE.match(value):
         return "api_key"
@@ -78,11 +77,9 @@ def _detect_kind(key: str | None, value: str) -> str | None:
         return "ssn"
     if _detect_credit_card(value):
         return "credit_card"
-    if _HIGH_ENTROPY_RE.match(value) and key is not None and _SECRET_KEY_NAME_RE.search(key):
-        return "api_key"
     if _HIGH_ENTROPY_RE.match(value):
-        # High-entropy strings are treated as opaque secrets even without a
-        # suggestive key name — over-redacting is the safe failure mode.
+        # High-entropy strings are treated as opaque secrets regardless of
+        # key name — over-redacting is the safe failure mode.
         return "api_key"
     return None
 
@@ -92,8 +89,8 @@ def _salted_digest(session_salt: str, value: Any) -> str:
     return f"[REDACTED:hash:{digest[:16]}]"
 
 
-def _redact_string(key: str | None, value: str, *, session_salt: str) -> str:
-    kind = _detect_kind(key, value)
+def _redact_string(value: str, *, session_salt: str) -> str:
+    kind = _detect_kind(value)
     if kind is not None:
         return f"[REDACTED:{kind}]"
     # Nothing here is an obviously safe structural token — hash it too
@@ -101,13 +98,13 @@ def _redact_string(key: str | None, value: str, *, session_salt: str) -> str:
     return _salted_digest(session_salt, value)
 
 
-def _redact_value(key: str | None, value: Any, *, session_salt: str) -> Any:
+def _redact_value(value: Any, *, session_salt: str) -> Any:
     if isinstance(value, dict):
-        return {k: _redact_value(k, v, session_salt=session_salt) for k, v in value.items()}
+        return {k: _redact_value(v, session_salt=session_salt) for k, v in value.items()}
     if isinstance(value, list):
-        return [_redact_value(key, v, session_salt=session_salt) for v in value]
+        return [_redact_value(v, session_salt=session_salt) for v in value]
     if isinstance(value, str):
-        return _redact_string(key, value, session_salt=session_salt)
+        return _redact_string(value, session_salt=session_salt)
     if isinstance(value, bool):
         return _salted_digest(session_salt, value)
     if isinstance(value, (int, float)):
@@ -137,5 +134,5 @@ def apply_payload_mode(
     if mode is PayloadMode.HASH_ONLY:
         return {}
     if mode is PayloadMode.REDACTED:
-        return {k: _redact_value(k, v, session_salt=session_salt) for k, v in payload.items()}
+        return {k: _redact_value(v, session_salt=session_salt) for k, v in payload.items()}
     raise ValueError(f"unknown payload mode: {mode!r}")

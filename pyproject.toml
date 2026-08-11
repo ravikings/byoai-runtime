@@ -45,7 +45,7 @@ pgvector = ["asyncpg>=0.29"]
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp>=1.20"]
 bedrock = ["anthropic[bedrock]>=0.40"]
 vertex = ["anthropic[vertex]>=0.40"]
-recorder = ["cryptography>=42"]
+recorder = ["cryptography>=42", "rfc3161ng>=2.1"]
 all = ["byoai-runtime[fastapi,robyn,mcp,flask,perf,semantic,redis,pgvector,otel,bedrock,vertex,agent-context-cache,recorder]"]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 dev = [
@@ -56,6 +56,7 @@ dev = [
     "pyright>=1.1",
     "build>=1.2",
     "cryptography>=42",
+    "rfc3161ng>=2.1",
 ]
 
 [project.scripts]

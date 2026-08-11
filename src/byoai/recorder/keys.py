@@ -141,8 +141,15 @@ def load_or_create_device_key(dir: Path | str) -> DeviceKey:  # noqa: A002 - con
 
     device_key = DeviceKey(private_key)
     # Convenience only: the verifier can be pointed at this instead of being
-    # handed the key out of band. Losing it costs nothing.
-    (directory / PUBLIC_KEY_FILENAME).write_text(device_key.public_key_b64 + "\n")
+    # handed the key out of band. Losing it costs nothing. Written the same
+    # atomic way as the private key (and as rotation.py's own key writes) so
+    # a crash mid-write can't leave a truncated public key file behind.
+    atomic_write_bytes(
+        directory / PUBLIC_KEY_FILENAME,
+        (device_key.public_key_b64 + "\n").encode("ascii"),
+        mode=0o644,
+        prefix=".devpub-",
+    )
     return device_key
 
 
