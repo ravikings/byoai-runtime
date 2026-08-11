@@ -598,6 +598,26 @@ the meantime.
 Without enrollment, the recorder stays local-only: it writes the ledger and
 makes no network calls.
 
+#### Rotating or revoking a device key
+
+Rotate a device's key without losing verifiable continuity of the ledger:
+
+```bash
+byoai-recorder-rotate-key --key-dir ~/.byoai/recorder \
+    --ledger ~/.byoai/recorder/ledger.db --reason rotation
+```
+
+The current key cross-signs the new public key, the handoff is sealed into
+the ledger as a `KEY_ROTATED` event (the last thing the retiring key signs),
+and only then does the on-disk key get replaced. `--reason` accepts
+`rotation` (default), `revocation`, or `compromise` — same mechanism either
+way, the value just records why for anyone reading the ledger later.
+`coriqo-verify` follows a rotation across the key boundary instead of
+reporting the device_id change as tampering, and still catches a forged
+cross-signature — pass `--device-pubkey old_device_id=base64key` (repeatable)
+so it has the retiring device's public key to check the cross-signature
+against; without it, a rotation is reported as unchecked rather than failed.
+
 ---
 
 ## Plugins

@@ -64,6 +64,7 @@ byoai-cache = "byoai.agent_context_cache.main:cli"
 byoai-agent-context-cache = "byoai.agent_context_cache.main:cli"
 coriqo-verify = "byoai.recorder.cli:main"
 byoai-recorder-enroll = "byoai.recorder.enroll:enroll_cli"
+byoai-recorder-rotate-key = "byoai.recorder.rotation:rotate_cli"
 
 [project.urls]
 Homepage = "https://github.com/ravikings/byoai-runtime"

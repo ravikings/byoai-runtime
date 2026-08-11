@@ -493,6 +493,49 @@ def test_cli_reports_unreadable_ledger(tmp_path, capsys):
     assert "coriqo-verify:" in capsys.readouterr().err
 
 
+def test_cli_device_pubkey_checks_rotation_cross_signature(tmp_path, capsys):
+    from byoai.recorder.keys import load_or_create_device_key
+    from byoai.recorder.ledger import Ledger
+    from byoai.recorder.rotation import rotate_key
+
+    key_dir = tmp_path / "keys"
+    old_key = load_or_create_device_key(key_dir)
+    ledger_path = tmp_path / "ledger.db"
+    ledger = Ledger(ledger_path, device_id=old_key.device_id)
+    rotate_key(key_dir, ledger)
+    ledger.close()
+
+    assert (
+        main([str(ledger_path), "--device-pubkey", f"{old_key.device_id}={old_key.public_key_b64}"])
+        == 0
+    )
+    assert "cross-signature does NOT verify" not in capsys.readouterr().out
+
+    assert (
+        main(
+            [
+                str(ledger_path),
+                "--device-pubkey",
+                f"{old_key.device_id}={old_key.public_key_b64}",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    checked = json.loads(capsys.readouterr().out)
+    assert checked["key_rotations"][0]["cross_signature_verified"] is True
+
+    assert main([str(ledger_path), "--json"]) == 0
+    unchecked = json.loads(capsys.readouterr().out)
+    assert unchecked["key_rotations"][0]["cross_signature_verified"] is None
+    assert any("NOT checked" in note for note in unchecked["notes"])
+
+
+def test_cli_device_pubkey_rejects_malformed_argument(tmp_path):
+    with pytest.raises(SystemExit):
+        main([str(tmp_path / "x.db"), "--device-pubkey", "not-a-kv-pair"])
+
+
 def test_verifier_makes_no_network_calls(tmp_path, keypair, monkeypatch):
     import socket
 

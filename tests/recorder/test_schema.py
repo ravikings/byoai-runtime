@@ -57,6 +57,7 @@ class TestEventKind:
             "api_error",
             "record_failure",
             "session_start",
+            "key_rotated",
             "stream_aborted",
             "parse_failure",
         }

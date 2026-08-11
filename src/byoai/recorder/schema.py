@@ -42,6 +42,7 @@ class EventKind(str, Enum):
     SESSION_START = "session_start"
     STREAM_ABORTED = "stream_aborted"
     PARSE_FAILURE = "parse_failure"
+    KEY_ROTATED = "key_rotated"
 
 
 @dataclass(frozen=True, slots=True)

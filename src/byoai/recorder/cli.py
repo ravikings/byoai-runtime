@@ -132,6 +132,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="base64 Ed25519 device public key used to check checkpoint signatures",
     )
     parser.add_argument(
+        "--device-pubkey",
+        dest="device_pubkeys",
+        action="append",
+        default=[],
+        metavar="DEVICE_ID=B64",
+        help=(
+            "base64 Ed25519 public key for a specific device_id, used to check "
+            "KEY_ROTATED cross-signatures for that device (repeatable). Without "
+            "an entry for a rotation's old device_id, that rotation is reported "
+            "as unchecked rather than verified or failed"
+        ),
+    )
+    parser.add_argument(
         "--json",
         dest="as_json",
         action="store_true",
@@ -140,10 +153,25 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_device_pubkeys(raw: list[str]) -> dict[str, str]:
+    device_public_keys: dict[str, str] = {}
+    for item in raw:
+        device_id, sep, pubkey = item.partition("=")
+        if not sep:
+            raise SystemExit(
+                f"coriqo-verify: --device-pubkey must be DEVICE_ID=B64KEY, got {item!r}"
+            )
+        device_public_keys[device_id] = pubkey
+    return device_public_keys
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    device_public_keys = _parse_device_pubkeys(args.device_pubkeys)
     try:
-        report = verify_ledger(args.ledger, public_key_b64=args.pubkey)
+        report = verify_ledger(
+            args.ledger, public_key_b64=args.pubkey, device_public_keys=device_public_keys
+        )
     except VerifyError as exc:
         print(f"coriqo-verify: {exc}", file=sys.stderr)
         return _EXIT_UNREADABLE

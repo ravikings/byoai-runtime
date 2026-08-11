@@ -50,6 +50,15 @@ class VerifyReport:
     checkpoints_checked: int = 0
     signatures_verified: bool = False
     notes: list[str] = field(default_factory=list)
+    # One dict per KEY_ROTATED event found: old/new device_id, reason,
+    # whether the cross-signature verified (None if no pubkey was supplied
+    # for the old device, same "not checked" convention as checkpoints).
+    key_rotations: list[dict[str, Any]] = field(default_factory=list)
+    # seqs where an entry is attributed to a device whose key was already
+    # rotated out as of that entry's effective_epoch — a genuine finding,
+    # distinct from the device_id simply differing across a legitimate
+    # rotation boundary.
+    stale_key_usage: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -119,21 +128,69 @@ def _event_digest(event: dict[str, Any]) -> str:
     return sha256_hex(canonicalize(event))
 
 
+def _check_rotation(
+    payload: dict[str, Any], device_public_keys: dict[str, str]
+) -> dict[str, Any]:
+    """Verify a KEY_ROTATED event's cross-signature, if a pubkey is available."""
+    old_id = payload.get("old_device_id")
+    new_id = payload.get("new_device_id")
+    new_public_key = payload.get("new_public_key")
+    cross_signature = payload.get("cross_signature")
+
+    verified: bool | None = None
+    old_pubkey = device_public_keys.get(str(old_id)) if old_id else None
+    if old_pubkey is not None:
+        signed_fields = {
+            "old_device_id": old_id,
+            "new_device_id": new_id,
+            "new_public_key": new_public_key,
+        }
+        verified = bool(
+            isinstance(cross_signature, str)
+            and _verify_signature(old_pubkey, canonicalize(signed_fields), cross_signature)
+        )
+
+    return {
+        "old_device_id": old_id,
+        "new_device_id": new_id,
+        "reason": payload.get("reason"),
+        "effective_epoch": payload.get("effective_epoch"),
+        "cross_signature_verified": verified,
+    }
+
+
 # --------------------------------------------------------------------------
 # verification
 # --------------------------------------------------------------------------
 
 
-def verify_ledger(path: str | Path, *, public_key_b64: str | None = None) -> VerifyReport:
-    """Re-derive and check every hash, signature and sequence in the ledger."""
+def verify_ledger(
+    path: str | Path,
+    *,
+    public_key_b64: str | None = None,
+    device_public_keys: dict[str, str] | None = None,
+) -> VerifyReport:
+    """Re-derive and check every hash, signature and sequence in the ledger.
+
+    ``public_key_b64`` checks checkpoint signatures, as before.
+    ``device_public_keys`` (device_id -> base64 Ed25519 public key) is used
+    to verify ``KEY_ROTATED`` cross-signatures against the *old* device's
+    key; a rotation whose old device_id has no entry there is noted as
+    unchecked rather than failed, matching the existing checkpoint
+    convention.
+    """
     conn = _connect(path)
     try:
-        return _verify(conn, public_key_b64)
+        return _verify(conn, public_key_b64, device_public_keys or {})
     finally:
         conn.close()
 
 
-def _verify(conn: sqlite3.Connection, public_key_b64: str | None) -> VerifyReport:
+def _verify(
+    conn: sqlite3.Connection,
+    public_key_b64: str | None,
+    device_public_keys: dict[str, str],
+) -> VerifyReport:
     all_columns = _columns(conn, "agent_events")
     if not all_columns:
         raise VerifyError("ledger has no agent_events table")
@@ -154,6 +211,12 @@ def _verify(conn: sqlite3.Connection, public_key_b64: str | None) -> VerifyRepor
     prev_stored_hash = GENESIS_PREV_HASH
     derived: dict[int, str] = {}
     ts_values: list[str] = []
+
+    key_rotations: list[dict[str, Any]] = []
+    stale_key_usage: list[int] = []
+    # device_id of a retired key -> effective_epoch (RFC3339 str) after which
+    # that device_id is no longer a valid signer.
+    retired_devices: dict[str, str] = {}
 
     for row in rows:
         seq = int(row["seq"])
@@ -200,6 +263,21 @@ def _verify(conn: sqlite3.Connection, public_key_b64: str | None) -> VerifyRepor
             elif kind == EventKind.TOOL_RESULT.value and tuid not in tool_results:
                 tool_results[str(tuid)] = seq
 
+        # A device_id change immediately after a KEY_ROTATED event is the
+        # *point* of cross-signing continuity, not tampering — so this check
+        # only flags entries still attributed to a device whose key was
+        # already retired as of its own effective_epoch.
+        if dev and dev in retired_devices and ts and str(ts) >= retired_devices[dev]:
+            stale_key_usage.append(seq)
+
+        if kind == EventKind.KEY_ROTATED.value:
+            rotation = _check_rotation(event.get("payload") or {}, device_public_keys)
+            key_rotations.append(rotation)
+            old_id = rotation.get("old_device_id")
+            epoch = rotation.get("effective_epoch")
+            if old_id and epoch:
+                retired_devices[str(old_id)] = str(epoch)
+
     unpaired_tool_uses = sorted(t for t in tool_uses if t not in tool_results)
     orphan_tool_results = sorted(
         t
@@ -212,7 +290,29 @@ def _verify(conn: sqlite3.Connection, public_key_b64: str | None) -> VerifyRepor
     )
     notes.extend(cp_notes)
 
-    ok = not (broken_links or bad_signatures or gaps or orphan_tool_results)
+    for rotation in key_rotations:
+        old_id = rotation.get("old_device_id")
+        seq_note = f"key rotation {old_id} -> {rotation.get('new_device_id')}"
+        if rotation["cross_signature_verified"] is None:
+            notes.append(
+                f"{seq_note}: cross-signature NOT checked — rerun with the old "
+                "device's public key to verify continuity"
+            )
+        elif not rotation["cross_signature_verified"]:
+            notes.append(f"{seq_note}: cross-signature does NOT verify")
+
+    forged_rotations = [
+        r for r in key_rotations if r["cross_signature_verified"] is False
+    ]
+
+    ok = not (
+        broken_links
+        or bad_signatures
+        or gaps
+        or orphan_tool_results
+        or stale_key_usage
+        or forged_rotations
+    )
 
     return VerifyReport(
         ok=ok,
@@ -231,6 +331,8 @@ def _verify(conn: sqlite3.Connection, public_key_b64: str | None) -> VerifyRepor
         checkpoints_checked=checkpoints_checked,
         signatures_verified=bool(public_key_b64) and checkpoints_checked > 0,
         notes=notes,
+        key_rotations=key_rotations,
+        stale_key_usage=stale_key_usage,
     )
 
 
