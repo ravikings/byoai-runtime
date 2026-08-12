@@ -194,6 +194,37 @@ def test_verify_bundle_rejects_checkpoint_whose_epoch_is_missing(tmp_path):
     assert report.bad_inclusions
 
 
+def test_verify_bundle_reports_malformed_epoch_instead_of_crashing(tmp_path):
+    mock = MockCoriqo()
+    ledger, key, device_id = enroll_device(tmp_path, mock)
+    try:
+        emit_checkpoint(ledger, key, n_events=1)
+        shipper = Shipper(
+            ledger, key, coriqo_base_url=CORIQO_BASE_URL, http_client=_client(mock)
+        )
+        try:
+            shipper.ship_checkpoints_once()
+        finally:
+            shipper.close()
+
+        epoch = mock.build_epoch()
+        assert epoch is not None
+
+        bundle = _build_bundle(ledger, key.public_key_b64, mock, epoch)
+    finally:
+        ledger.close()
+
+    # A hand-tampered or partially-written bundle where the epoch entry is
+    # missing its root — verify_bundle must report this as a finding, not
+    # raise an uncaught exception, since it exists to validate untrusted
+    # input.
+    del bundle["epochs"][0]["root"]
+
+    report = verify_bundle(bundle)
+    assert not report.ok
+    assert any("malformed epoch entry" in n for n in report.notes)
+
+
 def test_verify_bundle_accepts_a_valid_tenant_epoch_signature(tmp_path):
     tenant_key = DeviceKey(Ed25519PrivateKey.generate())
 

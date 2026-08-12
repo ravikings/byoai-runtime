@@ -386,6 +386,11 @@ def test_non_strict_mode_records_a_record_failure_marker(ledger_path):
 
         marker = entries[1].event
         assert marker.device_id == DEVICE
+        # Device-level bookkeeping, not attributed to whichever dropped
+        # event's session happened to be last, and not the anthropic
+        # provider — matches rotation.py's KEY_ROTATED convention.
+        assert marker.session_id == "_record_failure"
+        assert marker.provider == "recorder"
         assert marker.payload["reason"] == "ledger_write_failed"
         assert marker.payload["dropped_count"] == 1
         assert marker.payload["dropped"][0]["event_id"] == dropped.event_id

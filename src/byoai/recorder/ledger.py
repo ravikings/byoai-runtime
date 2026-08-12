@@ -60,6 +60,11 @@ log = logging.getLogger(__name__)
 # were deleted" (the latter leaves seq 1's prev_hash != genesis or a gap).
 GENESIS_PREV_HASH = "sha256:" + "00" * 32
 
+# record_failure markers are device-level bookkeeping, not tied to any one
+# agent session (the dropped events may span several) — same pattern as
+# rotation.py's ROTATION_SESSION_ID sentinel for KEY_ROTATED events.
+_RECORD_FAILURE_SESSION_ID = "_record_failure"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_events (
     seq             INTEGER PRIMARY KEY,
@@ -357,7 +362,14 @@ class Ledger:
             schema_version=EVENT_SCHEMA_VERSION,
             event_id=new_event_id(),
             device_id=self.device_id,
-            session_id=failures[-1].get("session_id") or "unknown",
+            # The dropped events span whatever sessions were mid-write when
+            # the failure occurred, not necessarily just the last one — the
+            # full per-event session_id is preserved in payload["dropped"],
+            # so this marker uses a device-level sentinel rather than
+            # misattributing every dropped session's failure to only the
+            # last one (a session_id-scoped query for an earlier session
+            # would otherwise never find that its writes were dropped).
+            session_id=_RECORD_FAILURE_SESSION_ID,
             seq=0,
             kind=_kind_value(EventKind.RECORD_FAILURE),
             ts_device=now_ts_device(),
@@ -367,7 +379,9 @@ class Ledger:
             payload=payload,
             payload_hash=sha256_hex(canonicalize(payload)),
             model=None,
-            provider="anthropic",
+            # Recorder-internal bookkeeping, not a real provider call —
+            # matches the "recorder" provider convention KEY_ROTATED uses.
+            provider="recorder",
             # A record_failure marker isn't part of any agent's own logical
             # run; give it its own root trace/span rather than borrowing one
             # from a dropped event we may not have full context for.

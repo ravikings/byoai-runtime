@@ -668,14 +668,17 @@ def verify_bundle(
         checkpoints, walk.derived, public_key_b64
     )
 
-    epoch_roots = {
-        epoch["epoch_index"]: bytes.fromhex(epoch["root"])
-        for epoch in bundle.get("epochs", [])
-    }
+    epoch_roots: dict[int, bytes] = {}
+    epoch_notes: list[str] = []
+    for epoch in bundle.get("epochs", []):
+        try:
+            epoch_roots[epoch["epoch_index"]] = bytes.fromhex(epoch["root"])
+        except (KeyError, TypeError, ValueError) as exc:
+            epoch_notes.append(f"malformed epoch entry skipped: {exc}")
 
     bad_inclusions: list[int] = []
     inclusions_checked = 0
-    notes = [*walk.notes, *cp_notes]
+    notes = [*walk.notes, *cp_notes, *epoch_notes]
 
     for bc in bundle_checkpoints:
         proof_json = bc.get("inclusion_proof")
