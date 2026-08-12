@@ -67,7 +67,21 @@ under a second (`uvicorn ... ` to first successful request).
 
 All data is synthetic — no real customers, patients, or institutions.
 
-## Setup
+## Quick start
+
+```bash
+./start.sh
+```
+
+Installs `byoai-runtime` editable (`fastapi` + `recorder` extras) from the
+repo root and launches uvicorn with the recorder on by default
+(`BYOAI_RECORDER_ENABLED=1`), so every run is sealed to the ledger. Check
+with `curl -s localhost:8000/api/runs/<run_id>/verify | python -m json.tool`.
+Set `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` first for live model calls; without
+them agents fall back to cached transcripts. See `start.sh` for the rest of
+the env vars it reads.
+
+## Setup (manual)
 
 ```bash
 pip install 'byoai-runtime[fastapi,recorder]' uvicorn
