@@ -87,6 +87,9 @@ function renderAgentCard(agent) {
   const meta = document.createElement("div");
   meta.className = "meta";
   meta.appendChild(makeTag(agent.provider + " / " + agent.model));
+  const modeTag = makeTag(agent.live ? "live" : "replay");
+  modeTag.classList.add(agent.live ? "live" : "replay");
+  meta.appendChild(modeTag);
   if (agent.sub_agents.length > 0) {
     const suffix = agent.sub_agents.length === 1 ? "sub-agent" : "sub-agents";
     meta.appendChild(makeTag(`${agent.sub_agents.length} ${suffix}`));
@@ -315,6 +318,11 @@ function renderRunSummary(summary) {
 
   const runComplete = summary.events.find((e) => e.kind === "run_complete");
   document.getElementById("outcome-text").textContent = runComplete?.text ?? "(no final text)";
+
+  const mode = runComplete?.data?.mode;
+  const modeEl = document.getElementById("outcome-mode");
+  modeEl.className = "tag" + (mode ? " " + mode : "");
+  modeEl.textContent = mode ?? "";
 
   if (summary.flagged) {
     const panel = document.getElementById("violations-panel");

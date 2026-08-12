@@ -126,6 +126,8 @@ h3 {
   color: var(--ink-soft);
 }
 .tag.misfire { background: #fbeeeb; color: var(--off-scope); }
+.tag.live { background: #eaf7ee; color: #1f7a3f; }
+.tag.replay { background: #fdf3e3; color: #9a6a10; }
 
 #run-empty { color: var(--ice-dim); padding: 2rem 0; font-family: 'Newsreader', Georgia, serif; font-style: italic; }
 

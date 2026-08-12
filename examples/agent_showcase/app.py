@@ -2,10 +2,17 @@
 
 Run:
 
-    export ANTHROPIC_API_KEY=sk-ant-...
+    export ANTHROPIC_API_KEY=sk-ant-...       # powers the banking (B1-B4) agents live
+    export OPENAI_API_KEY=sk-...              # powers the healthcare (H1-H4) agents live
     export BYOAI_RECORDER_ENABLED=1
     export DEMO_TAMPER=1                      # optional: enables /api/demo/tamper
+    export BYOAI_DEMO_AUTOPILOT=1             # optional: pings a random agent every 1.5-4min
     uvicorn examples.agent_showcase.app:app --reload
+
+Either API key is optional independently: an agent whose provider has no key
+set transparently replays its cached fallback transcript instead of calling
+out live (see runner.py's fallback path) — /api/agents reports each agent's
+current live/replay availability under "live".
 
 See internal_doc/demo_agent_showcase_spec.md for the full spec and
 examples/agent_showcase/README.md for setup/status.
@@ -15,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import random
 import sqlite3
 import uuid
 from dataclasses import asdict
@@ -42,12 +51,56 @@ app.mount("/ui/static", StaticFiles(directory=UI_DIR), name="ui-static")
 def index() -> FileResponse:
     return FileResponse(UI_DIR / "index.html")
 
-# run_id -> {"agent_id", "trace_id", "events": [RunEvent, ...], "done": bool}
+log = logging.getLogger("agent_showcase.app")
+
+# run_id -> {"agent_id", "trace_id", "events": [RunEvent, ...], "done": bool, "source"}
 _RUNS: dict[str, dict[str, Any]] = {}
+
+# Keeps fire-and-forget run/autopilot tasks referenced so the event loop
+# can't garbage-collect them mid-run; entries are dropped once done.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+# Autopilot: pings a random agent every AUTOPILOT_MIN_SECONDS-AUTOPILOT_MAX_SECONDS
+# to mimic real bank/healthcare traffic for a live demo. Opt-in via
+# BYOAI_DEMO_AUTOPILOT=1 so importing this module (tests, one-off runs) never
+# silently starts spending API credits.
+AUTOPILOT_MIN_SECONDS = 90
+AUTOPILOT_MAX_SECONDS = 240
 
 
 def _event_to_dict(event: RunEvent) -> dict[str, Any]:
     return asdict(event)
+
+
+async def _autopilot_loop() -> None:
+    agents = list_agents()
+    if not agents:
+        return
+    while True:
+        await asyncio.sleep(random.uniform(AUTOPILOT_MIN_SECONDS, AUTOPILOT_MAX_SECONDS))
+        agent = random.choice(agents)
+        try:
+            run_id = _start_run(agent.id, source="autopilot")
+            log.info("autopilot: started %s run_id=%s", agent.id, run_id)
+        except Exception:  # noqa: BLE001 - autopilot must never take the app down
+            log.exception("autopilot: failed to start a run for %s", agent.id)
+
+
+@app.on_event("startup")
+async def _start_autopilot() -> None:
+    if os.environ.get("BYOAI_DEMO_AUTOPILOT") != "1":
+        return
+    task = asyncio.create_task(_autopilot_loop())
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+_PROVIDER_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def _provider_live(provider: str) -> bool:
+    env_var = _PROVIDER_KEY_ENV.get(provider)
+    return bool(env_var and os.environ.get(env_var))
 
 
 @app.get("/api/agents")
@@ -62,20 +115,45 @@ def api_list_agents() -> list[dict[str, Any]]:
             "provider": a.provider,
             "model": a.model,
             "sub_agents": a.sub_agents,
+            "live": _provider_live(a.provider),
         }
         for a in list_agents()
     ]
 
 
-@app.post("/api/agents/{agent_id}/run")
-async def api_run_agent(agent_id: str) -> dict[str, str]:
+# Caps in-memory _RUNS growth for long-lived processes (e.g. autopilot running
+# for days) — evicting the oldest *completed* run's in-memory state doesn't
+# lose anything: every sealed event is still in the ledger, just no longer
+# reachable via the non-authoritative /api/runs/{run_id} in-memory endpoints
+# (use /api/runs/{run_id}/replay, which reads the ledger directly, instead).
+_MAX_RETAINED_RUNS = 200
+
+
+def _evict_old_runs() -> None:
+    if len(_RUNS) <= _MAX_RETAINED_RUNS:
+        return
+    for run_id in list(_RUNS):
+        if len(_RUNS) <= _MAX_RETAINED_RUNS:
+            break
+        if _RUNS[run_id]["done"]:
+            del _RUNS[run_id]
+
+
+def _start_run(agent_id: str, *, source: str = "manual") -> str:
     agent = get_agent(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"unknown agent: {agent_id}")
 
+    _evict_old_runs()
     run_id = "run_" + uuid.uuid4().hex[:12]
     runner = AgentRunner(agent, run_id=run_id)
-    state: dict[str, Any] = {"agent_id": agent_id, "trace_id": "", "events": [], "done": False}
+    state: dict[str, Any] = {
+        "agent_id": agent_id,
+        "trace_id": "",
+        "events": [],
+        "done": False,
+        "source": source,
+    }
     _RUNS[run_id] = state
 
     async def drive() -> None:
@@ -87,7 +165,15 @@ async def api_run_agent(agent_id: str) -> dict[str, str]:
         finally:
             state["done"] = True
 
-    asyncio.create_task(drive())
+    task = asyncio.create_task(drive())
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return run_id
+
+
+@app.post("/api/agents/{agent_id}/run")
+async def api_run_agent(agent_id: str) -> dict[str, str]:
+    run_id = _start_run(agent_id, source="manual")
     return {"run_id": run_id, "status": "started"}
 
 

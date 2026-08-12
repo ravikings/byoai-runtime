@@ -19,13 +19,12 @@ respectively); the recorder attributes each sub-agent's events to a distinct
 span sharing the parent run's `trace_id`, with `parent_span_id` set to the
 parent's `span_id`.
 
-Known gap: H1-H4 are labeled `provider="openai"`, but the live model-call
-path currently only speaks Anthropic wire format (the recorder's extractor
-understands Anthropic-shaped request/response bodies only) — live calls for
-these agents still route through the Anthropic provider today. This only
-affects live runs with a working API key; the fallback-transcript path (used
-by all current tests) is unaffected. OpenAI-compat live wire format is a
-follow-up, not yet built.
+H1-H4 (`provider="openai"`) make real OpenAI chat-completions calls via
+`OpenAICompatProvider` when `OPENAI_API_KEY` is set. The recorder's extractor
+only understands Anthropic-shaped request/response bodies, so the OpenAI live
+path normalizes each turn into that shape (text/tool_use content blocks)
+before sealing it — the actual wire call is genuine OpenAI; only what's fed
+to the recorder is re-shaped so one extractor covers both providers.
 
 **M3 — UI.** A static single-page UI (`ui/`, served at `/`) lists the agent
 gallery, runs an agent, streams its timeline live over SSE, renders the span
@@ -72,10 +71,14 @@ All data is synthetic — no real customers, patients, or institutions.
 
 ```bash
 pip install 'byoai-runtime[fastapi,recorder]' uvicorn
-export ANTHROPIC_API_KEY=sk-ant-...        # optional — falls back to a cached
-                                            # transcript if unset/unavailable
+export ANTHROPIC_API_KEY=sk-ant-...        # optional — powers B1-B4 live;
+                                            # falls back to a cached transcript
+                                            # if unset/unavailable
+export OPENAI_API_KEY=sk-...               # optional — same, for H1-H4
 export BYOAI_RECORDER_ENABLED=1
 export BYOAI_RECORDER_DIR=~/.byoai/demo    # optional, defaults to ~/.byoai/recorder
+export BYOAI_DEMO_AUTOPILOT=1              # optional — pings a random agent
+                                            # every 1.5-4min to keep the demo alive
 ```
 
 ## Run
@@ -102,9 +105,14 @@ curl -s localhost:8000/api/runs/$run_id/verify | python -m json.tool
 
 | Var | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Live model calls for the Anthropic-backed agents. If unset or the call fails, the agent replays its recorded fallback transcript (`fallbacks/`) instead — the run still completes and the recorder still seals real events. |
+| `ANTHROPIC_API_KEY` | Live model calls for B1-B4. If unset or the call fails, the agent replays its recorded fallback transcript (`fallbacks/`) instead — the run still completes and the recorder still seals real events. |
+| `OPENAI_API_KEY` | Live model calls for H1-H4, same fallback behavior as above. |
 | `BYOAI_RECORDER_ENABLED` | `1` to capture/seal every run to the local ledger. Without it, agents still run but nothing is sealed and `/verify` reports the recorder as disabled. |
 | `BYOAI_RECORDER_DIR` | Ledger/device-key directory. Defaults to `~/.byoai/recorder`. |
+| `BYOAI_DEMO_AUTOPILOT` | `1` to start a background loop that runs a random agent every 90-240s, mimicking real bank/healthcare traffic. Off by default so importing the app (tests, one-off runs) never spends API credits on its own. |
+| `DEMO_TAMPER` | `1` to enable `/api/demo/tamper/{run_id}`, which flips a byte in a sealed row to demonstrate `/verify` catching it. |
+
+`/api/agents` reports each agent's current `"live"` status — `true` if its provider's API key is set, `false` if it's running off the cached transcript.
 
 ## Tests
 

@@ -13,27 +13,33 @@ parent_span_id=<parent's own span_id>, re-surfaces the sub-run's events
 (correctly attributed), and folds the sub-run's final text into the parent's
 tool result — this is what gives the span tree its branches.
 
-Known gap (tracked for a follow-up milestone): H1-H4 are labeled
-provider="openai"/model="gpt-4o" per the spec's mixed-provider requirement,
-but the live path below only speaks the Anthropic wire format the recorder's
-extractor understands. Until an OpenAI-compat live path + extractor is
-wired up, every agent's *live* calls go through AnthropicProvider regardless
-of its label; the fallback-transcript path (exercised by tests, and by any
-run without a working model API key) is provider-agnostic and unaffected.
+H1-H4 are labeled provider="openai"/model="gpt-4o" and make real
+chat-completions calls via OpenAICompatProvider. The recorder's extractor
+only understands Anthropic wire-format bodies (spec §4/§6), so the OpenAI
+live path normalizes each request/response into that shape (text/tool_use
+content blocks) before handing it to record_request_body/record_response_body
+— the *actual* call on the wire is genuine OpenAI chat-completions; only the
+bytes fed to the recorder are re-shaped so one extractor covers both
+providers. Missing/invalid credentials for either provider raise
+ConfigurationError/ProviderError (both ByoAIError), which the fallback path
+below catches — so a run with no API key transparently replays a cached
+transcript instead of live-calling.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from byoai.errors import ByoAIError
+from byoai.errors import ByoAIError, ConfigurationError
 from byoai.providers.anthropic import AnthropicProvider
+from byoai.providers.openai_compat import OpenAICompatProvider
 from byoai.recorder.integration import get_recorder
 from byoai.recorder.schema import EventKind, new_span_id, new_trace_id
 from byoai.types import Message
@@ -131,7 +137,12 @@ class AgentRunner:
             span_id=self.span_id,
             parent_span_id=self.parent_span_id,
             text=final_text,
-            data={"run_id": run_id, "used_fallback": used_fallback},
+            data={
+                "run_id": run_id,
+                "used_fallback": used_fallback,
+                "mode": "replay" if used_fallback else "live",
+                "provider": self.agent.provider,
+            },
         )
 
     async def _run_sub_agent(
@@ -149,6 +160,14 @@ class AgentRunner:
         yield final_text
 
     async def _run_live(self, session_id: str, recorder: Any) -> AsyncIterator[RunEvent]:
+        if self.agent.provider == "openai":
+            async for event in self._run_live_openai(session_id, recorder):
+                yield event
+        else:
+            async for event in self._run_live_anthropic(session_id, recorder):
+                yield event
+
+    async def _run_live_anthropic(self, session_id: str, recorder: Any) -> AsyncIterator[RunEvent]:
         provider = AnthropicProvider(model=self.agent.model)
         messages: list[Message] = [
             Message(role="system", content=self.agent.system_prompt),
@@ -225,6 +244,165 @@ class AgentRunner:
                         }
                     )
                 messages.append(Message(role="user", content=tool_result_blocks))
+            else:
+                log.warning("agent_showcase: %s hit MAX_TURNS without finishing", self.agent.id)
+        finally:
+            await provider.close()
+
+    @staticmethod
+    def _openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Anthropic tool schema (name/description/input_schema) -> OpenAI
+        function-calling schema (type/function.{name,description,parameters})."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+                },
+            }
+            for t in tools
+        ]
+
+    @staticmethod
+    def _openai_message_to_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+        """Normalizes an OpenAI chat-completions assistant message into
+        Anthropic-shaped content blocks, so the rest of the loop (and the
+        recorder's extractor) can treat both providers identically."""
+        blocks: list[dict[str, Any]] = []
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            blocks.append({"type": "text", "text": content})
+        for call in message.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                args = {}
+            blocks.append(
+                {"type": "tool_use", "id": call.get("id"), "name": fn.get("name"), "input": args}
+            )
+        return blocks
+
+    async def _run_live_openai(self, session_id: str, recorder: Any) -> AsyncIterator[RunEvent]:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            # OpenAICompatProvider (unlike AnthropicProvider) doesn't fail fast on a
+            # missing key — it just sends an unauthenticated request to the real API
+            # and hangs/errors on the network call. Check here so a missing key falls
+            # back to the cached transcript immediately instead of stalling the run.
+            raise ConfigurationError(
+                "OPENAI_API_KEY is not set; set it to run this agent live, or the demo "
+                "falls back to its cached transcript"
+            )
+        provider = OpenAICompatProvider(model=self.agent.model, api_key=api_key)
+        openai_tools = self._openai_tools(self.agent.tools)
+        messages: list[Message] = [
+            Message(role="system", content=self.agent.system_prompt),
+            Message(role="user", content=self.agent.scenario_message),
+        ]
+        # Anthropic-shaped mirror of `messages`, recorded instead of the raw
+        # OpenAI-wire messages above — keeps every recorded request/response
+        # in the one shape the recorder's extractor understands, and avoids
+        # recording the same tool result twice in two different shapes (once
+        # here, once explicitly per tool call below).
+        recorder_history: list[dict[str, Any]] = [
+            {"role": "user", "content": self.agent.scenario_message}
+        ]
+        try:
+            for _turn in range(MAX_TURNS):
+                if recorder is not None:
+                    recorder.record_request_body(
+                        {
+                            "model": self.agent.model,
+                            "messages": recorder_history,
+                            "system": self.agent.system_prompt,
+                            "tools": self.agent.tools,
+                        },
+                        session_id=session_id, trace_id=self.trace_id, span_id=self.span_id,
+                    )
+
+                response = await provider.complete(messages, tools=openai_tools)
+                raw = response.raw if isinstance(response.raw, dict) else {}
+                choices = raw.get("choices") or [{}]
+                choice_message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                blocks = self._openai_message_to_blocks(choice_message)
+
+                if recorder is not None:
+                    recorder.record_response_body(
+                        {
+                            "id": raw.get("id"),
+                            "type": "message",
+                            "role": "assistant",
+                            "model": raw.get("model", self.agent.model),
+                            "content": blocks,
+                            "stop_reason": choices[0].get("finish_reason") if isinstance(choices[0], dict) else None,
+                        },
+                        session_id=session_id, trace_id=self.trace_id, span_id=self.span_id,
+                    )
+
+                tool_calls = [b for b in blocks if b.get("type") == "tool_use"]
+                text_blocks = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+                turn_text = "".join(text_blocks)
+                if turn_text:
+                    yield RunEvent(
+                        kind=EventKind.MESSAGE.value,
+                        trace_id=self.trace_id,
+                        span_id=self.span_id,
+                        parent_span_id=self.parent_span_id,
+                        text=turn_text,
+                    )
+
+                if not tool_calls:
+                    messages.append(Message(role="assistant", content=turn_text))
+                    break
+
+                messages.append(
+                    Message(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[
+                            {
+                                "id": b["id"],
+                                "type": "function",
+                                "function": {"name": b["name"], "arguments": json.dumps(b["input"])},
+                            }
+                            for b in tool_calls
+                        ],
+                    )
+                )
+                recorder_history.append({"role": "assistant", "content": blocks})
+
+                tool_result_blocks: list[dict[str, Any]] = []
+                for call in tool_calls:
+                    name = call.get("name")
+                    args = call.get("input") or {}
+                    call_id = call.get("id")
+                    yield RunEvent(
+                        kind=EventKind.TOOL_USE.value,
+                        trace_id=self.trace_id,
+                        span_id=self.span_id,
+                        parent_span_id=self.parent_span_id,
+                        tool_name=name,
+                        data=self._tool_use_data(name, args),
+                    )
+                    result, nested_events = await self._run_tool_call(name, args, session_id, recorder)
+                    for nested_event in nested_events:
+                        yield nested_event
+                    yield RunEvent(
+                        kind=EventKind.TOOL_RESULT.value,
+                        trace_id=self.trace_id,
+                        span_id=self.span_id,
+                        parent_span_id=self.parent_span_id,
+                        tool_name=name,
+                        data={"result": result},
+                    )
+                    messages.append(Message(role="tool", content=json.dumps(result), tool_call_id=call_id))
+                    tool_result_blocks.append(
+                        {"type": "tool_result", "tool_use_id": call_id, "content": json.dumps(result)}
+                    )
+                recorder_history.append({"role": "user", "content": tool_result_blocks})
             else:
                 log.warning("agent_showcase: %s hit MAX_TURNS without finishing", self.agent.id)
         finally:
