@@ -1,0 +1,34 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "note": "cached run: used automatically if the model API errors",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income/debt figures for loan_9042 from the applicant's statements.",
+      "tool_calls": [{"name": "get_statements", "input": {"loan_id": "loan_9042"}}]
+    },
+    {
+      "assistant_text": "Computing DTI from the extracted figures.",
+      "tool_calls": [
+        {"name": "compute_dti", "input": {"monthly_income_usd": 6100.0, "monthly_debt_payments_usd": 1450.0}}
+      ]
+    },
+    {
+      "assistant_text": "Checking DTI and income against pre-qualification policy.",
+      "tool_calls": [{"name": "policy_check", "input": {"dti": 0.2377, "monthly_income_usd": 6100.0}}]
+    },
+    {
+      "assistant_text": "DTI of 23.8% is well within the 43% policy limit, and monthly income of $6,100 clears the $3,000 minimum. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_9042",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.2377 (23.8%) is well under the 0.43 policy max, and monthly income $6,100.00 clears the $3,000.00 minimum."
+          }
+        }
+      ]
+    }
+  ],
+  "final_text": "Pre-qualified loan_9042: DTI 23.8% (well under 43% policy max), monthly income $6,100 clears the $3,000 minimum."
+}

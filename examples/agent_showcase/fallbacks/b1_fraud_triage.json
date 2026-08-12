@@ -1,0 +1,32 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "note": "cached run: used automatically if the model API errors",
+  "steps": [
+    {
+      "assistant_text": "I'll start by pulling the flagged transaction.",
+      "tool_calls": [{"name": "get_transaction", "input": {"txn_id": "txn_8841"}}]
+    },
+    {
+      "assistant_text": "Now let's check the customer's history and home location.",
+      "tool_calls": [{"name": "get_customer_history", "input": {"customer_id": "cust_2201"}}]
+    },
+    {
+      "assistant_text": "Checking geo/velocity against their prior transaction.",
+      "tool_calls": [{"name": "geo_velocity_check", "input": {"txn_id": "txn_8841"}}]
+    },
+    {
+      "assistant_text": "The transaction is in the customer's home city, no impossible travel, and the amount is above their average but not extreme. This looks like normal activity rather than fraud.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_8841",
+            "decision": "clear",
+            "rationale": "Same city/country as home and prior transaction, no impossible travel (0km, ~13h gap), amount elevated vs average but within plausible range for an electronics purchase."
+          }
+        }
+      ]
+    }
+  ],
+  "final_text": "Cleared txn_8841: consistent location and timing with the customer's recent activity, no geo/velocity anomaly."
+}

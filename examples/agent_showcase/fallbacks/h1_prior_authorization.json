@@ -1,0 +1,32 @@
+{
+  "agent_id": "h1-prior-authorization",
+  "note": "cached run: used automatically if the model API errors",
+  "steps": [
+    {
+      "assistant_text": "Pulling the chart for patient pt_4410.",
+      "tool_calls": [{"name": "get_chart", "input": {"patient_id": "pt_4410"}}]
+    },
+    {
+      "assistant_text": "Looking up payer criteria for CPT 62323.",
+      "tool_calls": [{"name": "payer_criteria", "input": {"cpt": "62323"}}]
+    },
+    {
+      "assistant_text": "Checking whether the chart matches payer criteria.",
+      "tool_calls": [{"name": "match_criteria", "input": {"patient_id": "pt_4410", "cpt": "62323"}}]
+    },
+    {
+      "assistant_text": "Criteria are met: documented radiculopathy consistent with MRI findings (L4-L5 disc herniation with nerve root compression), 8 weeks of conservative treatment (exceeds the 6-week minimum), and imaging from 2026-07-20 confirms the level treated. Submitting the request.",
+      "tool_calls": [
+        {
+          "name": "draft_auth",
+          "input": {
+            "patient_id": "pt_4410",
+            "cpt": "62323",
+            "justification": "Documented lumbar radiculopathy (M54.16) consistent with MRI showing L4-L5 disc herniation with nerve root compression; 8 weeks of conservative treatment attempted, exceeding the payer's 6-week minimum; imaging is within 12 months and confirms the level to be treated."
+          }
+        }
+      ]
+    }
+  ],
+  "final_text": "Prior-auth request submitted for pt_4410 (CPT 62323): criteria met on imaging, conservative treatment duration, and level confirmation."
+}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ByoAI Demo Agent Showcase</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/ui/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>ByoAI Demo Agent Showcase</h1>
+    <p class="tagline">Every tool call, sealed by the Coriqo agent recorder. Tamper-evident, verifiable after the fact.</p>
+  </header>
+
+  <main>
+    <section id="gallery" aria-label="Agent gallery">
+      <h2>Agents</h2>
+      <div id="agent-groups"></div>
+    </section>
+
+    <section id="run-view" aria-label="Run detail">
+      <div id="run-empty">Select an agent to start a run.</div>
+
+      <div id="run-active" hidden>
+        <div class="run-header">
+          <h2 id="run-agent-name"></h2>
+          <span id="run-status" class="badge"></span>
+        </div>
+
+        <div class="run-columns">
+          <div class="timeline-pane">
+            <h3>Live timeline</h3>
+            <ol id="timeline"></ol>
+          </div>
+
+          <div class="side-pane">
+            <div class="panel">
+              <h3>Span tree</h3>
+              <ul id="span-tree"></ul>
+            </div>
+
+            <div class="panel">
+              <h3>Outcome</h3>
+              <p id="outcome-text">—</p>
+            </div>
+
+            <div class="panel" id="violations-panel" hidden>
+              <h3>⚠ Policy violations</h3>
+              <ul id="violations-list"></ul>
+            </div>
+
+            <div class="panel">
+              <h3>Recorder verify</h3>
+              <button id="verify-btn" disabled>Verify sealed ledger</button>
+              <button id="tamper-btn" disabled>Tamper demo (DEMO_TAMPER=1)</button>
+              <div id="verify-result"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/ui/static/app.js"></script>
+</body>
+</html>
