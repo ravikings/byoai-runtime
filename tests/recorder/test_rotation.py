@@ -8,6 +8,7 @@ verifier, so a hand-built sqlite fixture would just be redundant.
 from __future__ import annotations
 
 import base64
+import os
 
 import pytest
 
@@ -84,6 +85,146 @@ def test_rotate_key_produces_a_different_key_on_disk(tmp_path):
         assert reloaded.device_id == new_key.device_id
     finally:
         ledger.close()
+
+
+def test_rotate_key_leaves_old_key_intact_when_ledger_append_fails(tmp_path):
+    """Regression test: if ledger.append() fails after the new key is
+    generated, the old key must remain on disk and loadable, and no
+    KEY_ROTATED event must exist — this is what makes the failure
+    recoverable (retry rotation) instead of unreconcilable (old key gone,
+    no ledger record of why the device_id changed)."""
+    key_dir, old_key, ledger = _make_ledger(tmp_path)
+    old_priv_bytes = (key_dir / PRIVATE_KEY_FILENAME).read_bytes()
+    old_pub_text = (key_dir / PUBLIC_KEY_FILENAME).read_text()
+
+    ledger.append = lambda event: None  # simulate a full-disk / I/O failure
+
+    try:
+        with pytest.raises(RuntimeError, match="staged but NOT promoted"):
+            rotate_key(key_dir, ledger, reason="rotation")
+    finally:
+        ledger.close()
+
+    # The old key files are untouched.
+    assert (key_dir / PRIVATE_KEY_FILENAME).read_bytes() == old_priv_bytes
+    assert (key_dir / PUBLIC_KEY_FILENAME).read_text() == old_pub_text
+
+    # The old key is still loadable and yields the same device identity.
+    reloaded = load_or_create_device_key(key_dir)
+    assert reloaded.device_id == old_key.device_id
+
+    # No archived/promoted key files were created — promotion never ran.
+    assert not (key_dir / f".rotated-{old_key.device_id}.{PRIVATE_KEY_FILENAME}").exists()
+    assert not (key_dir / f".rotated-{old_key.device_id}.{PUBLIC_KEY_FILENAME}").exists()
+
+    # The staged new key is left behind in the pending directory (it will
+    # simply be overwritten on a retried rotation).
+    pending_dir = key_dir / ".pending-rotation"
+    assert (pending_dir / PRIVATE_KEY_FILENAME).exists()
+    assert (pending_dir / PUBLIC_KEY_FILENAME).exists()
+
+    # No KEY_ROTATED event was recorded in the ledger.
+    report = verify_ledger(tmp_path / "ledger.db")
+    assert report.key_rotations == []
+
+
+def test_promotion_crash_never_falls_back_to_a_random_key(tmp_path, monkeypatch):
+    """Regression test for the confirmed bug in the previous version of
+    ``_promote_staged_key``: it used two SEPARATE ``os.replace`` calls
+    (archive-old, then promote-new), leaving a window with no live private
+    key file at all if the process crashed in between. The next
+    ``load_or_create_device_key`` call would then see "no key" and silently
+    generate a brand-new, never-cross-signed random identity — even though
+    the KEY_ROTATED event for the *staged* key was already durably
+    committed to the ledger.
+
+    This simulates a crash at every plausible point during/after promotion
+    by interrupting ``os.replace`` inside ``byoai.recorder.keys`` after 0, 1,
+    and 2 calls, and asserts that in every case the NEXT
+    ``load_or_create_device_key`` call — modeling the next process
+    startup — deterministically recovers the correct (new, staged) device
+    identity rather than ever minting a fresh random one.
+    """
+    import byoai.recorder.keys as keys_module
+
+    real_replace = os.replace
+
+    # Crash points, counted only among os.replace calls that happen *after*
+    # the ledger append has already succeeded (i.e. during
+    # _mark_promotion_confirmed / _finish_pending_rotation — the promotion
+    # phase itself, which is what the buggy version raced):
+    #   0 -> marker write itself fails: promotion never gets confirmed, so
+    #        recovery must land back on the OLD key (safe, not random —
+    #        rotation simply needs retrying).
+    #   1 -> marker written (confirmed) but the public-key replace fails:
+    #        recovery must finish promotion and land on the NEW key.
+    #   2 -> marker + public replace done, private-key replace fails: same,
+    #        recovery must finish promotion and land on the NEW key. This is
+    #        exactly the historically buggy window (no live private key
+    #        immediately after this replace is interrupted).
+    for crash_after_n_replaces in (0, 1, 2):
+        key_dir, old_key, ledger = _make_ledger(
+            tmp_path, name=f"ledger-{crash_after_n_replaces}.db"
+        )
+
+        state = {"append_done": False, "n": 0}
+        real_append = ledger.append
+
+        def wrapped_append(event, _real=real_append, _state=state):
+            entry = _real(event)
+            _state["append_done"] = True
+            return entry
+
+        monkeypatch.setattr(ledger, "append", wrapped_append)
+
+        def flaky_replace(src, dst, _n=crash_after_n_replaces, _state=state):
+            if _state["append_done"]:
+                if _state["n"] >= _n:
+                    raise OSError("simulated crash mid os.replace")
+                _state["n"] += 1
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(keys_module.os, "replace", flaky_replace)
+        try:
+            with pytest.raises(OSError, match="simulated crash"):
+                rotate_key(key_dir, ledger, reason="rotation")
+        finally:
+            ledger.close()
+            monkeypatch.setattr(keys_module.os, "replace", real_replace)
+
+        # The KEY_ROTATED event is committed either way (append happened
+        # before any of these simulated crash points); read the new
+        # device_id it recorded so we know what a *correct* recovery to the
+        # new key looks like.
+        report = verify_ledger(tmp_path / f"ledger-{crash_after_n_replaces}.db")
+        expected_new_device_id = report.key_rotations[0]["new_device_id"]
+
+        # Simulate the next process startup.
+        recovered = load_or_create_device_key(key_dir)
+
+        # Above all: never a third, freshly-generated random identity that
+        # matches neither the old nor the new expected device_id. That was
+        # the original bug.
+        assert recovered.device_id in (old_key.device_id, expected_new_device_id), (
+            f"crash after {crash_after_n_replaces} promotion-phase os.replace call(s): "
+            f"recovered a device_id ({recovered.device_id!r}) that is neither the old "
+            f"({old_key.device_id!r}) nor the new staged key ({expected_new_device_id!r}) — "
+            "this means load_or_create_device_key fell back to generating a fresh, "
+            "never-cross-signed random key instead of recovering deterministically"
+        )
+
+        if crash_after_n_replaces == 0:
+            # Promotion was never confirmed (marker write itself failed):
+            # staying on the old key is the safe, expected outcome.
+            assert recovered.device_id == old_key.device_id
+        else:
+            # Promotion was confirmed before the crash: it must always be
+            # finished on next load, landing on the new key.
+            assert recovered.device_id == expected_new_device_id
+
+        # A second load must be stable (idempotent reconciliation, no
+        # further identity churn either way).
+        assert load_or_create_device_key(key_dir).device_id == recovered.device_id
 
 
 def test_key_rotated_event_has_verifiable_cross_signature(tmp_path):

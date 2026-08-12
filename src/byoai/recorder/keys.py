@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -26,6 +27,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 __all__ = [
     "DeviceKey",
     "InsecureKeyPermissions",
+    "PENDING_ROTATION_DIRNAME",
     "PRIVATE_KEY_FILENAME",
     "PUBLIC_KEY_FILENAME",
     "SIG_PREFIX",
@@ -33,10 +35,27 @@ __all__ = [
     "derive_device_id",
     "load_or_create_device_key",
 ]
+# _finish_pending_rotation is intentionally not exported (leading underscore,
+# not in __all__): it is an internal helper shared between this module and
+# rotation.py via direct import, not part of the public keys.py contract.
 
 PRIVATE_KEY_FILENAME = "device_ed25519.key"
 PUBLIC_KEY_FILENAME = "device_ed25519.pub"
 SIG_PREFIX = "ed25519:"
+# Shared with rotation.py: where a rotated-in key is staged before being
+# promoted to the live filenames above.
+PENDING_ROTATION_DIRNAME = ".pending-rotation"
+# Written into PENDING_ROTATION_DIRNAME only *after* the KEY_ROTATED ledger
+# event is durably appended, and only then. Its presence is what tells
+# reconciliation "this staged key is confirmed, finish promoting it" as
+# opposed to "this staged key is here because staging ran but the ledger
+# append hasn't happened yet (or failed)" — those two cases must be handled
+# differently: a merely-staged, unconfirmed key must be left alone (the old
+# live key stays authoritative, exactly like today), while a confirmed one
+# must always end up live, even across a crash. Content is the old device_id
+# so reconciliation doesn't need to re-derive it from the (possibly already
+# partially replaced) live key files.
+PROMOTION_CONFIRMED_MARKER = ".promotion-confirmed"
 
 _PRIVATE_KEY_MODE = 0o600
 _DIR_MODE = 0o700
@@ -117,15 +136,141 @@ class DeviceKey:
         return f"DeviceKey(device_id={self._device_id!r})"
 
 
+def _mark_promotion_confirmed(directory: Path, *, old_device_id: str) -> None:
+    """Durably record that the staged key in ``PENDING_ROTATION_DIRNAME`` is
+    confirmed (its KEY_ROTATED event is already appended to the ledger) and
+    must be promoted — finishing the job on a later call if this one is
+    interrupted. Must only be called after the ledger append succeeds."""
+    pending_dir = directory / PENDING_ROTATION_DIRNAME
+    atomic_write_bytes(
+        pending_dir / PROMOTION_CONFIRMED_MARKER,
+        old_device_id.encode("ascii"),
+        mode=0o600,
+        prefix=".devpromo-",
+    )
+
+
+def _finish_pending_rotation(directory: Path, *, old_device_id: str | None = None) -> bool:
+    """Finish promoting a staged rotation key into the live filenames, if one
+    is staged *and confirmed* (see ``PROMOTION_CONFIRMED_MARKER``). Returns
+    ``True`` if a promotion happened (or was already complete except for
+    cleanup), ``False`` if there was nothing to do.
+
+    Safe to call unconditionally and repeatedly (idempotent). Deliberately
+    does **not** promote a merely-staged key that was never confirmed (e.g.
+    staging succeeded but the ledger append then failed) — only the marker's
+    presence, which is written after the ledger append succeeds, makes a
+    staged key eligible for promotion. Without that gate, this function
+    would wrongly "finish" a rotation that was never actually committed.
+
+    Sequencing is chosen so the only step that changes what a concurrent or
+    subsequent ``load_or_create_device_key`` call sees on disk is the final,
+    single, atomic ``os.replace`` of the staged private key into the live
+    path — there is never a window where the live private key file is
+    simply absent:
+
+    1. Copy (not move) the current live key bytes to the archive filenames,
+       if a live key exists and hasn't already been archived. A copy is not
+       destructive, so this step doesn't need to be atomic with anything
+       else — worst case on a crash here, the old key is simply archived
+       twice or not yet archived, and it is still live and loadable either
+       way.
+    2. Atomically replace the live *public* key with the staged one. Not
+       security-critical (the public key is re-derivable from the private
+       key and is a convenience file only), so its ordering relative to
+       step 3 doesn't matter for correctness.
+    3. Atomically replace the live *private* key with the staged one. This
+       is the step that flips device identity, and ``os.replace`` is a
+       single filesystem syscall, so there is no intermediate state where
+       the live private key file is missing.
+    4. Best-effort cleanup of the marker and the now-empty pending directory.
+    """
+    pending_dir = directory / PENDING_ROTATION_DIRNAME
+    marker = pending_dir / PROMOTION_CONFIRMED_MARKER
+    if not marker.exists():
+        return False
+
+    pending_private = pending_dir / PRIVATE_KEY_FILENAME
+    pending_public = pending_dir / PUBLIC_KEY_FILENAME
+    live_private = directory / PRIVATE_KEY_FILENAME
+    live_public = directory / PUBLIC_KEY_FILENAME
+
+    if old_device_id is None:
+        try:
+            old_device_id = marker.read_text().strip() or None
+        except OSError:
+            old_device_id = None
+
+    # pending_private may already be gone if a previous call got as far as
+    # promoting but crashed before cleanup; in that case there's nothing left
+    # to promote, just cleanup below.
+    if pending_private.exists():
+        if live_private.exists():
+            if old_device_id is None:
+                try:
+                    old_device_id = _load(live_private).device_id
+                except (InsecureKeyPermissions, ValueError):
+                    old_device_id = "unknown"
+            archive_private = directory / f".rotated-{old_device_id}.{PRIVATE_KEY_FILENAME}"
+            archive_public = directory / f".rotated-{old_device_id}.{PUBLIC_KEY_FILENAME}"
+            if archive_private.exists():
+                # old_device_id could not be resolved (e.g. "unknown", or a
+                # genuine repeat id) and something is already archived under
+                # that name — never skip the backup silently, disambiguate
+                # instead so the previously-live key is never lost.
+                suffix = 2
+                while archive_private.exists():
+                    archive_private = (
+                        directory / f".rotated-{old_device_id}-{suffix}.{PRIVATE_KEY_FILENAME}"
+                    )
+                    archive_public = (
+                        directory / f".rotated-{old_device_id}-{suffix}.{PUBLIC_KEY_FILENAME}"
+                    )
+                    suffix += 1
+            shutil.copy2(live_private, archive_private)
+            if live_public.exists():
+                shutil.copy2(live_public, archive_public)
+
+        if pending_public.exists():
+            os.replace(pending_public, live_public)
+        os.replace(pending_private, live_private)
+
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+    try:
+        pending_dir.rmdir()
+    except OSError:  # pragma: no cover - leftover files, harmless
+        pass
+    return True
+
+
 def load_or_create_device_key(dir: Path | str) -> DeviceKey:  # noqa: A002 - contract name
     """Load the device key from ``dir``, creating one on first run.
 
     The private key file is created with mode 0600. On POSIX, loading refuses
     (raises :class:`InsecureKeyPermissions`) if the file is group- or
     world-accessible — a key anyone can read is not a device identity.
+
+    Before doing either of those, this reconciles any interrupted key
+    rotation: if a staged key is sitting in ``PENDING_ROTATION_DIRNAME``
+    (left behind by a crash during :func:`rotation._promote_staged_key`,
+    which by the time that staged key exists has *already* durably
+    committed a ``KEY_ROTATED`` event to the ledger), promotion is finished
+    here before anything else happens. This is the guarantee that closes the
+    original bug: once a rotation's ``KEY_ROTATED`` event is committed,
+    there is no code path — no matter where a crash lands — that falls
+    through to generating a brand-new random keypair instead of using the
+    already cross-signed staged key. Without this, a crash between
+    promoting the private and public key files could leave no live private
+    key file at all, and the old (pre-reconciliation) code below would
+    silently generate a fresh, never-cross-signed identity, orphaning both
+    the archived old key and the staged new key.
     """
     directory = Path(dir)
     key_path = directory / PRIVATE_KEY_FILENAME
+    _finish_pending_rotation(directory)
     if key_path.exists():
         return _load(key_path)
 
