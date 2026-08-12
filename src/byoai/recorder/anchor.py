@@ -17,11 +17,15 @@ bundle sketch in ``internal_doc/recorder_contract_export_bundle.md``:
   trustworthy" — callers who need the latter must supply their own root
   validation.
 - ``sigstore_rekor``: a Rekor transparency-log inclusion proof plus a signed
-  entry timestamp (SET). The Merkle audit-path check re-implements RFC 6962
-  section 2.1.1's ``PATH``/``MTH`` recursion directly (not
+  entry timestamp (SET). The Merkle audit-path check implements RFC 6962
+  section 2.1.1's ``PATH``/``MTH`` walk directly (not
   ``merkle.verify_inclusion``, which uses a different, simpler pairwise-node
   -promotion rule for odd leaf counts that is not guaranteed to produce the
-  same audit paths Trillian/Rekor emit). The SET check verifies an ECDSA
+  same audit paths Trillian/Rekor emit). It reuses ``merkle``'s domain-
+  separated leaf/node hash primitives (``_leaf_hash``/``_node_hash``) so the
+  two modules can never silently disagree on the RFC 6962 hash domain, even
+  though the path-reconstruction algorithm around them differs. The SET
+  check verifies an ECDSA
   signature over this receipt's own canonicalized fields — it does NOT claim
   byte-for-byte compatibility with a live Rekor server's actual SET encoding,
   since this codebase never talks to a real Rekor instance. A real adapter
@@ -34,22 +38,15 @@ certificate needed.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from byoai.recorder.canonical import canonicalize
+from byoai.recorder.merkle import _leaf_hash, _node_hash as _rfc6962_node_hash
 
 __all__ = [
     "verify_rfc3161_receipt",
     "verify_rekor_receipt",
 ]
-
-_LEAF_PREFIX = b"\x00"
-_NODE_PREFIX = b"\x01"
-
-
-def _rfc6962_node_hash(left: bytes, right: bytes) -> bytes:
-    return hashlib.sha256(_NODE_PREFIX + left + right).digest()
 
 
 def _largest_power_of_two_less_than(n: int) -> int:
@@ -156,7 +153,7 @@ def verify_rekor_receipt(
     except (TypeError, ValueError) as exc:
         return False, [f"rekor receipt malformed: {exc}"]
 
-    leaf_hash = hashlib.sha256(_LEAF_PREFIX + epoch_root).digest()
+    leaf_hash = _leaf_hash(epoch_root)
     try:
         recomputed_root = _root_from_audit_path(leaf_hash, log_index, tree_size, hashes)
     except (ValueError, RecursionError) as exc:

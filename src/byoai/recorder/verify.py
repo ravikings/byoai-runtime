@@ -112,6 +112,18 @@ def verify_checkpoint_epoch_inclusion(
 # --------------------------------------------------------------------------
 
 
+def _forged_rotations(key_rotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rotations whose cross-signature was checked and did NOT verify.
+
+    Excludes rotations where ``cross_signature_verified`` is ``None`` (not
+    checked, e.g. no public key supplied for the old device) — those are
+    reported separately via notes, not treated as forged. Shared by
+    :func:`_verify` and :func:`verify_bundle` so the two can never disagree
+    on what counts as "forged".
+    """
+    return [r for r in key_rotations if r["cross_signature_verified"] is False]
+
+
 def _verify_signature(public_key_b64: str, data: bytes, sig: str) -> bool:
     """Ed25519 verification via the recorder's own key module.
 
@@ -432,9 +444,7 @@ def _verify(
 
     notes = [*walk.notes, *cp_notes]
 
-    forged_rotations = [
-        r for r in walk.key_rotations if r["cross_signature_verified"] is False
-    ]
+    forged_rotations = _forged_rotations(walk.key_rotations)
 
     ok = not (
         walk.broken_links
@@ -739,7 +749,7 @@ def verify_bundle(
         if not anchor_ok:
             bad_anchors.append(epoch_index)
 
-    forged_rotations = [r for r in walk.key_rotations if r["cross_signature_verified"] is False]
+    forged_rotations = _forged_rotations(walk.key_rotations)
 
     ok = not (
         walk.broken_links
