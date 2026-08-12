@@ -1,0 +1,32 @@
+{
+  "agent_id": "h2-clinical-documentation",
+  "note": "cached run: used automatically if the model API errors",
+  "steps": [
+    {
+      "assistant_text": "Pulling the visit transcript for visit_7701.",
+      "tool_calls": [{"name": "get_transcript", "input": {"visit_id": "visit_7701"}}]
+    },
+    {
+      "assistant_text": "Drafting a SOAP note from the transcript.",
+      "tool_calls": [
+        {
+          "name": "draft_soap",
+          "input": {
+            "visit_id": "visit_7701",
+            "soap_note": "S: 3 days sore throat, low-grade fever, mild cough, no SOB/chest pain. O: pharyngeal erythema, no exudate, lungs clear, temp 100.2F, rapid strep negative. A: Viral pharyngitis. P: Supportive care, fluids, rest; return if worsening or fever persists >3 more days."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Suggesting ICD-10/CPT codes consistent with the note.",
+      "tool_calls": [
+        {
+          "name": "suggest_codes",
+          "input": {"visit_id": "visit_7701", "icd10": ["J02.9"], "cpt": ["99213"]}
+        }
+      ]
+    }
+  ],
+  "final_text": "SOAP note drafted for visit_7701 (viral pharyngitis) with suggested codes ICD-10 J02.9 / CPT 99213."
+}

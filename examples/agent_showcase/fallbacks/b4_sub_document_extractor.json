@@ -1,0 +1,15 @@
+{
+  "agent_id": "b4-sub-document-extractor",
+  "note": "cached run: used automatically if the model API errors",
+  "steps": [
+    {
+      "assistant_text": "Extracting income/debt figures from the statements on file for loan_9042.",
+      "tool_calls": [{"name": "get_statements", "input": {"loan_id": "loan_9042"}}]
+    },
+    {
+      "assistant_text": "Extracted monthly income of $6,100.00 and monthly debt payments of $1,450.00 across 3 months of statements, no overdrafts.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Extracted monthly income of $6,100.00 and monthly debt payments of $1,450.00 across 3 months of statements, no overdrafts."
+}

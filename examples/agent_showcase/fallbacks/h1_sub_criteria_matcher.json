@@ -1,0 +1,15 @@
+{
+  "agent_id": "h1-sub-criteria-matcher",
+  "note": "cached run: used automatically if the model API errors",
+  "steps": [
+    {
+      "assistant_text": "Matching patient pt_4410's chart against payer criteria for CPT 62323.",
+      "tool_calls": [{"name": "match_criteria", "input": {"patient_id": "pt_4410", "cpt": "62323"}}]
+    },
+    {
+      "assistant_text": "Criteria met: 8 weeks of conservative treatment attempted, exceeding the 6-week minimum.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Criteria met: 8 weeks of conservative treatment attempted, exceeding the 6-week minimum."
+}

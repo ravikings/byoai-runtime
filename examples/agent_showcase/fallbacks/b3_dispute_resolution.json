@@ -1,0 +1,28 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "note": "cached run: used automatically if the model API errors",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_3301.",
+      "tool_calls": [{"name": "get_dispute", "input": {"dispute_id": "disp_3301"}}]
+    },
+    {
+      "assistant_text": "Gathering shipment and merchant evidence.",
+      "tool_calls": [{"name": "gather_evidence", "input": {"dispute_id": "disp_3301"}}]
+    },
+    {
+      "assistant_text": "Carrier marked the item delivered but captured no signature, and the customer declined a reship. Evidence favors the customer. Drafting a reply and posting a provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_3301",
+            "message": "We've reviewed your dispute for Summit Outdoor Gear ($129.99). The carrier's delivery confirmation lacks a signature, so we're issuing a provisional credit while we continue investigating with the merchant."
+          }
+        },
+        {"name": "post_credit", "input": {"dispute_id": "disp_3301", "amount_usd": 129.99}}
+      ]
+    }
+  ],
+  "final_text": "Provisional credit of $129.99 posted for disp_3301: delivery confirmation lacked a signature and the merchant's reship offer was declined."
+}
