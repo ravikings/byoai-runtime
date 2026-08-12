@@ -281,9 +281,15 @@ def _walk_chain(
 
     key_rotations: list[dict[str, Any]] = []
     stale_key_usage: list[int] = []
-    # device_id of a retired key -> effective_epoch (RFC3339 str) after which
-    # that device_id is no longer a valid signer.
-    retired_devices: dict[str, str] = {}
+    # device_id of a retired key -> the seq of the KEY_ROTATED event that
+    # retired it. seq is assigned by the ledger at write time in strict
+    # append order and is therefore trustworthy, unlike ts_device (a
+    # device-controlled wall-clock string — see schema.now_ts_device()'s
+    # docstring: "ordering comes from seq, never from this value"). Using
+    # ts_device here would let a device holding a compromised pre-rotation
+    # key keep forging entries under the old device_id by simply backdating
+    # ts_device to before the rotation's effective_epoch.
+    retired_devices: dict[str, int] = {}
 
     entries_checked = 0
     for entry in entries:
@@ -335,17 +341,21 @@ def _walk_chain(
         # A device_id change immediately after a KEY_ROTATED event is the
         # *point* of cross-signing continuity, not tampering — so this check
         # only flags entries still attributed to a device whose key was
-        # already retired as of its own effective_epoch.
-        if dev and dev in retired_devices and ts and str(ts) >= retired_devices[dev]:
+        # already retired. The KEY_ROTATED event itself is the last thing
+        # signed by the OLD device_id (see rotation.py), so it must not be
+        # flagged — only entries *after* it (seq strictly greater than the
+        # rotation event's own seq) that still carry the retired device_id
+        # are stale. This is decided purely from seq, the trusted append
+        # order, never from the device-controlled ts_device.
+        if dev and dev in retired_devices and seq > retired_devices[dev]:
             stale_key_usage.append(seq)
 
         if kind == EventKind.KEY_ROTATED.value:
             rotation = _check_rotation(event.get("payload") or {}, device_public_keys)
             key_rotations.append(rotation)
             old_id = rotation.get("old_device_id")
-            epoch = rotation.get("effective_epoch")
-            if old_id and epoch:
-                retired_devices[str(old_id)] = str(epoch)
+            if old_id:
+                retired_devices[str(old_id)] = seq
 
     unpaired_tool_uses = sorted(t for t in tool_uses if t not in tool_results)
     orphan_tool_results = sorted(

@@ -151,6 +151,56 @@ def test_verify_ledger_does_not_flag_rotation_boundary_as_broken_chain(tmp_path)
     assert report.ok is True
 
 
+def test_stale_key_usage_detected_even_with_backdated_ts_device(tmp_path):
+    """A compromised pre-rotation key can keep forging entries under the old
+    device_id after rotation. If it backdates ts_device to before the
+    rotation's effective_epoch, a check gated on ts_device would miss it —
+    ts_device is a device-controlled, untrusted wall-clock string (see
+    schema.now_ts_device()'s docstring). Detection must instead be based on
+    seq, which the ledger assigns at write time in strict append order and
+    the forging device cannot control."""
+    key_dir, old_key, ledger = _make_ledger(tmp_path)
+    try:
+        _append_event(ledger, old_key.device_id, EventKind.SESSION_START.value)
+        rotate_key(key_dir, ledger, reason="compromise")
+
+        # Forged entry: still signed/attributed to the retired old device_id,
+        # but with ts_device deliberately backdated to well before the
+        # rotation event's effective_epoch, simulating an attacker who
+        # controls the device clock trying to evade a ts_device-based check.
+        forged_event = AgentEvent(
+            schema_version=EVENT_SCHEMA_VERSION,
+            event_id=new_event_id(),
+            device_id=old_key.device_id,
+            session_id="ses_1",
+            seq=0,
+            kind=EventKind.MESSAGE.value,
+            ts_device="2000-01-01T00:00:00Z",
+            ts_monotonic_ns=now_monotonic_ns(),
+            tool_use_id=None,
+            tool_name=None,
+            payload={"n": 1},
+            payload_hash="sha256:" + "00" * 32,
+            model=None,
+            provider="anthropic",
+            trace_id=new_trace_id(),
+            span_id=new_span_id(),
+            parent_span_id=None,
+            continues_from=None,
+        )
+        forged_entry = ledger.append(forged_event)
+    finally:
+        ledger.close()
+
+    report = verify_ledger(
+        tmp_path / "ledger.db",
+        device_public_keys={old_key.device_id: old_key.public_key_b64},
+    )
+    assert forged_entry is not None
+    assert report.stale_key_usage == [forged_entry.seq]
+    assert report.ok is False
+
+
 def test_verify_ledger_flags_forged_cross_signature(tmp_path):
     key_dir, old_key, ledger = _make_ledger(tmp_path)
     try:
