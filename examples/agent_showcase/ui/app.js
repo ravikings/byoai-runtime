@@ -10,6 +10,7 @@ const state = {
   wfNodesByTool: {}, // tool_name -> FIFO queue of pending <li> nodes, resolved in call order
   runGeneration: 0, // bumped on every startRun so a stale run's async completion is ignored
   runRendered: false, // guards against finishRun (SSE) and pollUntilDone (fallback) both rendering the same run
+  domainFilter: "all", // "all" or a specific agent.domain value, set via the domain tabs
 };
 
 async function loadAgents() {
@@ -19,6 +20,8 @@ async function loadAgents() {
 }
 
 function renderGallery() {
+  renderDomainTabs();
+
   const container = document.getElementById("agent-groups");
   container.innerHTML = "";
   const byDomain = {};
@@ -26,6 +29,8 @@ function renderGallery() {
     (byDomain[agent.domain] ??= []).push(agent);
   }
   for (const [domain, agents] of Object.entries(byDomain)) {
+    if (state.domainFilter !== "all" && domain !== state.domainFilter) continue;
+
     const group = document.createElement("div");
     group.className = "domain-group";
 
@@ -39,6 +44,29 @@ function renderGallery() {
     }
     container.appendChild(group);
   }
+}
+
+function renderDomainTabs() {
+  const tabs = document.getElementById("domain-tabs");
+  tabs.innerHTML = "";
+  const domains = [...new Set(state.agents.map((a) => a.domain))];
+
+  const makeTab = (value, label) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "domain-tab" + (state.domainFilter === value ? " active" : "");
+    btn.textContent = label;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", String(state.domainFilter === value));
+    btn.addEventListener("click", () => {
+      state.domainFilter = value;
+      renderGallery();
+    });
+    tabs.appendChild(btn);
+  };
+
+  makeTab("all", "All");
+  for (const domain of domains) makeTab(domain, domain);
 }
 
 function renderAgentCard(agent) {
