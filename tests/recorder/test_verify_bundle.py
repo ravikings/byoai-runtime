@@ -110,11 +110,18 @@ def _build_epoch_dict(epoch: Epoch, tenant_key: DeviceKey | None) -> dict:
     return epoch_dict
 
 
-def test_verify_bundle_accepts_a_valid_bundle(tmp_path):
+def _build_ledger_bundle(
+    tmp_path: Path, *, n_events: int = 1, tenant_key: DeviceKey | None = None
+) -> dict:
+    """Enroll a device, emit a checkpoint, ship it, build its epoch, and
+    assemble an examiner export bundle — the setup shared by every test in
+    this file that needs *a* real, internally-consistent bundle to tamper
+    with or verify.
+    """
     mock = MockCoriqo()
     ledger, key, device_id = enroll_device(tmp_path, mock)
     try:
-        emit_checkpoint(ledger, key, n_events=3)
+        emit_checkpoint(ledger, key, n_events=n_events)
         shipper = Shipper(
             ledger, key, coriqo_base_url=CORIQO_BASE_URL, http_client=_client(mock)
         )
@@ -126,9 +133,13 @@ def test_verify_bundle_accepts_a_valid_bundle(tmp_path):
         epoch = mock.build_epoch()
         assert epoch is not None
 
-        bundle = _build_bundle(ledger, key.public_key_b64, mock, epoch)
+        return _build_bundle(ledger, key.public_key_b64, mock, epoch, tenant_key=tenant_key)
     finally:
         ledger.close()
+
+
+def test_verify_bundle_accepts_a_valid_bundle(tmp_path):
+    bundle = _build_ledger_bundle(tmp_path, n_events=3)
 
     report = verify_bundle(bundle)
     assert report.ok, report.notes
@@ -141,24 +152,7 @@ def test_verify_bundle_accepts_a_valid_bundle(tmp_path):
 
 
 def test_verify_bundle_rejects_tampered_entry_payload(tmp_path):
-    mock = MockCoriqo()
-    ledger, key, device_id = enroll_device(tmp_path, mock)
-    try:
-        emit_checkpoint(ledger, key, n_events=2)
-        shipper = Shipper(
-            ledger, key, coriqo_base_url=CORIQO_BASE_URL, http_client=_client(mock)
-        )
-        try:
-            shipper.ship_checkpoints_once()
-        finally:
-            shipper.close()
-
-        epoch = mock.build_epoch()
-        assert epoch is not None
-
-        bundle = _build_bundle(ledger, key.public_key_b64, mock, epoch)
-    finally:
-        ledger.close()
+    bundle = _build_ledger_bundle(tmp_path, n_events=2)
 
     bundle["entries"][0]["event"]["payload"] = {"tampered": True}
 
@@ -168,24 +162,7 @@ def test_verify_bundle_rejects_tampered_entry_payload(tmp_path):
 
 
 def test_verify_bundle_rejects_checkpoint_whose_epoch_is_missing(tmp_path):
-    mock = MockCoriqo()
-    ledger, key, device_id = enroll_device(tmp_path, mock)
-    try:
-        emit_checkpoint(ledger, key, n_events=1)
-        shipper = Shipper(
-            ledger, key, coriqo_base_url=CORIQO_BASE_URL, http_client=_client(mock)
-        )
-        try:
-            shipper.ship_checkpoints_once()
-        finally:
-            shipper.close()
-
-        epoch = mock.build_epoch()
-        assert epoch is not None
-
-        bundle = _build_bundle(ledger, key.public_key_b64, mock, epoch)
-    finally:
-        ledger.close()
+    bundle = _build_ledger_bundle(tmp_path)
 
     bundle["epochs"] = []  # epoch referenced by the checkpoint is absent
 
@@ -195,24 +172,7 @@ def test_verify_bundle_rejects_checkpoint_whose_epoch_is_missing(tmp_path):
 
 
 def test_verify_bundle_reports_malformed_epoch_instead_of_crashing(tmp_path):
-    mock = MockCoriqo()
-    ledger, key, device_id = enroll_device(tmp_path, mock)
-    try:
-        emit_checkpoint(ledger, key, n_events=1)
-        shipper = Shipper(
-            ledger, key, coriqo_base_url=CORIQO_BASE_URL, http_client=_client(mock)
-        )
-        try:
-            shipper.ship_checkpoints_once()
-        finally:
-            shipper.close()
-
-        epoch = mock.build_epoch()
-        assert epoch is not None
-
-        bundle = _build_bundle(ledger, key.public_key_b64, mock, epoch)
-    finally:
-        ledger.close()
+    bundle = _build_ledger_bundle(tmp_path)
 
     # A hand-tampered or partially-written bundle where the epoch entry is
     # missing its root — verify_bundle must report this as a finding, not
@@ -227,25 +187,7 @@ def test_verify_bundle_reports_malformed_epoch_instead_of_crashing(tmp_path):
 
 def test_verify_bundle_accepts_a_valid_tenant_epoch_signature(tmp_path):
     tenant_key = DeviceKey(Ed25519PrivateKey.generate())
-
-    mock = MockCoriqo()
-    ledger, key, device_id = enroll_device(tmp_path, mock)
-    try:
-        emit_checkpoint(ledger, key, n_events=1)
-        shipper = Shipper(
-            ledger, key, coriqo_base_url=CORIQO_BASE_URL, http_client=_client(mock)
-        )
-        try:
-            shipper.ship_checkpoints_once()
-        finally:
-            shipper.close()
-
-        epoch = mock.build_epoch()
-        assert epoch is not None
-
-        bundle = _build_bundle(ledger, key.public_key_b64, mock, epoch, tenant_key=tenant_key)
-    finally:
-        ledger.close()
+    bundle = _build_ledger_bundle(tmp_path, tenant_key=tenant_key)
 
     report = verify_bundle(bundle)
     assert report.ok, report.notes
@@ -256,25 +198,7 @@ def test_verify_bundle_accepts_a_valid_tenant_epoch_signature(tmp_path):
 
 def test_verify_bundle_rejects_tampered_tenant_epoch_signature(tmp_path):
     tenant_key = DeviceKey(Ed25519PrivateKey.generate())
-
-    mock = MockCoriqo()
-    ledger, key, device_id = enroll_device(tmp_path, mock)
-    try:
-        emit_checkpoint(ledger, key, n_events=1)
-        shipper = Shipper(
-            ledger, key, coriqo_base_url=CORIQO_BASE_URL, http_client=_client(mock)
-        )
-        try:
-            shipper.ship_checkpoints_once()
-        finally:
-            shipper.close()
-
-        epoch = mock.build_epoch()
-        assert epoch is not None
-
-        bundle = _build_bundle(ledger, key.public_key_b64, mock, epoch, tenant_key=tenant_key)
-    finally:
-        ledger.close()
+    bundle = _build_ledger_bundle(tmp_path, tenant_key=tenant_key)
 
     # The root itself is untouched — only the signed epoch metadata changed
     # after signing, which the tenant signature must catch.
