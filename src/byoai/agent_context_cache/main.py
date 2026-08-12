@@ -13,6 +13,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
+from ..recorder.integration import get_recorder
+from ..recorder.schema import new_span_id, new_trace_id
+from ..recorder.ledger import LedgerWriteError
 from ..session_hash import RedisHashStore
 from ..stages import PromptCacheInjection, SessionDedup
 from ..stages import _count_cache_control_markers as _stage_count_cache_control_markers
@@ -249,6 +252,14 @@ def estimate_tokens(data: dict) -> int:
     return len(json.dumps(data)) // 4
 
 
+def _recorder_write_failed_response(exc: LedgerWriteError) -> Response:
+    return Response(
+        content=json.dumps({"error": {"type": "api_error", "message": f"byoai-runtime: {exc}"}}),
+        status_code=503,
+        media_type=JSON_MEDIA_TYPE,
+    )
+
+
 def clean_response_headers(headers: dict) -> dict:
     """Strips transfer/encoding headers so FastAPI/Starlette doesn't corrupt streams."""
     return {k: v for k, v in headers.items() if k.lower() not in UNSAFE_RESPONSE_HEADERS}
@@ -324,6 +335,31 @@ def derive_session_id(request: Request, body: dict) -> str:
         sort_keys=True,
     )
     return "auto:" + hashlib.sha256(seed.encode()).hexdigest()
+
+
+def derive_trace_context(request: Request) -> tuple[str, str, str | None, str | None]:
+    """Recorder trace attribution for one request (spec §5.3a).
+
+    ``trace_id``: the caller's ``X-BYOAI-Trace-Id`` header if sent (a
+    sub-agent or a harness that already tracks its own run id), otherwise a
+    fresh one — this request is then the root of a new logical run.
+
+    ``span_id``: always freshly generated per request; this call is one agent
+    invocation regardless of whether it's a root or sub-agent.
+
+    ``parent_span_id``: from ``X-BYOAI-Parent-Span-Id`` if sent, else ``None``
+    (top-level agent, no parent).
+
+    ``continues_from``: from ``X-BYOAI-Continues-From`` if sent, else
+    ``None``. Plumbing only — this recorder does not attempt to auto-detect
+    that a request continues a prior (now-restarted) session; a caller that
+    wants that link recorded must send the header itself.
+    """
+    trace_id = request.headers.get("x-byoai-trace-id") or new_trace_id()
+    span_id = new_span_id()
+    parent_span_id = request.headers.get("x-byoai-parent-span-id") or None
+    continues_from = request.headers.get("x-byoai-continues-from") or None
+    return trace_id, span_id, parent_span_id, continues_from
 
 
 async def safe_redis_get(key: str, default: str = "0") -> str:
@@ -749,6 +785,21 @@ async def proxy_claude_messages(request: Request):
 
     is_stream = body.get("stream", False)
     log_session_id = derive_session_id(request, body)
+    trace_id, span_id, parent_span_id, continues_from = derive_trace_context(request)
+
+    recorder = get_recorder()
+    if recorder is not None:
+        try:
+            recorder.record_request_body(
+                body,
+                session_id=log_session_id,
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                continues_from=continues_from,
+            )
+        except LedgerWriteError as e:
+            return _recorder_write_failed_response(e)
 
     if is_stream:
         req = get_http_client().build_request("POST", upstream_url, json=body, headers=headers)
@@ -779,9 +830,33 @@ async def proxy_claude_messages(request: Request):
             buffer = ""
             usage_seen = {}
             stream_error = None
+            stream_extractor = (
+                recorder.new_stream_extractor(
+                    session_id=log_session_id,
+                    model=body.get("model"),
+                    trace_id=trace_id,
+                    span_id=span_id,
+                    parent_span_id=parent_span_id,
+                    continues_from=continues_from,
+                )
+                if recorder is not None
+                else None
+            )
             try:
                 async for chunk in res.aiter_bytes():
                     yield chunk
+                    if stream_extractor is not None:
+                        try:
+                            recorder.feed_stream_chunk(stream_extractor, chunk)
+                        except LedgerWriteError as ledger_exc:
+                            # Bytes are already on the wire — there's no 503
+                            # to give mid-stream, so strict_mode's failure
+                            # posture degrades to log-and-continue here
+                            # instead of crashing the response.
+                            print(
+                                f"[byoai-runtime ❌ RECORDER {type(ledger_exc).__name__}] "
+                                f"ledger write failed mid-stream: {ledger_exc}"
+                            )
                     try:
                         buffer += chunk.decode("utf-8", errors="ignore")
                     except Exception:
@@ -829,6 +904,14 @@ async def proxy_claude_messages(request: Request):
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             finally:
                 await res.aclose()
+                if recorder is not None and stream_extractor is not None:
+                    try:
+                        recorder.close_stream_extractor(stream_extractor)
+                    except LedgerWriteError as ledger_exc:
+                        print(
+                            f"[byoai-runtime ❌ RECORDER {type(ledger_exc).__name__}] "
+                            f"ledger write failed closing stream extractor: {ledger_exc}"
+                        )
                 # NOTE: do not close http_client here — it's the shared,
                 # long-lived pooled client reused across every request.
                 if usage_seen:
@@ -884,8 +967,19 @@ async def proxy_claude_messages(request: Request):
                         log_session_id, "anthropic", body.get("model"), resp_json.get("usage")
                     )
                 )
+                if recorder is not None:
+                    recorder.record_response_body(
+                        resp_json,
+                        session_id=log_session_id,
+                        trace_id=trace_id,
+                        span_id=span_id,
+                        parent_span_id=parent_span_id,
+                        continues_from=continues_from,
+                    )
             except (json.JSONDecodeError, AttributeError):
                 pass
+            except LedgerWriteError as e:
+                return _recorder_write_failed_response(e)
         return Response(
             content=res.content,
             status_code=res.status_code,
