@@ -26,7 +26,16 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .canonical import canonicalize, sha256_hex
 from .keys import DeviceKey, load_or_create_device_key
 from .ledger import Ledger
-from .schema import AgentEvent, EventKind, new_event_id, now_monotonic_ns, now_ts_device
+from .schema import (
+    EVENT_SCHEMA_VERSION,
+    AgentEvent,
+    EventKind,
+    new_event_id,
+    new_span_id,
+    new_trace_id,
+    now_monotonic_ns,
+    now_ts_device,
+)
 
 __all__ = ["ROTATION_SESSION_ID", "rotate_key", "rotate_cli"]
 
@@ -90,7 +99,7 @@ def rotate_key(
     payload_hash = sha256_hex(canonicalize(payload))
 
     event = AgentEvent(
-        schema_version="1",
+        schema_version=EVENT_SCHEMA_VERSION,
         event_id=new_event_id(),
         device_id=old_device_id,
         session_id=ROTATION_SESSION_ID,
@@ -104,6 +113,11 @@ def rotate_key(
         payload_hash=payload_hash,
         model=None,
         provider="recorder",
+        # Device-level event, not tied to any agent run.
+        trace_id=new_trace_id(),
+        span_id=new_span_id(),
+        parent_span_id=None,
+        continues_from=None,
     )
     # Written before the event is appended: the new private key only ever
     # exists in memory until this call, so if the process dies before this

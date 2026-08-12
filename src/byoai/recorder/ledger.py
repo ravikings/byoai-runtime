@@ -42,10 +42,13 @@ from typing import Any
 from byoai.recorder.canonical import canonicalize, sha256_hex
 from byoai.recorder.schema import (
     EVENT_SCHEMA_VERSION,
+    EVENT_SCHEMA_VERSION_V1,
     AgentEvent,
     EventKind,
     event_digest,
     new_event_id,
+    new_span_id,
+    new_trace_id,
     now_monotonic_ns,
     now_ts_device,
 )
@@ -75,7 +78,11 @@ CREATE TABLE IF NOT EXISTS agent_events (
     provider        TEXT NOT NULL,
     event_digest    TEXT NOT NULL,
     prev_hash       TEXT NOT NULL,
-    entry_hash      TEXT NOT NULL
+    entry_hash      TEXT NOT NULL,
+    trace_id        TEXT,
+    span_id         TEXT,
+    parent_span_id  TEXT,
+    continues_from  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_events_session ON agent_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_agent_events_tool_use ON agent_events(tool_use_id);
@@ -171,6 +178,23 @@ class Ledger:
         except sqlite3.OperationalError:
             pass  # column already present
 
+        # Ledgers created before schema v2 (spec §5.3a trace attribution)
+        # have agent_events without these columns; CREATE TABLE IF NOT EXISTS
+        # above is a no-op against them, same pattern as sync_state above.
+        # Existing rows get NULL in all four — they stay v1-shaped (their
+        # schema_version column is untouched), so schema.py's
+        # AgentEvent.to_dict()/event_digest() continue to treat them as v1
+        # and never fold these NULLs into the digest. New rows are always v2
+        # and populate all four.
+        for column in ("trace_id", "span_id", "parent_span_id", "continues_from"):
+            try:
+                self._conn.execute(f"ALTER TABLE agent_events ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already present
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_events_trace ON agent_events(trace_id)"
+        )
+
         self._head, self._next_seq = self._resume()
 
     # ---------------------------------------------------------------- state
@@ -245,7 +269,8 @@ class Ledger:
                 "INSERT INTO agent_events (seq, event_id, schema_version, device_id, "
                 "session_id, kind, ts_device, ts_monotonic_ns, tool_use_id, tool_name, "
                 "payload, payload_hash, model, provider, event_digest, prev_hash, "
-                "entry_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "entry_hash, trace_id, span_id, parent_span_id, continues_from) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     seq,
                     stamped.event_id,
@@ -264,6 +289,10 @@ class Ledger:
                     digest,
                     prev_hash,
                     entry_hash,
+                    stamped.trace_id,
+                    stamped.span_id,
+                    stamped.parent_span_id,
+                    stamped.continues_from,
                 ),
             )
             self._conn.execute("COMMIT")
@@ -339,6 +368,13 @@ class Ledger:
             payload_hash=sha256_hex(canonicalize(payload)),
             model=None,
             provider="anthropic",
+            # A record_failure marker isn't part of any agent's own logical
+            # run; give it its own root trace/span rather than borrowing one
+            # from a dropped event we may not have full context for.
+            trace_id=new_trace_id(),
+            span_id=new_span_id(),
+            parent_span_id=None,
+            continues_from=None,
         )
         try:
             self._append_locked(marker)
@@ -618,6 +654,10 @@ def _with_seq(event: AgentEvent, seq: int) -> AgentEvent:
         "payload_hash": event.payload_hash,
         "model": event.model,
         "provider": event.provider,
+        "trace_id": event.trace_id,
+        "span_id": event.span_id,
+        "parent_span_id": event.parent_span_id,
+        "continues_from": event.continues_from,
     }
     return AgentEvent(**fields)
 
@@ -641,7 +681,17 @@ def _row_to_entry(row: tuple) -> LedgerEntry:
         digest,
         prev_hash,
         entry_hash,
+        trace_id,
+        span_id,
+        parent_span_id,
+        continues_from,
     ) = row
+    # Pre-migration (v1) rows have NULL trace_id/span_id (the columns did not
+    # exist when they were written). AgentEvent.trace_id/span_id are typed as
+    # required strings, so substitute inert placeholders here — schema.py's
+    # to_dict()/event_digest() suppress the v2-only fields entirely for
+    # schema_version == "1" rows, so these placeholders never affect the
+    # digest and are never observed as real trace data.
     event = AgentEvent(
         schema_version=schema_version,
         event_id=event_id,
@@ -657,6 +707,10 @@ def _row_to_entry(row: tuple) -> LedgerEntry:
         payload_hash=payload_hash,
         model=model,
         provider=provider,
+        trace_id=trace_id if trace_id is not None else "",
+        span_id=span_id if span_id is not None else "",
+        parent_span_id=parent_span_id,
+        continues_from=continues_from,
     )
     return LedgerEntry(
         seq=seq,

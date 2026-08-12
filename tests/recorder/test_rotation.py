@@ -20,9 +20,12 @@ from byoai.recorder.keys import (
 from byoai.recorder.ledger import Ledger
 from byoai.recorder.rotation import rotate_key
 from byoai.recorder.schema import (
+    EVENT_SCHEMA_VERSION,
     AgentEvent,
     EventKind,
     new_event_id,
+    new_span_id,
+    new_trace_id,
     now_monotonic_ns,
     now_ts_device,
 )
@@ -38,7 +41,7 @@ def _make_ledger(tmp_path, name="ledger.db"):
 
 def _append_event(ledger: Ledger, device_id: str, kind: str, session_id: str = "ses_1") -> None:
     event = AgentEvent(
-        schema_version="1",
+        schema_version=EVENT_SCHEMA_VERSION,
         event_id=new_event_id(),
         device_id=device_id,
         session_id=session_id,
@@ -52,6 +55,10 @@ def _append_event(ledger: Ledger, device_id: str, kind: str, session_id: str = "
         payload_hash="sha256:" + "00" * 32,
         model=None,
         provider="anthropic",
+        trace_id=new_trace_id(),
+        span_id=new_span_id(),
+        parent_span_id=None,
+        continues_from=None,
     )
     ledger.append(event)
 

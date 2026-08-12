@@ -25,12 +25,21 @@ from byoai.recorder.merkle import (
     checkpoint_leaf_hash,
     verify_inclusion,
 )
-from byoai.recorder.schema import EventKind
+from byoai.recorder.schema import EVENT_SCHEMA_VERSION_V1, EventKind
 
 GENESIS_PREV_HASH = "sha256:" + "00" * 32
 
 # Columns that live on the ledger row itself rather than on the event.
 _CHAIN_COLUMNS = frozenset({"prev_hash", "entry_hash", "event_digest"})
+
+# Columns that exist only from schema v2 onward (spec §5.3a trace
+# attribution), added to agent_events via an additive ALTER TABLE migration
+# (see ledger.py). A pre-migration (v1) row's stored entry_hash/event_digest
+# was computed before these columns existed, so re-deriving its digest must
+# exclude them entirely (not just pass NULL) — matches
+# AgentEvent.to_dict()'s schema_version-conditional field set, which is the
+# same rule applied on the write/ship path via schema.event_digest.
+_V2_ONLY_COLUMNS = frozenset({"trace_id", "span_id", "parent_span_id", "continues_from"})
 
 
 @dataclass
@@ -141,9 +150,19 @@ def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
 
 
 def _row_to_event_dict(row: sqlite3.Row, event_columns: Iterable[str]) -> dict[str, Any]:
-    """Rebuild the event mapping exactly as the recorder hashed it."""
+    """Rebuild the event mapping exactly as the recorder hashed it.
+
+    A v1 row (``schema_version == "1"``) never had the v2-only trace fields
+    at write time, so they are dropped here even though the migrated table
+    now has those columns (NULL for that row) — otherwise re-deriving the
+    digest for a pre-migration row would never match what was actually
+    sealed. See ``_V2_ONLY_COLUMNS``.
+    """
+    is_v1 = row["schema_version"] == EVENT_SCHEMA_VERSION_V1
     event: dict[str, Any] = {}
     for name in event_columns:
+        if is_v1 and name in _V2_ONLY_COLUMNS:
+            continue
         value = row[name]
         if name == "payload":
             event[name] = json.loads(value) if isinstance(value, str) else (value or {})

@@ -556,6 +556,26 @@ export BYOAI_RECORDER_ENABLED=1
 | `BYOAI_RECORDER_STRICT` | `0` | `1` = a ledger write failure returns `503` to the client instead of being logged and skipped — for deployments where an unrecorded action is unacceptable |
 | `BYOAI_RECORDER_PAYLOAD_MODE` | `redacted` | What payload bytes actually reach the ledger. `hash-only` ships no payload bytes at all (only the tamper-evident `payload_hash`); `redacted` masks detected secrets/PII and salted-hashes everything else before it's written; `full` ships payloads unchanged. `payload_hash` always commits to the raw, unredacted payload regardless of mode |
 
+#### Trace attribution (sub-agents, resumed sessions)
+
+Every recorded event carries a `trace_id` (root of one logical run) and
+`span_id` (this agent invocation), so a ledger holds enough lineage to
+reconstruct sub-agent trees and resumed-session links without changing the
+chain's flat, append-only topology. Callers can supply this attribution via
+headers on the request; if omitted, the recorder generates a fresh root
+trace/span itself:
+
+| Header | Default if absent | Purpose |
+| --- | --- | --- |
+| `X-BYOAI-Trace-Id` | a freshly generated trace id (this request becomes the root of a new trace) | Groups every span belonging to one logical run |
+| `X-BYOAI-Parent-Span-Id` | `null` | Marks this request's span as spawned by another agent's span (e.g. a sub-agent invocation), within the same `trace_id` |
+| `X-BYOAI-Continues-From` | `null` | Links a resumed session's (new) `trace_id` back to the prior trace it continues — plumbed through as given, never inferred automatically |
+
+`span_id` is always generated fresh per request; it isn't settable via
+header. These fields are part of the hashed event body like any other field,
+so tampering with them post-hoc breaks the ledger's hash chain the same way
+tampering with a payload would.
+
 Verify a ledger offline, independent of the running proxy:
 
 ```bash

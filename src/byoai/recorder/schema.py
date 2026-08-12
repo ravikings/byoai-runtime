@@ -18,17 +18,32 @@ from .canonical import canonicalize, sha256_hex
 
 __all__ = [
     "EVENT_SCHEMA_VERSION",
+    "EVENT_SCHEMA_VERSION_V1",
     "AgentEvent",
     "EventKind",
     "canonicalize",
     "event_digest",
     "new_event_id",
+    "new_trace_id",
+    "new_span_id",
     "now_monotonic_ns",
     "now_ts_device",
     "sha256_hex",
 ]
 
-EVENT_SCHEMA_VERSION = "1"
+# v1: no trace attribution fields. v2 (spec §5.3a): adds trace_id/span_id/
+# parent_span_id/continues_from. Kept as two constants (not just "current"
+# and "legacy") because ledger.py and verify.py both need to name the old
+# version explicitly when deciding which fields feed a given row's digest.
+EVENT_SCHEMA_VERSION_V1 = "1"
+EVENT_SCHEMA_VERSION = "2"
+
+# Fields that exist only from schema v2 onward. A v1 event's to_dict() must
+# never include these — they were not part of the payload whose digest is
+# already sealed in the ledger, so including them (even as None) would change
+# the digest of every pre-existing row. See event_digest()/to_dict() below and
+# ledger.py's migration notes.
+_V2_ONLY_FIELDS = frozenset({"trace_id", "span_id", "parent_span_id", "continues_from"})
 
 
 class EventKind(str, Enum):
@@ -68,22 +83,55 @@ class AgentEvent:
     payload_hash: str
     model: str | None
     provider: str
+    # v2 (spec §5.3a) trace attribution. trace_id/span_id are required for
+    # every event captured going forward; parent_span_id/continues_from are
+    # nullable (absent means "top-level agent" / "not a resumed session").
+    # Legacy v1 rows loaded off disk get placeholder "" values here (see
+    # ledger.py's _row_to_entry) — never observable via to_dict()/the hash,
+    # since those are suppressed for schema_version == "1" below.
+    trace_id: str
+    span_id: str
+    parent_span_id: str | None = None
+    continues_from: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain-JSON dict form. Key order is irrelevant to the digest."""
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        """Plain-JSON dict form. Key order is irrelevant to the digest.
+
+        For a v1 event, the v2-only trace fields are omitted entirely (not
+        emitted as null) so that recomputing the digest of a pre-existing v1
+        ledger row reproduces exactly what was hashed at write time, before
+        those fields existed.
+        """
+        d = {f.name: getattr(self, f.name) for f in fields(self)}
+        if self.schema_version == EVENT_SCHEMA_VERSION_V1:
+            for name in _V2_ONLY_FIELDS:
+                d.pop(name, None)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AgentEvent:
-        """Inverse of :meth:`to_dict`. Rejects missing or unknown fields."""
+        """Inverse of :meth:`to_dict`. Rejects missing or unknown fields.
+
+        A v1-shaped dict (``schema_version == "1"``) is allowed to omit the
+        v2-only trace fields; they are filled in with inert placeholders so
+        construction succeeds, matching what :meth:`to_dict` does in reverse.
+        """
         names = {f.name for f in fields(cls)}
-        missing = names - data.keys()
+        is_v1 = data.get("schema_version") == EVENT_SCHEMA_VERSION_V1
+        expected = names - _V2_ONLY_FIELDS if is_v1 else names
+        missing = expected - data.keys()
         if missing:
             raise ValueError(f"missing event fields: {sorted(missing)}")
-        unknown = data.keys() - names
+        unknown = data.keys() - expected
         if unknown:
             raise ValueError(f"unknown event fields: {sorted(unknown)}")
-        return cls(**{name: data[name] for name in names})
+        kwargs = {name: data[name] for name in expected}
+        if is_v1:
+            kwargs.setdefault("trace_id", "")
+            kwargs.setdefault("span_id", "")
+            kwargs.setdefault("parent_span_id", None)
+            kwargs.setdefault("continues_from", None)
+        return cls(**kwargs)
 
 
 def event_digest(event: AgentEvent) -> str:
@@ -98,6 +146,16 @@ def event_digest(event: AgentEvent) -> str:
 def new_event_id() -> str:
     """Fresh ``evt_``-prefixed identifier."""
     return "evt_" + uuid.uuid4().hex
+
+
+def new_trace_id() -> str:
+    """Fresh ``tr_``-prefixed identifier for the root of one logical run."""
+    return "tr_" + uuid.uuid4().hex
+
+
+def new_span_id() -> str:
+    """Fresh ``sp_``-prefixed identifier for one agent invocation."""
+    return "sp_" + uuid.uuid4().hex
 
 
 def now_ts_device() -> str:

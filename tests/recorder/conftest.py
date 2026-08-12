@@ -9,7 +9,13 @@ import httpx
 from starlette.testclient import TestClient
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
-from byoai.recorder.schema import EVENT_SCHEMA_VERSION, AgentEvent, EventKind
+from byoai.recorder.schema import (
+    EVENT_SCHEMA_VERSION,
+    AgentEvent,
+    EventKind,
+    new_span_id,
+    new_trace_id,
+)
 
 from .mock_coriqo import MockCoriqo
 
@@ -22,6 +28,10 @@ def make_event(
     payload: dict | None = None,
     tool_use_id: str | None = None,
     tool_name: str | None = "Bash",
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
+    continues_from: str | None = None,
 ) -> AgentEvent:
     payload = {"command": "ls -la"} if payload is None else payload
     return AgentEvent(
@@ -39,6 +49,10 @@ def make_event(
         payload_hash=sha256_hex(canonicalize(payload)),
         model="claude-opus-4-20250514",
         provider="anthropic",
+        trace_id=trace_id or new_trace_id(),
+        span_id=span_id or new_span_id(),
+        parent_span_id=parent_span_id,
+        continues_from=continues_from,
     )
 
 

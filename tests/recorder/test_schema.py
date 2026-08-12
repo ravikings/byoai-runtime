@@ -12,10 +12,13 @@ import pytest
 from byoai.recorder.canonical import canonicalize, sha256_hex
 from byoai.recorder.schema import (
     EVENT_SCHEMA_VERSION,
+    EVENT_SCHEMA_VERSION_V1,
     AgentEvent,
     EventKind,
     event_digest,
     new_event_id,
+    new_span_id,
+    new_trace_id,
     now_monotonic_ns,
     now_ts_device,
 )
@@ -39,6 +42,38 @@ def make_event(**overrides: object) -> AgentEvent:
         "payload_hash": "sha256:" + "9f" * 32,
         "model": "claude-opus-5",
         "provider": "anthropic",
+        "trace_id": "tr_" + "1" * 32,
+        "span_id": "sp_" + "2" * 32,
+        "parent_span_id": None,
+        "continues_from": None,
+    }
+    base.update(overrides)
+    return AgentEvent(**base)  # type: ignore[arg-type]
+
+
+def make_v1_event(**overrides: object) -> AgentEvent:
+    """A legacy pre-trace-attribution event, as if loaded off a v1 ledger row."""
+    base: dict[str, object] = {
+        "schema_version": EVENT_SCHEMA_VERSION_V1,
+        "event_id": "evt_" + "0" * 32,
+        "device_id": "dev_01HQ",
+        "session_id": "ses_01HQ",
+        "seq": 4471,
+        "kind": EventKind.TOOL_USE.value,
+        "ts_device": "2026-08-05T14:22:31.442123Z",
+        "ts_monotonic_ns": 123456789012345,
+        "tool_use_id": "toolu_01ABC",
+        "tool_name": "Bash",
+        "payload": {"command": "ls -la", "cwd": "/tmp"},
+        "payload_hash": "sha256:" + "9f" * 32,
+        "model": "claude-opus-5",
+        "provider": "anthropic",
+        # Legacy rows carry placeholder trace/span values (see ledger.py's
+        # _row_to_entry) — never observable via to_dict()/the digest.
+        "trace_id": "",
+        "span_id": "",
+        "parent_span_id": None,
+        "continues_from": None,
     }
     base.update(overrides)
     return AgentEvent(**base)  # type: ignore[arg-type]
@@ -65,8 +100,9 @@ class TestEventKind:
 
 class TestAgentEvent:
     def test_schema_version_constant(self) -> None:
-        assert EVENT_SCHEMA_VERSION == "1"
-        assert make_event().schema_version == "1"
+        assert EVENT_SCHEMA_VERSION == "2"
+        assert EVENT_SCHEMA_VERSION_V1 == "1"
+        assert make_event().schema_version == "2"
 
     def test_is_frozen(self) -> None:
         event = make_event()
@@ -97,6 +133,10 @@ class TestAgentEvent:
             "payload_hash",
             "model",
             "provider",
+            "trace_id",
+            "span_id",
+            "parent_span_id",
+            "continues_from",
         ]
 
     def test_optional_fields_accept_none(self) -> None:
@@ -167,9 +207,42 @@ class TestEventDigest:
         ):
             assert event_digest(make_event(**{field: value})) != baseline
 
-    def test_stable_value_is_pinned(self) -> None:
-        """A fixed event hashes to a fixed digest — a third party must be able
-        to reproduce this without running our code."""
+    def test_stable_value_is_pinned_v2(self) -> None:
+        """A fixed v2 event hashes to a fixed digest — a third party must be
+        able to reproduce this without running our code. Trace fields are
+        included in the preimage for v2."""
+        expected = sha256_hex(
+            canonicalize(
+                {
+                    "schema_version": "2",
+                    "event_id": "evt_" + "0" * 32,
+                    "device_id": "dev_01HQ",
+                    "session_id": "ses_01HQ",
+                    "seq": 4471,
+                    "kind": "tool_use",
+                    "ts_device": "2026-08-05T14:22:31.442123Z",
+                    "ts_monotonic_ns": 123456789012345,
+                    "tool_use_id": "toolu_01ABC",
+                    "tool_name": "Bash",
+                    "payload": {"command": "ls -la", "cwd": "/tmp"},
+                    "payload_hash": "sha256:" + "9f" * 32,
+                    "model": "claude-opus-5",
+                    "provider": "anthropic",
+                    "trace_id": "tr_" + "1" * 32,
+                    "span_id": "sp_" + "2" * 32,
+                    "parent_span_id": None,
+                    "continues_from": None,
+                }
+            )
+        )
+        assert event_digest(make_event()) == expected
+
+    def test_stable_value_is_pinned_v1(self) -> None:
+        """A fixed pre-migration (v1) event hashes to exactly the digest it
+        would have gotten before trace attribution existed — no trace fields
+        anywhere in the preimage, even though the AgentEvent object now has
+        those attributes. This is what makes re-verifying an old ledger row
+        after the v2 migration still work (see verify.py)."""
         expected = sha256_hex(
             canonicalize(
                 {
@@ -190,7 +263,29 @@ class TestEventDigest:
                 }
             )
         )
-        assert event_digest(make_event()) == expected
+        assert event_digest(make_v1_event()) == expected
+
+    def test_v1_to_dict_omits_trace_fields(self) -> None:
+        d = make_v1_event().to_dict()
+        assert "trace_id" not in d
+        assert "span_id" not in d
+        assert "parent_span_id" not in d
+        assert "continues_from" not in d
+
+    def test_v1_digest_unaffected_by_placeholder_trace_values(self) -> None:
+        """Different in-memory placeholder trace/span values on a v1 event
+        must not change its digest — they are never part of the preimage."""
+        a = make_v1_event(trace_id="", span_id="")
+        b = make_v1_event(trace_id=new_trace_id(), span_id=new_span_id())
+        assert event_digest(a) == event_digest(b)
+
+    def test_v2_digest_changes_when_trace_id_changes(self) -> None:
+        baseline = event_digest(make_event())
+        assert event_digest(make_event(trace_id="tr_" + "9" * 32)) != baseline
+
+    def test_v2_digest_changes_when_parent_span_id_changes(self) -> None:
+        baseline = event_digest(make_event())
+        assert event_digest(make_event(parent_span_id="sp_" + "9" * 32)) != baseline
 
 
 class TestIdsAndClocks:

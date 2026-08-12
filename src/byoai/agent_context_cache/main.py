@@ -14,6 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..recorder.integration import get_recorder
+from ..recorder.schema import new_span_id, new_trace_id
 from ..recorder.ledger import LedgerWriteError
 from ..session_hash import RedisHashStore
 from ..stages import PromptCacheInjection, SessionDedup
@@ -334,6 +335,31 @@ def derive_session_id(request: Request, body: dict) -> str:
         sort_keys=True,
     )
     return "auto:" + hashlib.sha256(seed.encode()).hexdigest()
+
+
+def derive_trace_context(request: Request) -> tuple[str, str, str | None, str | None]:
+    """Recorder trace attribution for one request (spec §5.3a).
+
+    ``trace_id``: the caller's ``X-BYOAI-Trace-Id`` header if sent (a
+    sub-agent or a harness that already tracks its own run id), otherwise a
+    fresh one — this request is then the root of a new logical run.
+
+    ``span_id``: always freshly generated per request; this call is one agent
+    invocation regardless of whether it's a root or sub-agent.
+
+    ``parent_span_id``: from ``X-BYOAI-Parent-Span-Id`` if sent, else ``None``
+    (top-level agent, no parent).
+
+    ``continues_from``: from ``X-BYOAI-Continues-From`` if sent, else
+    ``None``. Plumbing only — this recorder does not attempt to auto-detect
+    that a request continues a prior (now-restarted) session; a caller that
+    wants that link recorded must send the header itself.
+    """
+    trace_id = request.headers.get("x-byoai-trace-id") or new_trace_id()
+    span_id = new_span_id()
+    parent_span_id = request.headers.get("x-byoai-parent-span-id") or None
+    continues_from = request.headers.get("x-byoai-continues-from") or None
+    return trace_id, span_id, parent_span_id, continues_from
 
 
 async def safe_redis_get(key: str, default: str = "0") -> str:
@@ -759,11 +785,19 @@ async def proxy_claude_messages(request: Request):
 
     is_stream = body.get("stream", False)
     log_session_id = derive_session_id(request, body)
+    trace_id, span_id, parent_span_id, continues_from = derive_trace_context(request)
 
     recorder = get_recorder()
     if recorder is not None:
         try:
-            recorder.record_request_body(body, session_id=log_session_id)
+            recorder.record_request_body(
+                body,
+                session_id=log_session_id,
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                continues_from=continues_from,
+            )
         except LedgerWriteError as e:
             return _recorder_write_failed_response(e)
 
@@ -797,7 +831,14 @@ async def proxy_claude_messages(request: Request):
             usage_seen = {}
             stream_error = None
             stream_extractor = (
-                recorder.new_stream_extractor(session_id=log_session_id, model=body.get("model"))
+                recorder.new_stream_extractor(
+                    session_id=log_session_id,
+                    model=body.get("model"),
+                    trace_id=trace_id,
+                    span_id=span_id,
+                    parent_span_id=parent_span_id,
+                    continues_from=continues_from,
+                )
                 if recorder is not None
                 else None
             )
@@ -927,7 +968,14 @@ async def proxy_claude_messages(request: Request):
                     )
                 )
                 if recorder is not None:
-                    recorder.record_response_body(resp_json, session_id=log_session_id)
+                    recorder.record_response_body(
+                        resp_json,
+                        session_id=log_session_id,
+                        trace_id=trace_id,
+                        span_id=span_id,
+                        parent_span_id=parent_span_id,
+                        continues_from=continues_from,
+                    )
             except (json.JSONDecodeError, AttributeError):
                 pass
             except LedgerWriteError as e:

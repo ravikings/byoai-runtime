@@ -66,6 +66,15 @@ class PartialEvent:
     model: str | None
     provider: str = PROVIDER
     schema_version: str = EVENT_SCHEMA_VERSION
+    # Trace attribution (spec §5.3a). trace_id/span_id are set by whoever
+    # calls extract_request_events/extract_response_events/StreamExtractor
+    # (the proxy request handler, per capture call) — "" here only shows up
+    # if a caller genuinely didn't supply one, which integration.py's
+    # promotion path is not expected to do.
+    trace_id: str = ""
+    span_id: str = ""
+    parent_span_id: str | None = None
+    continues_from: str | None = None
 
 
 def _make_event(
@@ -76,6 +85,10 @@ def _make_event(
     model: str | None,
     tool_use_id: str | None = None,
     tool_name: str | None = None,
+    trace_id: str = "",
+    span_id: str = "",
+    parent_span_id: str | None = None,
+    continues_from: str | None = None,
 ) -> PartialEvent:
     return PartialEvent(
         session_id=session_id,
@@ -86,6 +99,10 @@ def _make_event(
         tool_name=tool_name,
         payload=payload,
         model=model,
+        trace_id=trace_id,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        continues_from=continues_from,
     )
 
 
@@ -114,9 +131,22 @@ class StreamExtractor:
     first and hand a reference to this object second.
     """
 
-    def __init__(self, *, session_id: str, model: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        model: str | None,
+        trace_id: str = "",
+        span_id: str = "",
+        parent_span_id: str | None = None,
+        continues_from: str | None = None,
+    ) -> None:
         self.session_id = session_id
         self.model = model
+        self.trace_id = trace_id
+        self.span_id = span_id
+        self.parent_span_id = parent_span_id
+        self.continues_from = continues_from
         self._buf = bytearray()
         self._data_lines: list[str] = []
         self._event_name: str | None = None
@@ -126,6 +156,16 @@ class StreamExtractor:
         self._stop_reason: str | None = None
         self._usage: dict[str, Any] = {}
         self._closed = False
+
+    def _make(self, **kwargs: Any) -> PartialEvent:
+        """``_make_event`` pre-bound to this stream's trace context."""
+        return _make_event(
+            trace_id=self.trace_id,
+            span_id=self.span_id,
+            parent_span_id=self.parent_span_id,
+            continues_from=self.continues_from,
+            **kwargs,
+        )
 
     # -- public API ---------------------------------------------------------
 
@@ -181,7 +221,7 @@ class StreamExtractor:
             self._blocks.clear()
         elif self._message_started and not self._message_stopped:
             events.append(
-                _make_event(
+                self._make(
                     session_id=self.session_id,
                     kind=KIND_STREAM_ABORTED,
                     payload={
@@ -231,7 +271,7 @@ class StreamExtractor:
             payload = json.loads(data)
         except json.JSONDecodeError as exc:
             return [
-                _make_event(
+                self._make(
                     session_id=self.session_id,
                     kind=KIND_PARSE_FAILURE,
                     payload={
@@ -245,7 +285,7 @@ class StreamExtractor:
             ]
         if not isinstance(payload, dict):
             return [
-                _make_event(
+                self._make(
                     session_id=self.session_id,
                     kind=KIND_PARSE_FAILURE,
                     payload={
@@ -344,7 +384,7 @@ class StreamExtractor:
         if etype == "error":
             error = data.get("error") or {}
             return [
-                _make_event(
+                self._make(
                     session_id=self.session_id,
                     kind=EventKind.API_ERROR,
                     payload={
@@ -367,7 +407,7 @@ class StreamExtractor:
             if not text:
                 return []
             return [
-                _make_event(
+                self._make(
                     session_id=self.session_id,
                     kind=EventKind.MESSAGE,
                     payload={"index": block.index, "text": text, "complete": True},
@@ -393,7 +433,7 @@ class StreamExtractor:
             payload["input_raw"] = raw[:_MAX_RAW_KEEP]
             payload["malformed_input"] = True
             payload["parse_error"] = error
-        return _make_event(
+        return self._make(
             session_id=self.session_id,
             kind=EventKind.TOOL_USE,
             payload=payload,
@@ -415,7 +455,7 @@ class StreamExtractor:
             payload["partial_json"] = block.partial_json()[:_MAX_RAW_KEEP]
         if block.text_parts:
             payload["partial_text"] = block.text()[:_MAX_RAW_KEEP]
-        return _make_event(
+        return self._make(
             session_id=self.session_id,
             kind=KIND_STREAM_ABORTED,
             payload=payload,
@@ -445,7 +485,15 @@ def _parse_tool_input(raw: str) -> tuple[dict[str, Any] | None, str | None]:
 # -- non-streaming paths ----------------------------------------------------
 
 
-def extract_request_events(body: dict, *, session_id: str) -> list[PartialEvent]:
+def extract_request_events(
+    body: dict,
+    *,
+    session_id: str,
+    trace_id: str = "",
+    span_id: str = "",
+    parent_span_id: str | None = None,
+    continues_from: str | None = None,
+) -> list[PartialEvent]:
     """Pull ``tool_result`` blocks out of the LAST user message.
 
     Anthropic allows ``content`` to be a bare string or a list of blocks, at
@@ -486,12 +534,24 @@ def extract_request_events(body: dict, *, session_id: str) -> list[PartialEvent]
                 },
                 model=model,
                 tool_use_id=tool_use_id if isinstance(tool_use_id, str) else None,
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                continues_from=continues_from,
             )
         )
     return events
 
 
-def extract_response_events(body: dict, *, session_id: str) -> list[PartialEvent]:
+def extract_response_events(
+    body: dict,
+    *,
+    session_id: str,
+    trace_id: str = "",
+    span_id: str = "",
+    parent_span_id: str | None = None,
+    continues_from: str | None = None,
+) -> list[PartialEvent]:
     """Non-streaming JSON response body -> ``tool_use`` / ``message`` events."""
     if not isinstance(body, dict):
         return []
@@ -509,6 +569,10 @@ def extract_response_events(body: dict, *, session_id: str) -> list[PartialEvent
                     "raw": error,
                 },
                 model=model,
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                continues_from=continues_from,
             )
         ]
 
@@ -537,6 +601,10 @@ def extract_response_events(body: dict, *, session_id: str) -> list[PartialEvent
                     model=model,
                     tool_use_id=tool_use_id if isinstance(tool_use_id, str) else None,
                     tool_name=block.get("name") if isinstance(block.get("name"), str) else None,
+                    trace_id=trace_id,
+                    span_id=span_id,
+                    parent_span_id=parent_span_id,
+                    continues_from=continues_from,
                 )
             )
         elif btype == "text":
@@ -548,6 +616,10 @@ def extract_response_events(body: dict, *, session_id: str) -> list[PartialEvent
                         kind=EventKind.MESSAGE,
                         payload={"index": index, "text": text, "complete": True},
                         model=model,
+                        trace_id=trace_id,
+                        span_id=span_id,
+                        parent_span_id=parent_span_id,
+                        continues_from=continues_from,
                     )
                 )
     return events

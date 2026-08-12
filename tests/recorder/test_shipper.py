@@ -14,7 +14,13 @@ import pytest
 from byoai.recorder.canonical import canonicalize, sha256_hex
 from byoai.recorder.keys import DeviceKey, load_or_create_device_key
 from byoai.recorder.ledger import Ledger
-from byoai.recorder.schema import EVENT_SCHEMA_VERSION, AgentEvent, EventKind
+from byoai.recorder.schema import (
+    EVENT_SCHEMA_VERSION,
+    AgentEvent,
+    EventKind,
+    new_span_id,
+    new_trace_id,
+)
 from byoai.recorder.shipper import ShipError, Shipper, ShipResult
 
 DEVICE = "dev_test"
@@ -37,6 +43,10 @@ def make_event(session_id: str = "sess_1", *, payload: dict | None = None) -> Ag
         payload_hash=sha256_hex(canonicalize(payload)),
         model="claude-opus-4-20250514",
         provider="anthropic",
+        trace_id=new_trace_id(),
+        span_id=new_span_id(),
+        parent_span_id=None,
+        continues_from=None,
     )
 
 

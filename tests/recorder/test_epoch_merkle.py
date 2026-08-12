@@ -23,7 +23,13 @@ from byoai.recorder.enroll import enroll
 from byoai.recorder.keys import DeviceKey, load_or_create_device_key
 from byoai.recorder.ledger import Ledger
 from byoai.recorder.merkle import verify_inclusion
-from byoai.recorder.schema import EVENT_SCHEMA_VERSION, AgentEvent, EventKind
+from byoai.recorder.schema import (
+    EVENT_SCHEMA_VERSION,
+    AgentEvent,
+    EventKind,
+    new_span_id,
+    new_trace_id,
+)
 from byoai.recorder.shipper import ShipError, Shipper
 
 CORIQO_BASE_URL = "https://coriqo.example.com"
@@ -46,6 +52,10 @@ def make_event(device_id: str, *, i: int = 0) -> AgentEvent:
         payload_hash=sha256_hex(canonicalize(payload)),
         model="claude-opus-4-20250514",
         provider="anthropic",
+        trace_id=new_trace_id(),
+        span_id=new_span_id(),
+        parent_span_id=None,
+        continues_from=None,
     )
 
 

@@ -147,6 +147,10 @@ class Recorder:
             payload_hash=payload_hash,
             model=partial.model,
             provider=partial.provider,
+            trace_id=partial.trace_id,
+            span_id=partial.span_id,
+            parent_span_id=partial.parent_span_id,
+            continues_from=partial.continues_from,
         )
 
     def record(self, partial: PartialEvent) -> None:
@@ -169,24 +173,72 @@ class Recorder:
         for partial in partials:
             self.record(partial)
 
-    def record_request_body(self, body: dict, *, session_id: str) -> None:
+    def record_request_body(
+        self,
+        body: dict,
+        *,
+        session_id: str,
+        trace_id: str = "",
+        span_id: str = "",
+        parent_span_id: str | None = None,
+        continues_from: str | None = None,
+    ) -> None:
         try:
-            partials = extract_request_events(body, session_id=session_id)
+            partials = extract_request_events(
+                body,
+                session_id=session_id,
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                continues_from=continues_from,
+            )
         except Exception:  # noqa: BLE001
             log.exception("recorder: request extraction failed")
             return
         self.record_many(partials)
 
-    def record_response_body(self, body: dict, *, session_id: str) -> None:
+    def record_response_body(
+        self,
+        body: dict,
+        *,
+        session_id: str,
+        trace_id: str = "",
+        span_id: str = "",
+        parent_span_id: str | None = None,
+        continues_from: str | None = None,
+    ) -> None:
         try:
-            partials = extract_response_events(body, session_id=session_id)
+            partials = extract_response_events(
+                body,
+                session_id=session_id,
+                trace_id=trace_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                continues_from=continues_from,
+            )
         except Exception:  # noqa: BLE001
             log.exception("recorder: response extraction failed")
             return
         self.record_many(partials)
 
-    def new_stream_extractor(self, *, session_id: str, model: str | None) -> StreamExtractor:
-        return StreamExtractor(session_id=session_id, model=model)
+    def new_stream_extractor(
+        self,
+        *,
+        session_id: str,
+        model: str | None,
+        trace_id: str = "",
+        span_id: str = "",
+        parent_span_id: str | None = None,
+        continues_from: str | None = None,
+    ) -> StreamExtractor:
+        return StreamExtractor(
+            session_id=session_id,
+            model=model,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            continues_from=continues_from,
+        )
 
     def feed_stream_chunk(self, extractor: StreamExtractor, chunk: bytes) -> None:
         try:

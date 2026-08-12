@@ -82,6 +82,10 @@ def first_broken_seq(path) -> int | None:
             payload_hash=row["payload_hash"],
             model=row["model"],
             provider=row["provider"],
+            trace_id=row.get("trace_id") or "",
+            span_id=row.get("span_id") or "",
+            parent_span_id=row.get("parent_span_id"),
+            continues_from=row.get("continues_from"),
         )
         digest = event_digest(event)
         expected = compute_entry_hash(prev, row["seq"], digest)
