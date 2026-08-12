@@ -4,12 +4,18 @@
   <meta charset="utf-8" />
   <title>ByoAI Demo Agent Showcase</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital@1&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/ui/static/styles.css" />
 </head>
 <body>
   <header>
-    <h1>ByoAI Demo Agent Showcase</h1>
-    <p class="tagline">Every tool call, sealed by the Coriqo agent recorder. Tamper-evident, verifiable after the fact.</p>
+    <span class="wordmark">Coriqo</span>
+    <div>
+      <h1>ByoAI Demo Agent Showcase</h1>
+      <p class="tagline">The flight recorder for your bank's AI — independently verifiable.</p>
+    </div>
   </header>
 
   <main>
@@ -25,6 +31,11 @@
         <div class="run-header">
           <h2 id="run-agent-name"></h2>
           <span id="run-status" class="badge"></span>
+        </div>
+
+        <div class="panel" style="margin-bottom: 1.25rem;">
+          <h3>Workflow</h3>
+          <ol id="workflow-graph" aria-label="Agent workflow graph"></ol>
         </div>
 
         <div class="run-columns">

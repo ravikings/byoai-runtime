@@ -7,7 +7,8 @@ const state = {
   runId: null,
   agentId: null,
   eventSource: null,
-  spanTextByKey: {}, // "trace_id|span_id" -> depth (0 = root)
+  wfNodesByTool: {}, // tool_name -> FIFO queue of pending <li> nodes, resolved in call order
+  runGeneration: 0, // bumped on every startRun so a stale run's async completion is ignored
 };
 
 async function loadAgents() {
@@ -58,7 +59,8 @@ function renderAgentCard(agent) {
   meta.className = "meta";
   meta.appendChild(makeTag(agent.provider + " / " + agent.model));
   if (agent.sub_agents.length > 0) {
-    meta.appendChild(makeTag(`${agent.sub_agents.length} sub-agent`));
+    const suffix = agent.sub_agents.length === 1 ? "sub-agent" : "sub-agents";
+    meta.appendChild(makeTag(`${agent.sub_agents.length} ${suffix}`));
   }
   if (agent.id.includes("misfire")) {
     meta.appendChild(makeTag("misfire demo", true));
@@ -86,26 +88,43 @@ async function startRun(agent) {
     state.eventSource = null;
   }
   state.agentId = agent.id;
-  state.spanTextByKey = {};
+  state.wfNodesByTool = {};
+  const generation = ++state.runGeneration;
 
   document.getElementById("run-empty").hidden = true;
   document.getElementById("run-active").hidden = false;
   document.getElementById("run-agent-name").textContent = agent.name;
   setStatus("running");
   document.getElementById("timeline").innerHTML = "";
+  document.getElementById("workflow-graph").innerHTML = "";
   document.getElementById("span-tree").innerHTML = "";
   document.getElementById("outcome-text").textContent = "—";
   document.getElementById("violations-panel").hidden = true;
   document.getElementById("violations-list").innerHTML = "";
   document.getElementById("verify-result").innerHTML = "";
   document.getElementById("verify-btn").disabled = true;
+  document.getElementById("verify-btn").onclick = null;
+  document.getElementById("tamper-btn").disabled = true;
+  document.getElementById("tamper-btn").onclick = null;
 
-  const res = await fetch(`/api/agents/${agent.id}/run`, { method: "POST" });
-  const { run_id } = await res.json();
+  let run_id;
+  try {
+    const res = await fetch(`/api/agents/${agent.id}/run`, { method: "POST" });
+    if (!res.ok) throw new Error(`run start failed: HTTP ${res.status}`);
+    ({ run_id } = await res.json());
+  } catch (err) {
+    if (generation !== state.runGeneration) return;
+    const badge = document.getElementById("run-status");
+    badge.className = "badge";
+    badge.textContent = "failed to start";
+    document.getElementById("outcome-text").textContent = `Could not start this run: ${err.message}`;
+    return;
+  }
+  if (generation !== state.runGeneration) return;
   state.runId = run_id;
 
-  streamEvents(run_id);
-  pollUntilDone(run_id);
+  streamEvents(run_id, generation);
+  pollUntilDone(run_id, generation);
 }
 
 function setStatus(kind) {
@@ -114,15 +133,23 @@ function setStatus(kind) {
   badge.textContent = kind === "running" ? "running…" : "done";
 }
 
-function streamEvents(runId) {
+function streamEvents(runId, generation) {
   const es = new EventSource(`/api/runs/${runId}/events`);
   state.eventSource = es;
   es.onmessage = (msg) => {
+    if (generation !== state.runGeneration) {
+      es.close();
+      return;
+    }
     const event = JSON.parse(msg.data);
     appendTimelineEvent(event);
+    appendWorkflowNode(event);
   };
   es.onerror = () => {
     es.close();
+    if (state.eventSource === es) {
+      state.eventSource = null;
+    }
   };
 }
 
@@ -151,6 +178,47 @@ function appendTimelineEvent(event) {
   list.scrollTop = list.scrollHeight;
 }
 
+// Renders the run as a LangGraph-style node chain: one node per tool call,
+// wired left-to-right with animated edges, so the audience sees a workflow
+// pipeline rather than a flat log.
+function appendWorkflowNode(event) {
+  const graph = document.getElementById("workflow-graph");
+
+  if (event.kind === "tool_use") {
+    if (graph.children.length > 0) {
+      const edge = document.createElement("li");
+      edge.className = "wf-edge";
+      graph.appendChild(edge);
+    }
+    const node = document.createElement("li");
+    node.className = "wf-node";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    node.appendChild(dot);
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = event.tool_name;
+    node.appendChild(label);
+    if (event.data && event.data.policy_violation) {
+      node.dataset.policyViolation = "1";
+    }
+    graph.appendChild(node);
+    const key = event.span_id + "|" + event.tool_name;
+    (state.wfNodesByTool[key] ??= []).push(node);
+    return;
+  }
+
+  if (event.kind === "tool_result") {
+    const key = event.span_id + "|" + event.tool_name;
+    const queue = state.wfNodesByTool[key];
+    const node = queue && queue.shift();
+    if (!node) return;
+    const errored = event.data && event.data.result && event.data.result.error;
+    const flagged = node.dataset.policyViolation === "1" || errored;
+    node.classList.add(flagged ? "flagged" : "validated");
+  }
+}
+
 function describeEvent(event) {
   if (event.kind === "message" && event.text) return event.text;
   if (event.kind === "tool_use") {
@@ -160,22 +228,31 @@ function describeEvent(event) {
     return `${event.tool_name} → ${JSON.stringify(event.data?.result ?? {})}`;
   }
   if (event.kind === "session_start") return "session started";
-  if (event.kind === "api_error") return event.data?.reason ?? "model API error — using fallback transcript";
+  if (event.kind === "api_error") return event.data?.reason || "model API error — using fallback transcript";
   if (event.kind === "run_complete") return event.text ?? "";
   return JSON.stringify(event.data ?? {});
 }
 
-async function pollUntilDone(runId) {
+async function pollUntilDone(runId, generation) {
   for (let i = 0; i < 300; i++) {
+    if (generation !== state.runGeneration) return;
     const res = await fetch(`/api/runs/${runId}`);
     const summary = await res.json();
+    if (generation !== state.runGeneration) return;
     if (summary.done) {
       renderRunSummary(summary);
       return;
     }
     await new Promise((r) => setTimeout(r, 200));
   }
-  setStatus("running");
+  if (generation !== state.runGeneration) return;
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  const badge = document.getElementById("run-status");
+  badge.className = "badge";
+  badge.textContent = "stalled";
   document.getElementById("outcome-text").textContent =
     "Timed out waiting for the run to finish — the agent may have stalled.";
 }
@@ -234,15 +311,21 @@ async function runTamperDemo(runId) {
 function renderSpanTree(spans) {
   const tree = document.getElementById("span-tree");
   tree.innerHTML = "";
-  const roots = spans.filter((s) => !s.parent_span_id);
-  const children = spans.filter((s) => s.parent_span_id);
+  const byParent = {};
+  for (const s of spans) {
+    (byParent[s.parent_span_id ?? ""] ??= []).push(s);
+  }
 
-  for (const root of roots) {
-    tree.appendChild(spanTreeItem("root span ", root.span_id, ""));
-    for (const child of children.filter((c) => c.parent_span_id === root.span_id)) {
-      tree.appendChild(spanTreeItem("↳ sub-agent span ", child.span_id, "child"));
+  function walk(parentKey, depth) {
+    for (const span of byParent[parentKey] ?? []) {
+      const label = depth === 0 ? "root span " : "↳ ".repeat(depth) + "sub-agent span ";
+      const li = spanTreeItem(label, span.span_id, depth > 0 ? "child" : "");
+      if (depth > 0) li.style.marginLeft = `${depth}rem`;
+      tree.appendChild(li);
+      walk(span.span_id, depth + 1);
     }
   }
+  walk("", 0);
 }
 
 function spanTreeItem(label, spanId, className) {
