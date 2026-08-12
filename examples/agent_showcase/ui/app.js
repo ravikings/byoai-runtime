@@ -9,6 +9,7 @@ const state = {
   eventSource: null,
   wfNodesByTool: {}, // tool_name -> FIFO queue of pending <li> nodes, resolved in call order
   runGeneration: 0, // bumped on every startRun so a stale run's async completion is ignored
+  runRendered: false, // guards against finishRun (SSE) and pollUntilDone (fallback) both rendering the same run
 };
 
 async function loadAgents() {
@@ -89,6 +90,7 @@ async function startRun(agent) {
   }
   state.agentId = agent.id;
   state.wfNodesByTool = {};
+  state.runRendered = false;
   const generation = ++state.runGeneration;
 
   document.getElementById("run-empty").hidden = true;
@@ -144,6 +146,9 @@ function streamEvents(runId, generation) {
     const event = JSON.parse(msg.data);
     appendTimelineEvent(event);
     appendWorkflowNode(event);
+    if (event.kind === "run_complete") {
+      finishRun(runId, generation);
+    }
   };
   es.onerror = () => {
     es.close();
@@ -151,6 +156,16 @@ function streamEvents(runId, generation) {
       state.eventSource = null;
     }
   };
+}
+
+async function finishRun(runId, generation) {
+  const res = await fetch(`/api/runs/${runId}`);
+  const summary = await res.json();
+  if (generation !== state.runGeneration || state.runRendered) return;
+  if (summary.done) {
+    state.runRendered = true;
+    renderRunSummary(summary);
+  }
 }
 
 function appendTimelineEvent(event) {
@@ -233,17 +248,21 @@ function describeEvent(event) {
   return JSON.stringify(event.data ?? {});
 }
 
+// Fallback safety net only: SSE's run_complete event (see finishRun) is the
+// primary completion signal. This polls far more slowly and exists purely to
+// catch the case where the SSE stream drops the message or errors out.
 async function pollUntilDone(runId, generation) {
-  for (let i = 0; i < 300; i++) {
+  for (let i = 0; i < 60; i++) {
     if (generation !== state.runGeneration) return;
     const res = await fetch(`/api/runs/${runId}`);
     const summary = await res.json();
-    if (generation !== state.runGeneration) return;
+    if (generation !== state.runGeneration || state.runRendered) return;
     if (summary.done) {
+      state.runRendered = true;
       renderRunSummary(summary);
       return;
     }
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 1000));
   }
   if (generation !== state.runGeneration) return;
   if (state.eventSource) {
