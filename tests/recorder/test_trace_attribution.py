@@ -111,10 +111,17 @@ class TestTraceFlow:
 
 class TestTraceFieldsFeedTheDigest:
     def test_entry_hash_changes_if_trace_id_is_tampered_with(self):
-        baseline = make_event(DEVICE)
+        # tool_use_id is pinned to the same fixed value on both calls —
+        # make_event() randomizes it by default, and if it weren't pinned the
+        # two events would differ in tool_use_id too, so the assertion below
+        # would still pass even if trace_id were dropped from event_digest()
+        # entirely. Pinning makes trace_id the ONLY field under test.
+        fixed_tool_use_id = "toolu_fixed_trace_test"
+        baseline = make_event(DEVICE, tool_use_id=fixed_tool_use_id)
         tampered = make_event(
             DEVICE,
             trace_id="tr_" + "f" * 32,
+            tool_use_id=fixed_tool_use_id,
         )
         # Same payload/seq/etc, only trace_id differs.
         object.__setattr__(tampered, "event_id", baseline.event_id)
@@ -124,12 +131,18 @@ class TestTraceFieldsFeedTheDigest:
         assert event_digest(tampered) != event_digest(baseline)
 
     def test_entry_hash_changes_if_parent_span_id_is_tampered_with(self):
-        baseline = make_event(DEVICE, parent_span_id="sp_" + "1" * 32)
+        # Same rationale as above: pin tool_use_id (and everything else not
+        # under test) so parent_span_id is the ONLY field that differs.
+        fixed_tool_use_id = "toolu_fixed_parent_span_test"
+        baseline = make_event(
+            DEVICE, parent_span_id="sp_" + "1" * 32, tool_use_id=fixed_tool_use_id
+        )
         tampered = make_event(
             DEVICE,
             trace_id=baseline.trace_id,
             span_id=baseline.span_id,
             parent_span_id="sp_" + "2" * 32,
+            tool_use_id=fixed_tool_use_id,
         )
         object.__setattr__(tampered, "event_id", baseline.event_id)
         object.__setattr__(tampered, "ts_device", baseline.ts_device)

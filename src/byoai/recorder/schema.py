@@ -23,6 +23,7 @@ __all__ = [
     "EventKind",
     "canonicalize",
     "event_digest",
+    "format_ts_device",
     "new_event_id",
     "new_trace_id",
     "new_span_id",
@@ -158,12 +159,21 @@ def new_span_id() -> str:
     return "sp_" + uuid.uuid4().hex
 
 
+def format_ts_device(dt: datetime) -> str:
+    """Format an arbitrary UTC ``datetime`` as RFC3339 with microsecond
+    precision, e.g. ``2026-08-05T14:22:31.442123Z``. Pure formatting — no
+    clock access — so any caller with its own datetime (e.g. one derived from
+    an epoch timestamp) can share the exact same shape as :func:`now_ts_device`.
+    """
+    utc = dt.astimezone(timezone.utc) if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond:06d}Z"
+
+
 def now_ts_device() -> str:
     """RFC3339 UTC timestamp with microsecond precision, e.g.
     ``2026-08-05T14:22:31.442123Z``. Untrusted host clock — ordering comes
     from ``seq``, never from this value."""
-    now = datetime.now(timezone.utc)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}Z"
+    return format_ts_device(datetime.now(timezone.utc))
 
 
 def now_monotonic_ns() -> int:

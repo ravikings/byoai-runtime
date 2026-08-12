@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
+from byoai.recorder.checkpoint import Checkpointer
 from byoai.recorder.keys import DeviceKey, load_or_create_device_key
 from byoai.recorder.ledger import Ledger
 from byoai.recorder.schema import (
@@ -21,7 +22,7 @@ from byoai.recorder.schema import (
     new_span_id,
     new_trace_id,
 )
-from byoai.recorder.shipper import ShipError, Shipper, ShipResult
+from byoai.recorder.shipper import CheckpointShipResult, ShipError, Shipper, ShipResult
 
 DEVICE = "dev_test"
 
@@ -352,3 +353,119 @@ def test_run_forever_never_raises_on_repeated_failures(ledger, key):
     # Must not raise despite every attempt failing.
     shipper.run_forever(stop=stop)
     assert attempts >= 3
+
+
+def _append_checkpoints(ledger: Ledger, key: DeviceKey, count: int) -> list[int]:
+    """Append ``count`` events, one checkpoint per event, and return the
+    checkpoints' seq_ends in order."""
+    cpr = Checkpointer(ledger, key, every_events=1)
+    seq_ends = []
+    for i in range(count):
+        entry = ledger.append(make_event(payload={"i": i}))
+        cp = cpr.note(entry.seq)
+        assert cp is not None
+        seq_ends.append(cp["seq_end"])
+    return seq_ends
+
+
+def test_ship_checkpoints_once_clean_accept_advances_watermark(ledger, key):
+    seq_ends = _append_checkpoints(ledger, key, 3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _decode_body(request)
+        assert set(body.keys()) == {"device_id", "checkpoints"}
+        assert len(body["checkpoints"]) == 3
+        return httpx.Response(202, json={"accepted": 3, "duplicates": 0, "rejected": []})
+
+    shipper = make_shipper(ledger, key, handler)
+    result = shipper.ship_checkpoints_once()
+
+    assert isinstance(result, CheckpointShipResult)
+    assert result.accepted == 3
+    assert result.synced_checkpoint_up_to == seq_ends[-1]
+    assert ledger.get_synced_checkpoint_up_to() == seq_ends[-1]
+
+
+def test_ship_checkpoints_once_rejected_checkpoint_does_not_advance_past_it(ledger, key):
+    # Server accepts fewer checkpoints than were sent (e.g. one was
+    # malformed/failed its own signature check) — the watermark must stop
+    # strictly before the rejected checkpoint, never past it, even though
+    # later checkpoints in the same batch were reported as accepted.
+    seq_ends = _append_checkpoints(ledger, key, 5)
+    rejected_seq_end = seq_ends[2]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            202,
+            json={
+                "accepted": 4,
+                "duplicates": 0,
+                "rejected": [{"seq_end": rejected_seq_end, "reason": "bad signature"}],
+            },
+        )
+
+    shipper = make_shipper(ledger, key, handler)
+    result = shipper.ship_checkpoints_once()
+
+    # Watermark stops at the checkpoint strictly before the rejected one.
+    assert result.synced_checkpoint_up_to == seq_ends[1]
+    assert ledger.get_synced_checkpoint_up_to() == seq_ends[1]
+
+    # The rejected checkpoint (and everything after it) is retried on the
+    # next attempt.
+    unsynced = [cp["seq_end"] for cp in ledger.read_unsynced_checkpoints()]
+    assert unsynced == seq_ends[2:]
+
+
+def test_ship_checkpoints_once_rejected_checkpoint_retried_next_call(ledger, key):
+    seq_ends = _append_checkpoints(ledger, key, 2)
+    rejected_seq_end = seq_ends[0]
+
+    calls = []
+
+    def failing_then_accepting(request: httpx.Request) -> httpx.Response:
+        body = _decode_body(request)
+        calls.append(body)
+        if len(calls) == 1:
+            return httpx.Response(
+                202,
+                json={
+                    "accepted": 1,
+                    "duplicates": 0,
+                    "rejected": [{"seq_end": rejected_seq_end, "reason": "bad signature"}],
+                },
+            )
+        return httpx.Response(202, json={"accepted": 1, "duplicates": 1, "rejected": []})
+
+    shipper = make_shipper(ledger, key, failing_then_accepting)
+
+    first = shipper.ship_checkpoints_once()
+    assert first.synced_checkpoint_up_to == 0
+    assert ledger.get_synced_checkpoint_up_to() == 0
+    assert [cp["seq_end"] for cp in calls[0]["checkpoints"]] == seq_ends
+
+    second = shipper.ship_checkpoints_once()
+    assert second.synced_checkpoint_up_to == seq_ends[-1]
+    assert ledger.get_synced_checkpoint_up_to() == seq_ends[-1]
+    # The retry batch still includes the previously-rejected checkpoint.
+    assert [cp["seq_end"] for cp in calls[1]["checkpoints"]] == seq_ends
+
+
+def test_ship_checkpoints_once_no_confirmation_leaves_watermark_unchanged(ledger, key):
+    seq_ends = _append_checkpoints(ledger, key, 1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            202,
+            json={
+                "accepted": 0,
+                "duplicates": 0,
+                "rejected": [{"seq_end": seq_ends[0], "reason": "bad signature"}],
+            },
+        )
+
+    shipper = make_shipper(ledger, key, handler)
+    result = shipper.ship_checkpoints_once()
+
+    assert result.synced_checkpoint_up_to == 0
+    assert ledger.get_synced_checkpoint_up_to() == 0

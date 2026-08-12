@@ -59,6 +59,20 @@ def _largest_power_of_two_less_than(n: int) -> int:
     return k
 
 
+def _max_audit_path_len(tree_size: int) -> int:
+    """Upper bound on a valid RFC 6962 audit path length for ``tree_size``.
+
+    A valid inclusion proof has at most ``ceil(log2(tree_size))`` elements.
+    Used as a cheap defense-in-depth check before doing any hashing: a
+    receipt whose ``hashes`` list is absurdly longer than this bound is
+    rejected outright, regardless of how the reconstruction itself is
+    implemented (recursive or iterative).
+    """
+    if tree_size <= 1:
+        return 0
+    return (tree_size - 1).bit_length()
+
+
 def _root_from_audit_path(leaf_hash: bytes, index: int, size: int, path: list[bytes]) -> bytes:
     """RFC 6962 section 2.1.1 ``PATH``/``MTH`` recursion, inverted for verification.
 
@@ -66,20 +80,38 @@ def _root_from_audit_path(leaf_hash: bytes, index: int, size: int, path: list[by
     produces it: each level's sibling hash is appended after the recursive
     call into the smaller subtree, so the last element belongs to the
     outermost split and the first is closest to the leaf).
+
+    Implemented iteratively (not recursively) on purpose: a naive recursive
+    version recurses once per element of ``path``, and a receipt with a
+    long-enough ``hashes`` list can drive that past Python's recursion limit
+    and raise an uncaught ``RecursionError`` instead of a clean verification
+    failure. The iterative form has no such bound regardless of receipt
+    size — the length is instead capped up front by callers via
+    ``_max_audit_path_len``.
     """
-    if size == 1:
-        if path:
-            raise ValueError("audit path has extra elements for a single-leaf subtree")
-        return leaf_hash
-    if not path:
-        raise ValueError("audit path is shorter than the tree shape requires")
-    k = _largest_power_of_two_less_than(size)
-    rest, top = path[:-1], path[-1]
-    if index < k:
-        left = _root_from_audit_path(leaf_hash, index, k, rest)
-        return _rfc6962_node_hash(left, top)
-    right = _root_from_audit_path(leaf_hash, index - k, size - k, rest)
-    return _rfc6962_node_hash(top, right)
+    directions: list[tuple[str, bytes]] = []
+    cur_index, cur_size, cur_path = index, size, path
+    while cur_size > 1:
+        if not cur_path:
+            raise ValueError("audit path is shorter than the tree shape requires")
+        k = _largest_power_of_two_less_than(cur_size)
+        rest, top = cur_path[:-1], cur_path[-1]
+        if cur_index < k:
+            directions.append(("left", top))
+            cur_size, cur_path = k, rest
+        else:
+            directions.append(("right", top))
+            cur_index, cur_size, cur_path = cur_index - k, cur_size - k, rest
+    if cur_path:
+        raise ValueError("audit path has extra elements for a single-leaf subtree")
+
+    result = leaf_hash
+    for direction, top in reversed(directions):
+        if direction == "left":
+            result = _rfc6962_node_hash(result, top)
+        else:
+            result = _rfc6962_node_hash(top, result)
+    return result
 
 
 def verify_rekor_receipt(
@@ -103,14 +135,31 @@ def verify_rekor_receipt(
         log_index = int(receipt["log_index"])
         tree_size = int(receipt["tree_size"])
         root_hash = bytes.fromhex(receipt["root_hash"])
-        hashes = [bytes.fromhex(h) for h in receipt["hashes"]]
+        raw_hashes = receipt["hashes"]
     except (KeyError, TypeError, ValueError) as exc:
+        return False, [f"rekor receipt malformed: {exc}"]
+
+    if tree_size < 1:
+        return False, [f"rekor receipt has non-positive tree_size {tree_size}"]
+    if not 0 <= log_index < tree_size:
+        return False, [f"log_index {log_index} out of range for tree_size {tree_size}"]
+
+    max_path_len = _max_audit_path_len(tree_size)
+    if len(raw_hashes) > max_path_len:
+        return False, [
+            f"rekor audit path has {len(raw_hashes)} elements, more than the "
+            f"{max_path_len} a valid proof for tree_size {tree_size} can have"
+        ]
+
+    try:
+        hashes = [bytes.fromhex(h) for h in raw_hashes]
+    except (TypeError, ValueError) as exc:
         return False, [f"rekor receipt malformed: {exc}"]
 
     leaf_hash = hashlib.sha256(_LEAF_PREFIX + epoch_root).digest()
     try:
         recomputed_root = _root_from_audit_path(leaf_hash, log_index, tree_size, hashes)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         return False, [f"rekor inclusion proof invalid: {exc}"]
 
     inclusion_ok = recomputed_root == root_hash

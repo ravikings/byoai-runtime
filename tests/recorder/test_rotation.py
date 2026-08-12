@@ -32,6 +32,8 @@ from byoai.recorder.schema import (
 )
 from byoai.recorder.verify import verify_ledger
 
+from .conftest import make_event
+
 
 def _make_ledger(tmp_path, name="ledger.db"):
     key_dir = tmp_path / "keys"
@@ -41,25 +43,16 @@ def _make_ledger(tmp_path, name="ledger.db"):
 
 
 def _append_event(ledger: Ledger, device_id: str, kind: str, session_id: str = "ses_1") -> None:
-    event = AgentEvent(
-        schema_version=EVENT_SCHEMA_VERSION,
-        event_id=new_event_id(),
-        device_id=device_id,
+    """Delegates to conftest.make_event() rather than hand-building an
+    AgentEvent, so this file automatically picks up new/changed fields on
+    the shared factory instead of needing a manual follow-up edit each time
+    (see the trace_id/span_id migration, which required exactly that)."""
+    event = make_event(
+        device_id,
         session_id=session_id,
-        seq=0,
-        kind=kind,
-        ts_device=now_ts_device(),
-        ts_monotonic_ns=now_monotonic_ns(),
-        tool_use_id=None,
+        kind=EventKind(kind),
         tool_name=None,
         payload={"n": 1},
-        payload_hash="sha256:" + "00" * 32,
-        model=None,
-        provider="anthropic",
-        trace_id=new_trace_id(),
-        span_id=new_span_id(),
-        parent_span_id=None,
-        continues_from=None,
     )
     ledger.append(event)
 

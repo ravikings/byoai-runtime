@@ -142,42 +142,19 @@ class Shipper:
             total_bytes += entry_bytes
 
         body = {"device_id": self._key.device_id, "entries": batch}
-        canonical_body = canonicalize(body)
-        signature = self._key.sign(canonical_body)
-        payload = gzip.compress(canonical_body)
-
-        try:
-            response = self._client.post(
-                f"{self._base_url}{_INGEST_PATH}",
-                content=payload,
-                headers={
-                    "content-type": "application/json",
-                    "content-encoding": "gzip",
-                    "x-coriqo-device": self._key.device_id,
-                    "x-coriqo-signature": signature,
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise ShipError(f"ingest request failed: {exc}") from exc
-
-        if response.status_code // 100 != 2:
-            retry_after = _parse_retry_after(response.headers.get("retry-after"))
-            raise ShipError(
-                f"ingest rejected: HTTP {response.status_code} {response.text}",
-                retry_after=retry_after,
-            )
-
-        try:
-            resp_body = response.json()
-        except ValueError as exc:
-            raise ShipError(f"ingest response was not valid JSON: {response.text}") from exc
+        resp_body = self._post_signed_batch(_INGEST_PATH, body)
 
         accepted = int(resp_body.get("accepted", 0))
         duplicates = int(resp_body.get("duplicates", 0))
         gaps = [list(g) for g in resp_body.get("gaps", [])]
 
         shipped_seqs = [wire_entry["seq"] for wire_entry in batch]
-        synced_up_to = self._advance_watermark(shipped_seqs, gaps)
+        synced_up_to = self._advance_watermark(
+            self._ledger.get_synced_up_to,
+            self._ledger.set_synced_up_to,
+            shipped_seqs,
+            gaps,
+        )
 
         return ShipResult(
             accepted=accepted,
@@ -204,13 +181,57 @@ class Shipper:
             return None
 
         body = {"device_id": self._key.device_id, "checkpoints": checkpoints}
+        resp_body = self._post_signed_batch(_CHECKPOINT_INGEST_PATH, body)
+
+        accepted = int(resp_body.get("accepted", 0))
+        duplicates = int(resp_body.get("duplicates", 0))
+        # Per-checkpoint outcomes the server explicitly rejected (e.g. a
+        # malformed or badly-signed checkpoint) — distinct from ``accepted``
+        # and ``duplicates``. Any seq_end reported here (and anything after
+        # it in this batch) must never be marked synced, mirroring how
+        # ``ship_once`` treats gapped seqs, or a rejected checkpoint would be
+        # silently marked as synced forever and never retried, leaving a
+        # permanent hole in the epoch tree.
+        try:
+            rejected_seq_ends = [int(r["seq_end"]) for r in resp_body.get("rejected", [])]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ShipError(
+                f"response from {_CHECKPOINT_INGEST_PATH} had a malformed 'rejected' "
+                f"entry: {resp_body.get('rejected')!r}"
+            ) from exc
+        rejected_ranges = [[seq_end, seq_end] for seq_end in rejected_seq_ends]
+
+        shipped_seq_ends = [cp["seq_end"] for cp in checkpoints]
+        synced_checkpoint_up_to = self._advance_watermark(
+            self._ledger.get_synced_checkpoint_up_to,
+            self._ledger.set_synced_checkpoint_up_to,
+            shipped_seq_ends,
+            rejected_ranges,
+        )
+
+        return CheckpointShipResult(
+            accepted=accepted,
+            duplicates=duplicates,
+            synced_checkpoint_up_to=synced_checkpoint_up_to,
+        )
+
+    def _post_signed_batch(self, path: str, body: dict) -> dict:
+        """Canonicalize, sign, gzip, and POST ``body`` to ``path``; return the
+        parsed JSON response.
+
+        Shared by :meth:`ship_once` and :meth:`ship_checkpoints_once`: both
+        batch kinds sign/gzip/POST the same way, use the same headers, and
+        treat network failure / non-2xx / non-JSON responses identically.
+        Raises :class:`ShipError` in all of those cases; does not retry
+        internally.
+        """
         canonical_body = canonicalize(body)
         signature = self._key.sign(canonical_body)
         payload = gzip.compress(canonical_body)
 
         try:
             response = self._client.post(
-                f"{self._base_url}{_CHECKPOINT_INGEST_PATH}",
+                f"{self._base_url}{path}",
                 content=payload,
                 headers={
                     "content-type": "application/json",
@@ -220,41 +241,41 @@ class Shipper:
                 },
             )
         except httpx.HTTPError as exc:
-            raise ShipError(f"checkpoint ingest request failed: {exc}") from exc
+            raise ShipError(f"request to {path} failed: {exc}") from exc
 
         if response.status_code // 100 != 2:
             retry_after = _parse_retry_after(response.headers.get("retry-after"))
             raise ShipError(
-                f"checkpoint ingest rejected: HTTP {response.status_code} {response.text}",
+                f"request to {path} rejected: HTTP {response.status_code} {response.text}",
                 retry_after=retry_after,
             )
 
         try:
-            resp_body = response.json()
+            return response.json()
         except ValueError as exc:
             raise ShipError(
-                f"checkpoint ingest response was not valid JSON: {response.text}"
+                f"response from {path} was not valid JSON: {response.text}"
             ) from exc
 
-        accepted = int(resp_body.get("accepted", 0))
-        duplicates = int(resp_body.get("duplicates", 0))
+    def _advance_watermark(
+        self,
+        get_current: Callable[[], int],
+        set_current: Callable[[int], None],
+        shipped_seqs: list[int],
+        gaps: list[list[int]],
+    ) -> int:
+        """Advance a synced-up-to watermark up to (but never past) the first
+        gapped/rejected seq in this batch, if any.
 
-        target = max(cp["seq_end"] for cp in checkpoints)
-        current = self._ledger.get_synced_checkpoint_up_to()
-        if target > current:
-            self._ledger.set_synced_checkpoint_up_to(target)
-            current = target
-
-        return CheckpointShipResult(
-            accepted=accepted,
-            duplicates=duplicates,
-            synced_checkpoint_up_to=current,
-        )
-
-    def _advance_watermark(self, shipped_seqs: list[int], gaps: list[list[int]]) -> int:
-        """Advance the ledger's synced watermark up to (but never past) the
-        first gapped seq in this batch, if any."""
-        current = self._ledger.get_synced_up_to()
+        Generic over which watermark: ``ship_once`` passes the entry
+        watermark accessors with the server's reported ``gaps`` ranges;
+        ``ship_checkpoints_once`` passes the checkpoint watermark accessors
+        with single-point ranges built from the server's ``rejected``
+        seq_ends. Same discipline either way: a gapped/rejected seq (and
+        everything after it in this batch) is left unsynced so the next
+        attempt retries it.
+        """
+        current = get_current()
         if not shipped_seqs:
             return current
 
@@ -280,7 +301,7 @@ class Shipper:
         if target <= current:
             return current
 
-        self._ledger.set_synced_up_to(target)
+        set_current(target)
         return target
 
     # -- background loop ------------------------------------------------------

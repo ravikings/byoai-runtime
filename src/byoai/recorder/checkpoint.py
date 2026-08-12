@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from byoai.recorder.canonical import canonicalize
 from byoai.recorder.keys import DeviceKey
+from byoai.recorder.schema import format_ts_device
 
 if TYPE_CHECKING:  # pragma: no cover
     from byoai.recorder.ledger import Ledger
@@ -53,8 +54,7 @@ def verify_checkpoint(checkpoint: dict[str, Any], public_key_b64: str) -> bool:
 
 
 def _rfc3339_utc(epoch_seconds: float) -> str:
-    dt = datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    return format_ts_device(datetime.fromtimestamp(epoch_seconds, tz=timezone.utc))
 
 
 class Checkpointer:

@@ -14,7 +14,6 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -24,6 +23,7 @@ from byoai.recorder.keys import (
     atomic_write_bytes,
     load_or_create_device_key,
 )
+from byoai.recorder.schema import now_ts_device
 
 __all__ = [
     "ENROLLMENT_FILENAME",
@@ -109,7 +109,7 @@ def enroll(
     state = EnrollmentState(
         device_id=device_id,
         coriqo_base_url=body.get("coriqo_base_url") or coriqo_base_url,
-        enrolled_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        enrolled_at=now_ts_device(),
     )
     _write_enrollment_state(key_dir, state)
     return state

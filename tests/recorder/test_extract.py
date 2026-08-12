@@ -247,6 +247,47 @@ def test_delta_for_unknown_block_index_is_not_dropped():
     assert [(e.kind, e.payload["text"]) for e in events] == [("message", "orphan")]
 
 
+def test_tool_input_delta_for_unknown_block_stop_is_not_dropped():
+    """A content_block_start for index 9 was reordered/dropped, but its
+    input_json_delta fragments still arrive and the block still stops. This
+    must never silently vanish: since the block's real type (tool_use) was
+    never established, it is surfaced as a parse_failure carrying the raw
+    accumulated JSON rather than being discarded via the empty-text path."""
+    stream = (
+        b'data: {"type":"content_block_delta","index":9,'
+        b'"delta":{"type":"input_json_delta","partial_json":"{\\"file\\":"}}\n\n'
+        b'data: {"type":"content_block_delta","index":9,'
+        b'"delta":{"type":"input_json_delta","partial_json":"\\"a.py\\"}"}}\n\n'
+        b'data: {"type":"content_block_stop","index":9}\n\n'
+    )
+    events = _run_whole(stream)
+    assert [e.kind for e in events] == [KIND_PARSE_FAILURE]
+    assert events[0].payload["index"] == 9
+    assert events[0].payload["complete"] is False
+    assert events[0].payload["input_raw"] == '{"file":"a.py"}'
+
+
+def test_tool_input_delta_for_unknown_block_never_stopped_marks_aborted_on_close():
+    """Same reordered-frame scenario, but the stream is cut before
+    content_block_stop ever arrives. close() must still surface the
+    accumulated JSON as a marker (stream_aborted), never silently drop it."""
+    stream = (
+        b'data: {"type":"content_block_delta","index":9,'
+        b'"delta":{"type":"input_json_delta","partial_json":"{\\"file\\":"}}\n\n'
+        b'data: {"type":"content_block_delta","index":9,'
+        b'"delta":{"type":"input_json_delta","partial_json":"\\"a.py\\"}"}}\n\n'
+    )
+    ex = StreamExtractor(session_id="ses_1", model=None)
+    during = ex.feed(stream)
+    assert during == []
+
+    aborted = ex.close()
+    assert [e.kind for e in aborted] == [KIND_STREAM_ABORTED]
+    assert aborted[0].payload["index"] == 9
+    assert aborted[0].payload["complete"] is False
+    assert aborted[0].payload["partial_json"] == '{"file":"a.py"}'
+
+
 # -- truncation -------------------------------------------------------------
 
 

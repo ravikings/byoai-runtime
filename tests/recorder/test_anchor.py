@@ -153,3 +153,85 @@ def test_verify_rekor_receipt_checks_signed_entry_timestamp():
     ok, notes = verify_rekor_receipt(receipt, epoch_root, rekor_public_key_b64="not-an-ed25519-key")
     assert not ok
     assert any("does NOT verify" in n for n in notes)
+
+
+def test_verify_rekor_receipt_rejects_negative_log_index():
+    epoch_root = hashlib.sha256(b"yet another tenant epoch root").digest()
+    _, audit_path = _build_rekor_fixture(epoch_root, index=3, size=7)
+
+    receipt = {
+        "log_index": -1,
+        "tree_size": 7,
+        "root_hash": hashlib.sha256(b"whatever").hexdigest(),
+        "hashes": [h.hex() for h in audit_path],
+    }
+
+    ok, notes = verify_rekor_receipt(receipt, epoch_root, rekor_public_key_b64=None)
+    assert not ok
+    assert any("out of range" in n for n in notes)
+
+
+def test_verify_rekor_receipt_rejects_log_index_at_or_above_tree_size():
+    epoch_root = hashlib.sha256(b"yet another tenant epoch root 2").digest()
+    _, audit_path = _build_rekor_fixture(epoch_root, index=3, size=7)
+
+    receipt = {
+        "log_index": 7,
+        "tree_size": 7,
+        "root_hash": hashlib.sha256(b"whatever").hexdigest(),
+        "hashes": [h.hex() for h in audit_path],
+    }
+
+    ok, notes = verify_rekor_receipt(receipt, epoch_root, rekor_public_key_b64=None)
+    assert not ok
+    assert any("out of range" in n for n in notes)
+
+
+def test_verify_rekor_receipt_rejects_pathologically_long_audit_path():
+    """A malicious receipt can pad ``hashes`` far beyond what any valid proof
+    for its claimed ``tree_size`` could contain. The old code relied only on
+    a ``try/except ValueError`` around a recursive reconstruction, so a long
+    enough list (crafted so the ``index < k`` branch is always taken, e.g.
+    ``log_index = 0``) would blow past Python's recursion limit and raise an
+    uncaught ``RecursionError`` instead of returning a clean failure. This
+    must now be rejected cheaply, before any hashing happens, and must never
+    raise.
+    """
+    epoch_root = hashlib.sha256(b"padded receipt epoch root").digest()
+    dummy_hash = hashlib.sha256(b"dummy").hexdigest()
+
+    receipt = {
+        "log_index": 0,
+        "tree_size": 7,
+        "root_hash": hashlib.sha256(b"whatever").hexdigest(),
+        "hashes": [dummy_hash] * 5000,
+    }
+
+    ok, notes = verify_rekor_receipt(receipt, epoch_root, rekor_public_key_b64=None)
+    assert not ok
+    assert any("more than" in n for n in notes)
+
+
+def test_verify_rekor_receipt_reconstruction_never_raises_recursion_error():
+    """Even if a pathologically long audit path somehow got past the
+    up-front length cap, the reconstruction itself (now iterative) must not
+    raise ``RecursionError`` — it should surface as a normal ``(False, [...])``
+    result instead. Exercise the recursion-prone helper directly to prove
+    the iterative rewrite has no recursion depth at all.
+    """
+    from byoai.recorder.anchor import _root_from_audit_path
+
+    leaf_hash = hashlib.sha256(b"leaf").digest()
+    dummy = hashlib.sha256(b"dummy").digest()
+    huge_size = 2**5000  # tree size far beyond any real system
+    path = [dummy] * 5000
+
+    # index=0 forces the "left" branch at every level, so a recursive
+    # implementation would recurse len(path) times; the iterative
+    # implementation must handle this without raising RecursionError.
+    try:
+        _root_from_audit_path(leaf_hash, 0, huge_size, path)
+    except RecursionError:
+        raise AssertionError("audit path reconstruction must not recurse")
+    except ValueError:
+        pass  # fine — shape mismatch is an expected, clean failure

@@ -69,6 +69,14 @@ def test_enroll_success_persists_state(tmp_path):
     assert state.coriqo_base_url == "https://coriqo.example.com"
     assert len(requests_seen) == 1
 
+    # enrolled_at must match the shared RFC3339 formatter (schema.now_ts_device):
+    # microsecond precision, not the old hand-rolled second-precision variant.
+    import re
+
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", state.enrolled_at
+    ), state.enrolled_at
+
     persisted = load_enrollment_state(key_dir)
     assert persisted == state
 

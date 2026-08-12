@@ -22,11 +22,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from time import monotonic_ns
 from typing import Any
 
-from .schema import EVENT_SCHEMA_VERSION, EventKind
+from .schema import EVENT_SCHEMA_VERSION, EventKind, now_ts_device
 
 PROVIDER = "anthropic"
 
@@ -40,11 +39,6 @@ _MAX_RAW_KEEP = 4096
 
 def _kind(kind: EventKind | str) -> str:
     return kind.value if isinstance(kind, EventKind) else str(kind)
-
-
-def _now_rfc3339() -> str:
-    """RFC 3339 UTC, microsecond precision, ``Z`` suffix."""
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +87,7 @@ def _make_event(
     return PartialEvent(
         session_id=session_id,
         kind=_kind(kind),
-        ts_device=_now_rfc3339(),
+        ts_device=now_ts_device(),
         ts_monotonic_ns=monotonic_ns(),
         tool_use_id=tool_use_id,
         tool_name=tool_name,
@@ -402,7 +396,28 @@ class StreamExtractor:
     def _complete_block(self, block: _Block) -> list[PartialEvent]:
         if block.type == "tool_use":
             return [self._tool_use_event(block)]
-        if block.type in ("text", "unknown"):
+        if block.type == "unknown":
+            # We never saw a content_block_start for this index (dropped or
+            # reordered SSE frame), so we don't know whether it was really
+            # text or tool_use. If it accumulated JSON fragments (the
+            # tool_use shape), the text-based path below would silently
+            # discard it — text_parts is empty for a tool-input block. Surface
+            # it as a parse_failure instead: the input is a finding for the
+            # examiner, never a silent drop.
+            if block.json_parts:
+                return [self._unknown_block_event(block)]
+            text = block.text()
+            if not text:
+                return []
+            return [
+                self._make(
+                    session_id=self.session_id,
+                    kind=EventKind.MESSAGE,
+                    payload={"index": block.index, "text": text, "complete": True},
+                    model=self.model,
+                )
+            ]
+        if block.type == "text":
             text = block.text()
             if not text:
                 return []
@@ -415,6 +430,28 @@ class StreamExtractor:
                 )
             ]
         return []
+
+    def _unknown_block_event(self, block: _Block) -> PartialEvent:
+        """A block that accumulated content but whose ``content_block_start``
+        was never observed (missing or reordered SSE frame). Its real type —
+        text vs tool_use — cannot be determined, so this is recorded as a
+        parse failure carrying the raw accumulated JSON rather than silently
+        dropped or misfiled as an empty text block."""
+        raw = block.partial_json()
+        return self._make(
+            session_id=self.session_id,
+            kind=EventKind.PARSE_FAILURE,
+            payload={
+                "index": block.index,
+                "block_type": block.type,
+                "complete": False,
+                "reason": "content_block_start_missing",
+                "input_raw": raw[:_MAX_RAW_KEEP],
+            },
+            model=self.model,
+            tool_use_id=block.id,
+            tool_name=block.name,
+        )
 
     def _tool_use_event(self, block: _Block) -> PartialEvent:
         raw = block.partial_json()

@@ -212,7 +212,18 @@ class MockCoriqo:
             status_code=201,
         )
 
-    async def _ingest_batch(self, request: Request) -> JSONResponse:
+    async def _authenticate_and_decode(
+        self, request: Request
+    ) -> tuple[str, dict] | JSONResponse:
+        """Shared wire-verification for both batch endpoints: missing-header
+        check, device lookup, gzip-vs-raw decoding, request-signature
+        verification (over the exact bytes received off the wire — never a
+        re-serialized/re-parsed version, which is the whole point of this
+        server existing), JSON parsing, and device_id header/body agreement.
+
+        Returns ``(device_id, payload)`` on success, or a ready-to-return
+        :class:`JSONResponse` error on the first failure.
+        """
         device_id = request.headers.get("x-coriqo-device")
         signature = request.headers.get("x-coriqo-signature")
 
@@ -234,9 +245,6 @@ class MockCoriqo:
         else:
             canonical_body = raw_body
 
-        # Verify against the *exact* bytes received off the wire (after
-        # gzip decompression), never a re-serialized/re-parsed version —
-        # this is the whole point of this server existing.
         if not DeviceKey.verify(state.device.public_key_b64, canonical_body, signature):
             return JSONResponse({"error": "bad signature"}, status_code=401)
 
@@ -250,6 +258,15 @@ class MockCoriqo:
                 {"error": "device_id mismatch between header and body"},
                 status_code=401,
             )
+
+        return device_id, payload
+
+    async def _ingest_batch(self, request: Request) -> JSONResponse:
+        result = await self._authenticate_and_decode(request)
+        if isinstance(result, JSONResponse):
+            return result
+        device_id, payload = result
+        state = self._devices[device_id]
 
         entries = payload.get("entries", [])
 
@@ -278,45 +295,24 @@ class MockCoriqo:
         )
 
     async def _checkpoints_batch(self, request: Request) -> JSONResponse:
-        device_id = request.headers.get("x-coriqo-device")
-        signature = request.headers.get("x-coriqo-signature")
-
-        if not device_id or not signature:
-            return JSONResponse(
-                {"error": "missing device/signature headers"}, status_code=401
-            )
-
-        state = self._devices.get(device_id)
-        if state is None:
-            return JSONResponse({"error": "unknown device_id"}, status_code=401)
-
-        raw_body = await request.body()
-        if request.headers.get("content-encoding") == "gzip":
-            try:
-                canonical_body = gzip.decompress(raw_body)
-            except OSError:
-                return JSONResponse({"error": "invalid gzip body"}, status_code=401)
-        else:
-            canonical_body = raw_body
-
-        if not DeviceKey.verify(state.device.public_key_b64, canonical_body, signature):
-            return JSONResponse({"error": "bad signature"}, status_code=401)
-
-        try:
-            payload = json.loads(canonical_body)
-        except ValueError:
-            return JSONResponse({"error": "body is not valid JSON"}, status_code=401)
-
-        if payload.get("device_id") != device_id:
-            return JSONResponse(
-                {"error": "device_id mismatch between header and body"},
-                status_code=401,
-            )
+        result = await self._authenticate_and_decode(request)
+        if isinstance(result, JSONResponse):
+            return result
+        device_id, payload = result
 
         checkpoints = payload.get("checkpoints", [])
 
         accepted = 0
         duplicates = 0
+        # Per-checkpoint rejections (distinct from a request-level 401):
+        # the request signature only proves the device sent this batch, not
+        # that any individual checkpoint inside it is genuine — a checkpoint
+        # that fails its own signature check (§6.2) is reported back here so
+        # the shipper can retry it specifically, instead of us either
+        # silently dropping it or aborting the whole batch (which would also
+        # discard whatever in the same batch was fine).
+        state = self._devices[device_id]
+        rejected: list[dict] = []
         for body in checkpoints:
             seq_end = body["seq_end"]
 
@@ -324,15 +320,11 @@ class MockCoriqo:
                 duplicates += 1
                 continue
 
-            # The checkpoint's own signature (over its own fields, §6.2) is a
-            # separate check from the request signature above — a valid
-            # request signature only proves the device sent this batch, not
-            # that any individual checkpoint inside it is genuine.
             if not verify_checkpoint(body, state.device.public_key_b64):
-                return JSONResponse(
-                    {"error": f"checkpoint seq_end {seq_end}: signature does not verify"},
-                    status_code=401,
+                rejected.append(
+                    {"seq_end": seq_end, "reason": "checkpoint signature does not verify"}
                 )
+                continue
 
             state.checkpoints_by_seq_end[seq_end] = StoredCheckpoint(
                 device_id=device_id, seq_end=seq_end, body=body
@@ -340,7 +332,7 @@ class MockCoriqo:
             accepted += 1
 
         return JSONResponse(
-            {"accepted": accepted, "duplicates": duplicates},
+            {"accepted": accepted, "duplicates": duplicates, "rejected": rejected},
             status_code=202,
         )
 
