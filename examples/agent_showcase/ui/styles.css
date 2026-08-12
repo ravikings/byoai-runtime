@@ -78,6 +78,21 @@ h3 {
   margin: 0 0 0.6rem;
 }
 
+#domain-tabs { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+.domain-tab {
+  background: var(--field);
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.75rem;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.domain-tab:hover { border-color: var(--azure-soft); color: var(--ink); }
+.domain-tab.active { background: var(--azure); border-color: var(--azure); color: #fff; }
+
 .domain-group { margin-bottom: 1.25rem; }
 .domain-label {
   font-family: 'IBM Plex Mono', monospace;
