@@ -139,7 +139,13 @@ def _evict_old_runs() -> None:
             del _RUNS[run_id]
 
 
-def _start_run(agent_id: str, *, source: str = "manual") -> str:
+def _start_run(
+    agent_id: str,
+    *,
+    source: str = "manual",
+    inject_misfire: bool = False,
+    force_live: bool = False,
+) -> str:
     agent = get_agent(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"unknown agent: {agent_id}")
@@ -158,7 +164,7 @@ def _start_run(agent_id: str, *, source: str = "manual") -> str:
 
     async def drive() -> None:
         try:
-            async for event in runner.run():
+            async for event in runner.run(inject_misfire=inject_misfire, force_live=force_live):
                 if not state["trace_id"]:
                     state["trace_id"] = event.trace_id
                 state["events"].append(event)
@@ -172,8 +178,16 @@ def _start_run(agent_id: str, *, source: str = "manual") -> str:
 
 
 @app.post("/api/agents/{agent_id}/run")
-async def api_run_agent(agent_id: str) -> dict[str, str]:
-    run_id = _start_run(agent_id, source="manual")
+async def api_run_agent(
+    agent_id: str, inject_misfire: bool = False, force_live: bool = False
+) -> dict[str, str]:
+    """inject_misfire=true forces a simulated provider failure (skips the live
+    call entirely) so the fallback/detection path can be demoed on demand.
+    force_live=true bypasses the 1-day live-call TTL for this agent (see
+    runner.LIVE_CALL_TTL_SECONDS) and always calls out live."""
+    run_id = _start_run(
+        agent_id, source="manual", inject_misfire=inject_misfire, force_live=force_live
+    )
     return {"run_id": run_id, "status": "started"}
 
 

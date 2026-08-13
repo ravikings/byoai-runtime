@@ -28,6 +28,7 @@ transcript instead of live-calling.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -50,6 +51,22 @@ log = logging.getLogger("agent_showcase.runner")
 
 MAX_TURNS = 8
 FALLBACKS_DIR = Path(__file__).parent / "fallbacks"
+
+# TTL for live OpenAI/Anthropic API calls: once an agent has been called live,
+# repeat demo runs within this window replay its fallback transcript instead
+# of spending real API credits again. Keeps a "Run" button demo cheap to mash
+# without needing a key check on every click. Per-process, in-memory only —
+# resets on restart. `force_live=True` bypasses it for a specific run.
+LIVE_CALL_TTL_SECONDS = 24 * 60 * 60
+_LAST_LIVE_CALL: dict[str, float] = {}
+
+# Fallback-transcript replay has no network latency of its own, so without a
+# deliberate pace every step fires back-to-back in a handful of milliseconds
+# — too fast for a human to see the UI's per-step indicators (heartbeat,
+# active card, workflow-graph node) light up. Off by default (0ms) so the
+# test suite stays fast/deterministic; start.sh sets
+# BYOAI_DEMO_STEP_DELAY_MS for the live demo experience.
+FALLBACK_STEP_DELAY_SECONDS = float(os.environ.get("BYOAI_DEMO_STEP_DELAY_MS", "0")) / 1000
 
 
 @dataclass
@@ -92,7 +109,9 @@ class AgentRunner:
         self.parent_span_id = parent_span_id
         self._run_id = run_id
 
-    async def run(self) -> AsyncIterator[RunEvent]:
+    async def run(
+        self, *, inject_misfire: bool = False, force_live: bool = False
+    ) -> AsyncIterator[RunEvent]:
         run_id = self._run_id or _new_run_id()
         session_id = run_id
         recorder = get_recorder()
@@ -119,18 +138,49 @@ class AgentRunner:
 
         final_text = ""
         used_fallback = False
-        try:
-            async for event in self._run_live(session_id, recorder):
-                if event.kind == EventKind.MESSAGE.value and event.text:
-                    final_text = event.text
-                yield event
-        except ByoAIError:
-            log.warning("agent_showcase: model API error for %s, using fallback transcript", self.agent.id)
+        mode = "live"
+
+        if inject_misfire:
+            # Demo-only failure injection: simulate a provider misfire (timeout,
+            # bad response, whatever) instead of ever calling out live, so the
+            # fallback/detection path can be exercised on demand.
+            log.warning("agent_showcase: injected misfire for %s (forced fallback)", self.agent.id)
+            yield RunEvent(
+                kind="misfire",
+                trace_id=self.trace_id,
+                span_id=self.span_id,
+                parent_span_id=self.parent_span_id,
+                data={"reason": "injected_failure_for_demo", "agent_id": self.agent.id},
+            )
             used_fallback = True
+            mode = "misfire"
             async for event in self._run_fallback(session_id, recorder):
                 if event.kind == EventKind.MESSAGE.value and event.text:
                     final_text = event.text
                 yield event
+        elif not force_live and self._live_call_on_cooldown():
+            log.info("agent_showcase: %s within live-call TTL, replaying cached transcript", self.agent.id)
+            used_fallback = True
+            mode = "cached"
+            async for event in self._run_fallback(session_id, recorder):
+                if event.kind == EventKind.MESSAGE.value and event.text:
+                    final_text = event.text
+                yield event
+        else:
+            try:
+                async for event in self._run_live(session_id, recorder):
+                    if event.kind == EventKind.MESSAGE.value and event.text:
+                        final_text = event.text
+                    yield event
+                _LAST_LIVE_CALL[self.agent.id] = time.time()
+            except ByoAIError:
+                log.warning("agent_showcase: model API error for %s, using fallback transcript", self.agent.id)
+                used_fallback = True
+                mode = "replay"
+                async for event in self._run_fallback(session_id, recorder):
+                    if event.kind == EventKind.MESSAGE.value and event.text:
+                        final_text = event.text
+                    yield event
         yield RunEvent(
             kind="run_complete",
             trace_id=self.trace_id,
@@ -140,10 +190,14 @@ class AgentRunner:
             data={
                 "run_id": run_id,
                 "used_fallback": used_fallback,
-                "mode": "replay" if used_fallback else "live",
+                "mode": mode,
                 "provider": self.agent.provider,
             },
         )
+
+    def _live_call_on_cooldown(self) -> bool:
+        last = _LAST_LIVE_CALL.get(self.agent.id)
+        return last is not None and (time.time() - last) < LIVE_CALL_TTL_SECONDS
 
     async def _run_sub_agent(
         self, sub_agent: AgentDef, session_id: str, recorder: Any
@@ -499,6 +553,8 @@ class AgentRunner:
                         trace_id=self.trace_id,
                         span_id=self.span_id,
                     )
+                if FALLBACK_STEP_DELAY_SECONDS:
+                    await asyncio.sleep(FALLBACK_STEP_DELAY_SECONDS)
             for call in step.get("tool_calls", []):
                 tool_use_id += 1
                 call_id = f"cached_{tool_use_id}"
@@ -522,6 +578,8 @@ class AgentRunner:
                         trace_id=self.trace_id,
                         span_id=self.span_id,
                     )
+                if FALLBACK_STEP_DELAY_SECONDS:
+                    await asyncio.sleep(FALLBACK_STEP_DELAY_SECONDS)
 
                 sub_agent = self.agent.sub_agent_tools.get(name)
                 if sub_agent is not None:
@@ -564,3 +622,5 @@ class AgentRunner:
                         trace_id=self.trace_id,
                         span_id=self.span_id,
                     )
+                if FALLBACK_STEP_DELAY_SECONDS:
+                    await asyncio.sleep(FALLBACK_STEP_DELAY_SECONDS)

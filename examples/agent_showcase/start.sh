@@ -15,6 +15,12 @@
 #   BYOAI_RECORDER_DIR                 ledger dir, defaults to ~/.byoai/recorder
 #   DEMO_TAMPER=1                      enable the /api/demo/tamper endpoint
 #   BYOAI_DEMO_AUTOPILOT=1             background traffic every 90-240s
+#   BYOAI_DEMO_STEP_DELAY_MS           pace fallback-transcript replay so the
+#                                       UI's heartbeat/active-card/workflow
+#                                       indicators are visible (400ms here;
+#                                       fallback replay has no real network
+#                                       latency of its own, so without this
+#                                       every step fires in milliseconds)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +33,7 @@ pip install --pre -e ".[fastapi,recorder]"
 
 export BYOAI_RECORDER_ENABLED="${BYOAI_RECORDER_ENABLED:-1}"
 export BYOAI_RECORDER_DIR="${BYOAI_RECORDER_DIR:-$HOME/.byoai/recorder}"
+export BYOAI_DEMO_STEP_DELAY_MS="${BYOAI_DEMO_STEP_DELAY_MS:-400}"
 
 echo "==> Recorder: BYOAI_RECORDER_ENABLED=$BYOAI_RECORDER_ENABLED  BYOAI_RECORDER_DIR=$BYOAI_RECORDER_DIR"
 if [ "$BYOAI_RECORDER_ENABLED" = "1" ]; then

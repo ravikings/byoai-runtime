@@ -16,6 +16,18 @@
       <h1>ByoAI Agent Showcase</h1>
       <p class="tagline">The flight recorder for your AI systems — independently verifiable.</p>
     </div>
+    <div
+      id="swarm-status"
+      class="swarm-status idle"
+      role="button"
+      tabindex="0"
+      aria-pressed="false"
+      aria-label="Toggle the auto-run swarm"
+      title="Click to start the auto-run swarm"
+    >
+      <span id="swarm-dot" class="swarm-dot"></span>
+      <span id="swarm-label">swarm idle — click to start</span>
+    </div>
   </header>
 
   <main>
@@ -32,6 +44,14 @@
         <div class="run-header">
           <h2 id="run-agent-name"></h2>
           <span id="run-status" class="badge"></span>
+        </div>
+
+        <div id="model-box" class="model-box" hidden>
+          <span id="model-box-dot" class="model-box-dot"></span>
+          <div class="model-box-text">
+            <span id="model-box-name" class="model-box-name"></span>
+            <span id="model-box-detail" class="model-box-detail"></span>
+          </div>
         </div>
 
         <div class="panel" style="margin-bottom: 1.25rem;">
