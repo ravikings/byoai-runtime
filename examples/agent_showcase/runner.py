@@ -55,10 +55,58 @@ FALLBACKS_DIR = Path(__file__).parent / "fallbacks"
 # TTL for live OpenAI/Anthropic API calls: once an agent has been called live,
 # repeat demo runs within this window replay its fallback transcript instead
 # of spending real API credits again. Keeps a "Run" button demo cheap to mash
-# without needing a key check on every click. Per-process, in-memory only —
-# resets on restart. `force_live=True` bypasses it for a specific run.
+# without needing a key check on every click. Persisted to disk (see
+# LIVE_CALL_STATE_PATH) so the cooldown survives a server restart.
+# `force_live=True` bypasses it for a specific run.
 LIVE_CALL_TTL_SECONDS = 24 * 60 * 60
+LIVE_CALL_STATE_PATH = Path(
+    os.environ.get("BYOAI_DEMO_LIVE_CALL_STATE", str(Path.home() / ".byoai" / "agent_showcase_live_calls.json"))
+)
+
+
+def _load_last_live_call() -> dict[str, float]:
+    try:
+        raw = json.loads(LIVE_CALL_STATE_PATH.read_text())
+    except (OSError, ValueError) as exc:
+        log.warning("agent_showcase: ignoring unreadable live-call state at %s: %s", LIVE_CALL_STATE_PATH, exc)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    state: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            state[str(key)] = float(value)
+        except (TypeError, ValueError):
+            log.warning("agent_showcase: dropping malformed live-call state entry %r=%r", key, value)
+    return state
+
+
+def _save_last_live_call(state: dict[str, float]) -> None:
+    # Write to a sibling temp file and rename over the target so a reader
+    # never observes a partially-written file (json.loads on a torn read
+    # would otherwise be caught by _load_last_live_call and silently wipe
+    # every agent's cooldown).
+    try:
+        LIVE_CALL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = LIVE_CALL_STATE_PATH.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
+        tmp_path.write_text(json.dumps(state))
+        os.replace(tmp_path, LIVE_CALL_STATE_PATH)
+    except OSError:
+        log.warning("agent_showcase: failed to persist live-call state to %s", LIVE_CALL_STATE_PATH)
+
+
+# Loaded lazily (on first cooldown check) rather than at import time, so tests
+# that monkeypatch LIVE_CALL_STATE_PATH before the first run() still see their
+# own isolated state instead of whatever was on disk at import.
 _LAST_LIVE_CALL: dict[str, float] = {}
+_live_call_state_loaded = False
+
+
+def _ensure_live_call_state_loaded() -> None:
+    global _live_call_state_loaded
+    if not _live_call_state_loaded:
+        _LAST_LIVE_CALL.update(_load_last_live_call())
+        _live_call_state_loaded = True
 
 # Fallback-transcript replay has no network latency of its own, so without a
 # deliberate pace every step fires back-to-back in a handful of milliseconds
@@ -115,6 +163,7 @@ class AgentRunner:
         run_id = self._run_id or _new_run_id()
         session_id = run_id
         recorder = get_recorder()
+        _ensure_live_call_state_loaded()
 
         if recorder is not None:
             from byoai.recorder.extract import PartialEvent
@@ -173,6 +222,7 @@ class AgentRunner:
                         final_text = event.text
                     yield event
                 _LAST_LIVE_CALL[self.agent.id] = time.time()
+                _save_last_live_call(_LAST_LIVE_CALL)
             except ByoAIError:
                 log.warning("agent_showcase: model API error for %s, using fallback transcript", self.agent.id)
                 used_fallback = True
@@ -196,6 +246,7 @@ class AgentRunner:
         )
 
     def _live_call_on_cooldown(self) -> bool:
+        _ensure_live_call_state_loaded()
         last = _LAST_LIVE_CALL.get(self.agent.id)
         return last is not None and (time.time() - last) < LIVE_CALL_TTL_SECONDS
 

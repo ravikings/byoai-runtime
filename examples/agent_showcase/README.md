@@ -117,6 +117,11 @@ curl -s localhost:8000/api/runs/$run_id/verify | python -m json.tool
 
 ## Env vars
 
+`start.sh` auto-loads and exports every variable from a `.env` file in the
+repo root or this directory, if either exists, before setting any of the
+defaults below — a convenient place to keep the vars in this table without
+retyping `export` each time you run it.
+
 | Var | Purpose |
 |---|---|
 | `ANTHROPIC_API_KEY` | Live model calls for B1-B4. If unset or the call fails, the agent replays its recorded fallback transcript (`fallbacks/`) instead — the run still completes and the recorder still seals real events. |
@@ -126,6 +131,7 @@ curl -s localhost:8000/api/runs/$run_id/verify | python -m json.tool
 | `BYOAI_DEMO_AUTOPILOT` | `1` to start a background loop that runs a random agent every 90-240s, mimicking real bank/healthcare traffic. Off by default so importing the app (tests, one-off runs) never spends API credits on its own. |
 | `DEMO_TAMPER` | `1` to enable `/api/demo/tamper/{run_id}`, which flips a byte in a sealed row to demonstrate `/verify` catching it. |
 | `BYOAI_DEMO_STEP_DELAY_MS` | Milliseconds to pause between fallback-transcript replay steps. Fallback replay has no real network latency, so without this every step fires in milliseconds — too fast for the UI's heartbeat/active-card/workflow indicators to be seen. `start.sh` sets this to `400` by default; `0` (the library default) disables pacing, which is what the test suite runs with. |
+| `BYOAI_DEMO_LIVE_CALL_STATE` | File tracking each agent's last live-call time, so the 24h live-call TTL (below) survives a server restart. Defaults to `~/.byoai/agent_showcase_live_calls.json`. |
 
 `/api/agents` reports each agent's current `"live"` status — `true` if its provider's API key is set, `false` if it's running off the cached transcript.
 
@@ -136,7 +142,7 @@ curl -s localhost:8000/api/runs/$run_id/verify | python -m json.tool
 - `force_live=true` — bypass the 1-day live-call TTL (below) and always attempt a live call for this run.
 - `inject_misfire=true` — skip the live call entirely and force the fallback path, simulating a provider misfire (timeout, bad response) on demand. The run's events include a `"misfire"` event and `run_complete.data.mode` is `"misfire"`.
 
-Once an agent has been called live, repeat runs of that same agent within **24 hours** replay its cached fallback transcript instead of spending API credits again (`runner.LIVE_CALL_TTL_SECONDS`, in-memory per process, resets on restart). `run_complete.data.mode` reports which path a run took: `"live"`, `"replay"` (live call failed), `"cached"` (TTL cooldown), or `"misfire"` (injected).
+Once an agent has been called live, repeat runs of that same agent within **24 hours** replay its cached fallback transcript instead of spending API credits again (`runner.LIVE_CALL_TTL_SECONDS`). This is persisted to `BYOAI_DEMO_LIVE_CALL_STATE` (above), so it survives a server restart. `run_complete.data.mode` reports which path a run took: `"live"`, `"replay"` (live call failed), `"cached"` (TTL cooldown), or `"misfire"` (injected).
 
 ```bash
 curl -s -X POST "localhost:8000/api/agents/b1-fraud-triage/run?inject_misfire=true" | python -m json.tool

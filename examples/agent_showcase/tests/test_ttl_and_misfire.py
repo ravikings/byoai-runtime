@@ -20,6 +20,8 @@ def demo_client(tmp_path, monkeypatch):
     monkeypatch.setenv("BYOAI_RECORDER_ENABLED", "1")
     monkeypatch.setenv("BYOAI_RECORDER_DIR", str(tmp_path / "ledger"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(runner_module, "LIVE_CALL_STATE_PATH", tmp_path / "live_calls.json")
+    monkeypatch.setattr(runner_module, "_live_call_state_loaded", False)
     recorder_integration.reset_recorder_for_tests()
     runner_module._LAST_LIVE_CALL.clear()
     with TestClient(app) as client:
