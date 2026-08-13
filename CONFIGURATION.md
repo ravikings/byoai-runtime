@@ -590,6 +590,14 @@ failure, `2` if the file can't be read at all.
 
 #### Syncing to Coriqo (opt-in, requires enrollment)
 
+> **Client-only for now.** No released Coriqo serves the `/v1/enroll` and
+> `/v1/ingest/batch` endpoints described below, so `byoai-recorder-enroll`
+> currently has nothing to enroll against. Everything on the byoai side is
+> implemented and tested against the mock server in `tests/recorder/`, and the
+> wire format below is the frozen contract a server has to satisfy — but until
+> one exists, the recorder is local-only in practice. The rest of this section
+> documents the client's behavior, not a working round trip.
+
 The ledger is fully useful offline (`coriqo-verify` needs no network), but a
 device can also ship it to a Coriqo instance for centralized storage. This is
 a two-step, opt-in flow on top of everything above:
@@ -618,6 +626,101 @@ the meantime.
 
 Without enrollment, the recorder stays local-only: it writes the ledger and
 makes no network calls.
+
+#### Publishing runs to Coriqo's agent API (`byoai.recorder.coriqo_agents`)
+
+A separate integration from the ledger sync above, and the one that works
+against Coriqo today. Where the shipper would copy the raw hash chain, this
+publishes *governed decisions* to Coriqo's agent API: each agent is registered
+once, and each run becomes a trajectory plus one decision trace per sealed
+step. Coriqo then holds the agent registry, the mandate each agent may act
+under, and its own hash-chained trail of what the agent did.
+
+Nothing here runs automatically. Session boundaries and agent identity are
+application concepts the recorder can't infer — it never sees where a run ends,
+and under the default `redacted` payload mode it can't even read which agent a
+session belonged to. So the caller drives it:
+
+```python
+from byoai.recorder.coriqo_agents import (
+    AgentRegistration, CoriqoAgentsClient, CoriqoCredentials,
+    ensure_registered, publish_session,
+)
+from byoai.recorder.integration import get_recorder
+
+credentials = CoriqoCredentials.from_env()   # None when BYOAI_CORIQO_URL is unset
+if credentials is not None:
+    with CoriqoAgentsClient(credentials) as client:
+        agent_ids = ensure_registered(client, {
+            "my-agent": AgentRegistration(
+                name="My Agent",
+                mandate="What this agent is allowed to do",
+                allowed_tools=("search_docs", "summarize"),
+            ),
+        })
+        # ...once a run identified by `session_id` has finished...
+        publish_session(
+            client,
+            coriqo_agent_id=agent_ids["my-agent"],
+            ledger=get_recorder().ledger,
+            session_id=session_id,
+        )
+```
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `BYOAI_CORIQO_URL` | unset | Coriqo base URL, e.g. `http://localhost:8000`. Unset means `CoriqoCredentials.from_env()` returns `None` and nothing is published |
+| `BYOAI_CORIQO_API_KEY` | unset | Coriqo service account key (`cq_sa_…`). Required alongside the URL |
+| `BYOAI_CORIQO_TENANT_SLUG` | unset | Coriqo tenant slug, e.g. `acme_bank`. Required alongside the URL |
+
+The service account authenticates with two headers rather than a JWT, and needs
+`governance:approve` to register agents plus `model:write` to record traces. A
+deployment that shouldn't create agents can hold `model:write` alone, skip
+`ensure_registered`, and pass known agent ids to `publish_session` directly.
+Registering always lands an agent at `in_review` — Coriqo never pre-approves —
+so self-registration files a governance to-do rather than granting the agent any
+standing.
+
+`ensure_registered` is safe to call on every startup and from several processes
+at once. Idempotency is Coriqo's, not ours: each agent is registered under an
+`external_id` (your mapping key, optionally prefixed via
+`external_id_prefix="my-app:"`), and re-registering the same one returns the
+existing agent instead of a second copy. So there is no local cache to keep in
+sync and no matching on display names. Note that a repeat call does **not** push
+changed `mandate`/`allowed_tools` — amend those through Coriqo's mandate
+endpoint, so the change is versioned rather than silently rewriting what earlier
+decisions were judged against.
+
+`publish_session` sends digests and step metadata, never raw payloads. Each
+step's `args_hash`/`result_hash` are the ledger's own `payload_hash` values,
+which commit to the raw payload whatever `BYOAI_RECORDER_PAYLOAD_MODE` is set
+to, and each trace cites its ledger row's `entry_hash` as an external grounding
+anchor (`{"type": "external", "id": …, "system": "byoai-recorder"}`), which
+Coriqo holds outside its integrity scoring. Both stores therefore commit to the
+same bytes: a hash off a Coriqo trace resolves to the sealed row behind it, and
+`coriqo-verify` still checks the ledger offline, so neither store has to be
+trusted on its own. Pass `ground_in_ledger=False` to leave the anchors off.
+
+Steps go up through Coriqo's batch endpoint, so an ordinary run costs one
+request; runs longer than `MAX_TRACE_BATCH` (200) steps are split. A batch is
+atomic on Coriqo's side — one invalid trace rejects all of them — so a rejection
+raises rather than reporting partial success.
+
+`allowed_tools` is enforced on every trace: a recorded call outside it comes back
+`flagged` with a mandate Finding attached, so the list has to be the agent's real
+declared tool surface. Register with `mandate_enforcement="observe"` to have
+violations sealed and reported without flagging the trace, then read what the
+agent actually reached for via Coriqo's `/mandate/observed-tools`.
+
+`publish_session` also takes `parent_trajectory_id` to nest a run under another
+of the **same** agent's runs, which rolls a flagged step up through every
+ancestor. Coriqo refuses cross-agent nesting, so a sub-agent registered as its
+own agent is better represented as a tool call on its parent's trace.
+
+Functions here raise `CoriqoAgentsError` (and `AgentSuspendedError` on a 423)
+rather than swallowing failures, leaving it to the application to decide whether
+Coriqo being unreachable should matter. See
+`examples/agent_showcase/coriqo_sync.py` for a caller that log-and-continues.
 
 #### Rotating or revoking a device key
 
