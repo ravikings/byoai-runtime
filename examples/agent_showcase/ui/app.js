@@ -204,9 +204,15 @@ function makeTag(text, isMisfire) {
 // auto-run traffic never yanks the user into a detail view they didn't ask
 // to see.
 async function startRun(agent, { focus = true } = {}) {
-  document.querySelectorAll(".agent-card").forEach((el) => {
-    el.classList.toggle("selected", focus && el.dataset.agentId === agent.id);
-  });
+  // Only a focused (user-initiated) run moves the selection marker. An ambient
+  // swarm run must leave it alone — it's the "you are here" tie between the
+  // run-detail panel and the card it's describing, and clearing it on every
+  // background run stranded the panel with no card pointing at it.
+  if (focus) {
+    document.querySelectorAll(".agent-card").forEach((el) => {
+      el.classList.toggle("selected", el.dataset.agentId === agent.id);
+    });
+  }
 
   if (focus && state.eventSource) {
     state.eventSource.close();
@@ -373,6 +379,17 @@ function appendWorkflowNode(event) {
     const flagged = node.dataset.policyViolation === "1" || errored;
     node.classList.remove("active");
     node.classList.add(flagged ? "flagged" : "validated");
+    // Don't let the node's outcome be carried by colour alone — add a glyph and
+    // an accessible name so a flagged step is still identifiable without it.
+    const mark = document.createElement("span");
+    mark.className = "wf-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = flagged ? "⚠" : "✓";
+    node.appendChild(mark);
+    node.setAttribute(
+      "aria-label",
+      `${event.tool_name} — ${flagged ? "flagged, off-scope or errored" : "validated"}`,
+    );
   }
 }
 

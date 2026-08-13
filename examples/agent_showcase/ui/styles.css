@@ -152,8 +152,8 @@ h3 {
    border keeps telling the run's story after the beat stops. Yields to
    .active (declared above wins on equal specificity only if later, so these
    are scoped to :not(.active)). */
-.agent-card.ran-done:not(.active) { border-color: rgba(74, 214, 160, 0.5); }
-.agent-card.ran-error:not(.active) { border-color: rgba(163, 56, 45, 0.55); box-shadow: 0 0 0 1px rgba(163, 56, 45, 0.25); }
+.agent-card.ran-done:not(.active):not(.selected) { border-color: rgba(74, 214, 160, 0.5); }
+.agent-card.ran-error:not(.active):not(.selected) { border-color: rgba(163, 56, 45, 0.55); box-shadow: 0 0 0 1px rgba(163, 56, 45, 0.25); }
 
 .agent-card .name { font-weight: 600; font-size: 0.92rem; color: var(--ink); }
 .agent-card .desc { color: var(--ink-soft); font-size: 0.78rem; margin-top: 0.2rem; line-height: 1.35; }
@@ -312,6 +312,11 @@ h3 {
 .wf-node.validated { border-color: #bdeeda; background: #eafbf4; }
 .wf-node.flagged .dot { background: var(--off-scope); animation: none; }
 .wf-node.flagged { border-color: #f0c9c2; background: #fbeeeb; color: var(--off-scope); }
+/* Redundant-with-colour outcome glyph, so a flagged step still reads as flagged
+   without relying on the red tint. */
+.wf-mark { font-size: 0.72rem; line-height: 1; flex-shrink: 0; }
+.wf-node.validated .wf-mark { color: #2f9d78; }
+.wf-node.flagged .wf-mark { color: var(--off-scope); }
 .wf-node .label { font-family: 'IBM Plex Mono', monospace; font-size: 0.74rem; color: var(--ink); }
 .wf-node.flagged .label { color: var(--off-scope); }
 .wf-edge {
