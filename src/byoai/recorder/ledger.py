@@ -409,6 +409,23 @@ class Ledger:
             ).fetchall()
         return [_row_to_entry(r) for r in rows]
 
+    def read_session(self, session_id: str) -> list[LedgerEntry]:
+        """Every entry belonging to one session, in seq order.
+
+        A session is one agent invocation, so this is how a caller
+        reconstructs a single run from the ledger alone — no in-memory app
+        state involved. Note that a sub-agent invocation gets its own
+        ``session_id`` while sharing the parent's ``trace_id``, so this
+        returns one agent's own steps, not a whole trace tree.
+        """
+        with self._lock:
+            self._require_open()
+            rows = self._conn.execute(
+                "SELECT * FROM agent_events WHERE session_id = ? ORDER BY seq",
+                (session_id,),
+            ).fetchall()
+        return [_row_to_entry(r) for r in rows]
+
     def iter_entries(self) -> Iterator[LedgerEntry]:
         """Stream the whole chain in seq order without loading it all at once.
 

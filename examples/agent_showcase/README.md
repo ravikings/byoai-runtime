@@ -76,7 +76,7 @@ All data is synthetic — no real customers, patients, or institutions.
 Installs `byoai-runtime` editable (`fastapi` + `recorder` extras) from the
 repo root and launches uvicorn with the recorder on by default
 (`BYOAI_RECORDER_ENABLED=1`), so every run is sealed to the ledger. Check
-with `curl -s localhost:8000/api/runs/<run_id>/verify | python -m json.tool`.
+with `curl -s localhost:8001/api/runs/<run_id>/verify | python -m json.tool`.
 Set `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` first for live model calls; without
 them agents fall back to cached transcripts. See `start.sh` for the rest of
 the env vars it reads.
@@ -98,21 +98,25 @@ export BYOAI_DEMO_AUTOPILOT=1              # optional — pings a random agent
 ## Run
 
 ```bash
-uvicorn examples.agent_showcase.app:app --reload
+uvicorn examples.agent_showcase.app:app --reload --port 8001
 ```
+
+Port 8001 rather than uvicorn's default 8000, which a local Coriqo's API
+already binds — the two are meant to run side by side (see
+[Publishing runs to Coriqo](#publishing-runs-to-coriqo)).
 
 ## Try it
 
-Open http://localhost:8000/ for the UI, or drive the API directly:
+Open http://localhost:8001/ for the UI, or drive the API directly:
 
 ```bash
-curl -s localhost:8000/api/agents | python -m json.tool
+curl -s localhost:8001/api/agents | python -m json.tool
 
-run_id=$(curl -s -X POST localhost:8000/api/agents/b2-kyc-onboarding/run | python -c 'import json,sys;print(json.load(sys.stdin)["run_id"])')
+run_id=$(curl -s -X POST localhost:8001/api/agents/b2-kyc-onboarding/run | python -c 'import json,sys;print(json.load(sys.stdin)["run_id"])')
 
-curl -s localhost:8000/api/runs/$run_id | python -m json.tool
+curl -s localhost:8001/api/runs/$run_id | python -m json.tool
 
-curl -s localhost:8000/api/runs/$run_id/verify | python -m json.tool
+curl -s localhost:8001/api/runs/$run_id/verify | python -m json.tool
 ```
 
 ## Env vars
@@ -132,6 +136,11 @@ retyping `export` each time you run it.
 | `DEMO_TAMPER` | `1` to enable `/api/demo/tamper/{run_id}`, which flips a byte in a sealed row to demonstrate `/verify` catching it. |
 | `BYOAI_DEMO_STEP_DELAY_MS` | Milliseconds to pause between fallback-transcript replay steps. Fallback replay has no real network latency, so without this every step fires in milliseconds — too fast for the UI's heartbeat/active-card/workflow indicators to be seen. `start.sh` sets this to `400` by default; `0` (the library default) disables pacing, which is what the test suite runs with. |
 | `BYOAI_DEMO_LIVE_CALL_STATE` | File tracking each agent's last live-call time, so the 24h live-call TTL (below) survives a server restart. Defaults to `~/.byoai/agent_showcase_live_calls.json`. |
+| `PORT` | Port to serve on. Defaults to `8001`, since a local Coriqo API takes 8000. |
+| `BYOAI_CORIQO_URL` | Publish every run to this Coriqo as governed agent evidence, e.g. `http://localhost:8000`. Unset (the default) turns sync off entirely. |
+| `BYOAI_CORIQO_API_KEY` | Coriqo service account key (`cq_sa_...`). Required with the URL. |
+| `BYOAI_CORIQO_TENANT_SLUG` | Coriqo tenant slug, e.g. `acme_bank`. Required with the URL. |
+| `BYOAI_CORIQO_AUTO_REGISTER` | `1` (default) self-registers each agent with Coriqo on startup, which is idempotent — Coriqo dedupes on the agent's `external_id`, so restarts reuse the same agents. `0` publishes nothing. |
 
 `/api/agents` reports each agent's current `"live"` status — `true` if its provider's API key is set, `false` if it's running off the cached transcript.
 
@@ -145,8 +154,69 @@ retyping `export` each time you run it.
 Once an agent has been called live, repeat runs of that same agent within **24 hours** replay its cached fallback transcript instead of spending API credits again (`runner.LIVE_CALL_TTL_SECONDS`). This is persisted to `BYOAI_DEMO_LIVE_CALL_STATE` (above), so it survives a server restart. `run_complete.data.mode` reports which path a run took: `"live"`, `"replay"` (live call failed), `"cached"` (TTL cooldown), or `"misfire"` (injected).
 
 ```bash
-curl -s -X POST "localhost:8000/api/agents/b1-fraud-triage/run?inject_misfire=true" | python -m json.tool
+curl -s -X POST "localhost:8001/api/agents/b1-fraud-triage/run?inject_misfire=true" | python -m json.tool
 ```
+
+## Publishing runs to Coriqo
+
+The local ledger proves a run happened as recorded. Coriqo is where that
+becomes governance: an agent registry, the mandate each agent is allowed to act
+under, and a hash-chained trail of what every agent actually did. Point the
+showcase at a Coriqo and each agent registers itself once, then every run is
+published as a trajectory plus one decision trace per sealed step.
+
+The machinery is part of the runtime, not this example:
+`byoai.recorder.coriqo_agents` holds the client, registration, and publishing
+(documented in
+[CONFIGURATION.md](../../CONFIGURATION.md#publishing-runs-to-coriqos-agent-api-byoairecordercoriqo_agents)),
+so any agent can use it. `coriqo_sync.py` here is only the adapter: it maps an
+`AgentDef` onto a registration and log-and-continues on failure.
+
+```bash
+export BYOAI_CORIQO_URL=http://localhost:8000
+export BYOAI_CORIQO_API_KEY=cq_sa_...        # POST /api/v1/service-accounts
+export BYOAI_CORIQO_TENANT_SLUG=acme_bank
+./start.sh
+
+curl -s localhost:8001/api/coriqo/status | python -m json.tool
+```
+
+The service account needs `governance:approve` (to register agents) and
+`model:write` (to record traces). Registered agents land at `in_review` —
+Coriqo never pre-approves, so self-registration files a governance to-do
+rather than granting an agent any standing.
+
+Two things make this evidence rather than telemetry:
+
+- Steps are read back out of the sealed ledger, not the app's in-memory run
+  state. If it wasn't sealed, it isn't published.
+- Each step's `args_hash`/`result_hash` are the ledger's own `payload_hash`
+  values, which commit to the raw payload whatever
+  `BYOAI_RECORDER_PAYLOAD_MODE` is set to. So both stores commit to the same
+  bytes: a hash from a Coriqo trace resolves to the sealed row it came from,
+  and `coriqo-verify` still checks the ledger offline. Neither store has to be
+  trusted alone. No raw payloads are sent.
+
+Coriqo checks every recorded call against the agent's `allowed_tools`. Running
+the `b5-misfire-demo` agent shows both halves agreeing — its out-of-scope
+`initiate_wire_transfer` call trips the showcase's own guardrail and comes back
+from Coriqo as a `flagged` trace with a mandate Finding attached:
+
+```bash
+curl -s -X POST "localhost:8001/api/agents/b5-misfire-demo/run?inject_misfire=true"
+```
+
+Sub-agent runs stay sealed in the ledger but are not published as separate
+Coriqo agents. Coriqo can nest one run under another, but only within the same
+agent — and each showcase sub-agent is its own `AgentDef` with its own mandate
+and tools, so nesting is refused for exactly the case we have. A sub-agent's
+work reaches Coriqo as its parent's tool call instead, carrying the same hashes.
+The full contract — batching, mandate enforcement, grounding anchors, nesting —
+is in
+[CONFIGURATION.md](../../CONFIGURATION.md#publishing-runs-to-coriqos-agent-api-byoairecordercoriqo_agents).
+
+Coriqo being down costs visibility, not evidence — publishing failures are
+logged and the run completes normally.
 
 ## Tests
 

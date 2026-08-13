@@ -7,7 +7,10 @@ Run:
     export BYOAI_RECORDER_ENABLED=1
     export DEMO_TAMPER=1                      # optional: enables /api/demo/tamper
     export BYOAI_DEMO_AUTOPILOT=1             # optional: pings a random agent every 1.5-4min
-    uvicorn examples.agent_showcase.app:app --reload
+    export BYOAI_CORIQO_URL=http://localhost:8000   # optional: publish runs to Coriqo
+    export BYOAI_CORIQO_API_KEY=cq_sa_...           #   ...with these credentials
+    export BYOAI_CORIQO_TENANT_SLUG=acme_bank
+    uvicorn examples.agent_showcase.app:app --reload --port 8001
 
 Either API key is optional independently: an agent whose provider has no key
 set transparently replays its cached fallback transcript instead of calling
@@ -38,8 +41,20 @@ from fastapi.staticfiles import StaticFiles
 from byoai.recorder.integration import get_recorder
 from byoai.recorder.verify import verify_ledger
 
+from . import coriqo_sync
 from .agents.registry import get_agent, list_agents
 from .runner import AgentRunner, RunEvent
+
+_httpx_log_level = os.environ.get("HTTPX_LOG_LEVEL")
+if _httpx_log_level:
+    level = getattr(logging, _httpx_log_level.upper(), logging.DEBUG)
+    _httpx_handler = logging.StreamHandler()
+    _httpx_handler.setLevel(level)
+    _httpx_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
+    for _logger_name in ("httpx", "httpcore"):
+        _logger = logging.getLogger(_logger_name)
+        _logger.setLevel(level)
+        _logger.addHandler(_httpx_handler)
 
 app = FastAPI(title="ByoAI Agent Showcase (demo)")
 
@@ -67,6 +82,10 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 AUTOPILOT_MIN_SECONDS = 90
 AUTOPILOT_MAX_SECONDS = 240
 
+# showcase agent id -> Coriqo agent id, populated at startup when Coriqo sync
+# is configured (BYOAI_CORIQO_URL). Empty means every run publishes nothing.
+_CORIQO_AGENTS: dict[str, str] = {}
+
 
 def _event_to_dict(event: RunEvent) -> dict[str, Any]:
     return asdict(event)
@@ -84,6 +103,27 @@ async def _autopilot_loop() -> None:
             log.info("autopilot: started %s run_id=%s", agent.id, run_id)
         except Exception:  # noqa: BLE001 - autopilot must never take the app down
             log.exception("autopilot: failed to start a run for %s", agent.id)
+
+
+@app.on_event("startup")
+async def _register_with_coriqo() -> None:
+    """Registers every showcase agent with Coriqo, if sync is configured.
+
+    Runs in a worker thread because ``ensure_agents_registered`` is sync httpx
+    and would otherwise block the event loop for as long as Coriqo takes to
+    answer (or to time out, if it isn't there).
+    """
+    if not coriqo_sync.enabled():
+        log.info("agent_showcase: Coriqo sync off (BYOAI_CORIQO_URL unset)")
+        return
+    global _CORIQO_AGENTS
+    _CORIQO_AGENTS = await asyncio.to_thread(coriqo_sync.ensure_agents_registered)
+    log.info("agent_showcase: Coriqo sync on, %d agent(s) mapped", len(_CORIQO_AGENTS))
+
+
+@app.on_event("shutdown")
+async def _close_coriqo_client() -> None:
+    await asyncio.to_thread(coriqo_sync.close)
 
 
 @app.on_event("startup")
@@ -163,13 +203,27 @@ def _start_run(
     _RUNS[run_id] = state
 
     async def drive() -> None:
+        final_text = ""
         try:
             async for event in runner.run(inject_misfire=inject_misfire, force_live=force_live):
                 if not state["trace_id"]:
                     state["trace_id"] = event.trace_id
+                if event.kind == "run_complete":
+                    final_text = event.text or ""
                 state["events"].append(event)
         finally:
             state["done"] = True
+            if _CORIQO_AGENTS:
+                # Sync httpx in a worker thread, and after `done` is set, so a
+                # slow or unreachable Coriqo can't hold up the run's own
+                # completion or the SSE stream watching for it.
+                await asyncio.to_thread(
+                    coriqo_sync.publish_run,
+                    run_id,
+                    agent_id,
+                    agent_map=_CORIQO_AGENTS,
+                    final_text=final_text,
+                )
 
     task = asyncio.create_task(drive())
     _BACKGROUND_TASKS.add(task)
@@ -278,6 +332,18 @@ def api_run_verify(run_id: str) -> dict[str, Any]:
         },
         "tampered_events": run_broken_links,
         "notes": result.notes,
+    }
+
+
+@app.get("/api/coriqo/status")
+def api_coriqo_status() -> dict[str, Any]:
+    """Whether Coriqo sync is on and which agents it mapped — the quickest way
+    to tell a misconfigured key from a Coriqo that simply isn't running."""
+    return {
+        "enabled": coriqo_sync.enabled(),
+        "base_url": os.environ.get("BYOAI_CORIQO_URL"),
+        "tenant_slug": os.environ.get("BYOAI_CORIQO_TENANT_SLUG"),
+        "mapped_agents": _CORIQO_AGENTS,
     }
 
 

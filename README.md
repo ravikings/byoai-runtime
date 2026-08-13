@@ -409,20 +409,35 @@ forged checkpoint signature. It also flags a `tool_use` the agent sent that
 never got a matching `tool_result` — and, the sharper case, a `tool_result`
 with no `tool_use` behind it.
 
-Sync the ledger to a Coriqo instance instead of leaving it local-only:
-
-```bash
-byoai-recorder-enroll --coriqo-url https://coriqo.example.com \
-    --token cik_live_... --key-dir ~/.byoai/recorder
-```
-
-Enrollment sends Coriqo the device's public key and a single-use token —
-never the private key — and gets back a `device_id`. From then on, starting
-the recorder also starts a background shipper that batches unsynced entries
-and ships them with at-least-once, server-deduped delivery; skip this step
-and the recorder just keeps writing to the local ledger. Full env var
+The ledger is designed to also sync to a Coriqo instance rather than staying
+local-only. **The client side of that is built; the server side does not exist
+yet** — no released Coriqo serves the `/v1/enroll` and `/v1/ingest/batch`
+endpoints `byoai-recorder-enroll` and the background shipper are written
+against, so enrollment has nothing to talk to today. The wire contract is
+exercised only against the mock server under `tests/recorder/`. Until a real
+server ships, the recorder stays local-only — no loss for verification, since
+`coriqo-verify` never needed the network. Details and the full env var
 reference in
 **[CONFIGURATION.md](CONFIGURATION.md#agent-recorder--tamper-evident-capture-byoairecorder)**.
+
+What does work against Coriqo today is publishing runs to its agent API, which
+is a different thing from copying the ledger: each agent is registered once and
+each run becomes a governed trajectory plus one decision trace per sealed step,
+so Coriqo holds the mandate an agent may act under and flags anything outside
+it.
+
+```python
+from byoai.recorder.coriqo_agents import (
+    AgentRegistration, CoriqoAgentsClient, CoriqoCredentials,
+    ensure_registered, publish_session,
+)
+```
+
+Only digests cross the wire, and they're the ledger's own — so a hash off a
+Coriqo trace resolves to the sealed row behind it, and `coriqo-verify` still
+checks the ledger offline. Setup, roles, and env vars in
+**[CONFIGURATION.md](CONFIGURATION.md#publishing-runs-to-coriqos-agent-api-byoairecordercoriqo_agents)**;
+`examples/agent_showcase/` is a working end-to-end wiring.
 
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 

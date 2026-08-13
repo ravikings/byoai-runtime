@@ -26,6 +26,24 @@
 #                                       fallback replay has no real network
 #                                       latency of its own, so without this
 #                                       every step fires in milliseconds)
+#   PORT                               port to serve the demo on, defaults to
+#                                       8001 (not 8000 — a local Coriqo's API
+#                                       already binds that)
+#   BYOAI_CORIQO_URL                   publish every run to this Coriqo as
+#                                       governed agent evidence, e.g.
+#                                       http://localhost:8000. Unset = off
+#   BYOAI_CORIQO_API_KEY               Coriqo service account key (cq_sa_...)
+#   BYOAI_CORIQO_TENANT_SLUG           Coriqo tenant slug, e.g. acme_bank
+#   BYOAI_CORIQO_AUTO_REGISTER         1 (default) self-registers each agent
+#                                       with Coriqo on startup, which is
+#                                       idempotent; 0 publishes nothing
+#   HTTPX_LOG_LEVEL=DEBUG               log raw outbound httpx/httpcore wire
+#                                       traffic (request lines, connection
+#                                       pool events) to the console — use
+#                                       this to confirm live calls are
+#                                       actually leaving the process, e.g.
+#                                       to api.anthropic.com or a local
+#                                       Coriqo ingest endpoint
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,14 +67,23 @@ pip install --pre -e ".[fastapi,recorder]"
 export BYOAI_RECORDER_ENABLED="${BYOAI_RECORDER_ENABLED:-1}"
 export BYOAI_RECORDER_DIR="${BYOAI_RECORDER_DIR:-$HOME/.byoai/recorder}"
 export BYOAI_DEMO_STEP_DELAY_MS="${BYOAI_DEMO_STEP_DELAY_MS:-400}"
+PORT="${PORT:-8001}"
 
 echo "==> Recorder: BYOAI_RECORDER_ENABLED=$BYOAI_RECORDER_ENABLED  BYOAI_RECORDER_DIR=$BYOAI_RECORDER_DIR"
 if [ "$BYOAI_RECORDER_ENABLED" = "1" ]; then
   echo "    Runs will be sealed to the ledger above. Check with:"
-  echo "      curl -s localhost:8000/api/runs/<run_id>/verify | python -m json.tool"
+  echo "      curl -s localhost:$PORT/api/runs/<run_id>/verify | python -m json.tool"
 else
   echo "    Recorder disabled — runs will NOT be sealed; /verify will report it as disabled."
 fi
 
-echo "==> Starting uvicorn on http://localhost:8000"
-exec uvicorn examples.agent_showcase.app:app --reload
+if [ -n "${BYOAI_CORIQO_URL:-}" ]; then
+  echo "==> Coriqo sync: $BYOAI_CORIQO_URL (tenant ${BYOAI_CORIQO_TENANT_SLUG:-<unset>})"
+  echo "    Agents self-register on startup and land 'in review'. Check with:"
+  echo "      curl -s localhost:$PORT/api/coriqo/status | python -m json.tool"
+else
+  echo "==> Coriqo sync off (set BYOAI_CORIQO_URL to publish runs as governed evidence)"
+fi
+
+echo "==> Starting uvicorn on http://localhost:$PORT"
+exec uvicorn examples.agent_showcase.app:app --reload --port "$PORT"
