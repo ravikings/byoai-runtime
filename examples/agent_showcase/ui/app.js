@@ -185,6 +185,9 @@ function setCardRunStatus(agentId, phase, label) {
   status.hidden = false;
   status.className = "card-run-status " + phase;
   status.querySelector(".card-run-text").textContent = label;
+  // Tint the card's own border to match the phase the dot lands on.
+  card.classList.toggle("ran-done", phase === "done");
+  card.classList.toggle("ran-error", phase === "error");
 }
 
 function makeTag(text, isMisfire) {
