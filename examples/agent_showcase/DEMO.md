@@ -15,10 +15,10 @@ export DEMO_TAMPER=1          # enables the live tamper demo — leave this off 
 # ANTHROPIC_API_KEY optional: unset means every run uses the cached fallback
 # transcript, which is actually the more reliable choice for a live demo —
 # no dependency on network or a model API being up mid-pitch.
-uvicorn examples.agent_showcase.app:app --port 8000
+uvicorn examples.agent_showcase.app:app --port 8001
 ```
 
-Open http://localhost:8000/ in one browser tab. Cold start is under a
+Open http://localhost:8001/ in one browser tab. Cold start is under a
 second — there's no setup delay to fill with small talk.
 
 ## 1. Frame the problem (30s)
@@ -101,7 +101,7 @@ On any completed run, click **Tamper demo**.
 
 ## 7. Sealed replay (1 min, optional — technical audiences)
 
-`curl localhost:8000/api/runs/<run_id>/replay | python -m json.tool`
+`curl localhost:8001/api/runs/<run_id>/replay | python -m json.tool`
 
 "This reconstructs the entire run from the ledger alone — no dependency on
 the app process's memory. Restart the server, kill the demo, come back a

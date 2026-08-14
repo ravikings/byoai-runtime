@@ -585,6 +585,25 @@ class CoriqoAgentsClient:
         )
 
 
+def _as_count(value: Any) -> int:
+    """A response count, or 0 if it isn't a usable number.
+
+    These are reporting figures, not control flow — a malformed one shouldn't
+    be able to take down a publish that otherwise succeeded. Numeric strings
+    are still accepted, since a JSON encoder that quotes its numbers is
+    reporting a real count and zeroing it would undercount silently. ``bool``
+    is excluded deliberately: it is an ``int`` subclass, so ``True`` would
+    otherwise land here as the count ``1``.
+    """
+    if isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        log.warning("coriqo: ignoring unusable count in batch response: %r", value)
+        return 0
+
+
 def _close_quietly(
     client: CoriqoAgentsClient, coriqo_agent_id: str, trajectory_id: str, session_id: str
 ) -> None:
@@ -803,8 +822,12 @@ def publish_session(
         for start in range(0, len(bodies), MAX_TRACE_BATCH):
             batch = bodies[start : start + MAX_TRACE_BATCH]
             response = client.record_traces(coriqo_agent_id, batch)
-            recorded += int(response.get("recorded", 0))
-            flagged += int(response.get("flagged", 0))
+            # A 2xx whose counts aren't numbers is a Coriqo-side problem, but a
+            # bare ValueError here would escape the except below and strand the
+            # trajectory open — the exact outcome that handler exists to
+            # prevent. Treat an unusable count as zero and carry on.
+            recorded += _as_count(response.get("recorded"))
+            flagged += _as_count(response.get("flagged"))
             for trace in response.get("traces") or []:
                 if trace.get("status") == "flagged":
                     log.warning(

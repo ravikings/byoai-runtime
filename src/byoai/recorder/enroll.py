@@ -189,7 +189,12 @@ def enroll_cli(argv: list[str] | None = None) -> int:
             key_dir=args.key_dir,
             force=args.force,
         )
-    except (EnrollmentError, InsecureKeyPermissions) as exc:
+    except (EnrollmentError, InsecureKeyPermissions, ValueError) as exc:
+        # ValueError covers a corrupt or wrong-length device key on disk, which
+        # load_or_create_device_key raises from inside enroll(). A truncated
+        # key file is exactly the case someone runs this command to recover
+        # from, so it has to reach the same clean "enrollment failed" exit as
+        # every other failure rather than a raw traceback.
         print(f"enrollment failed: {exc}", file=sys.stderr)
         return 1
 

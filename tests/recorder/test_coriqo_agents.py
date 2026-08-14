@@ -547,6 +547,57 @@ def test_a_nested_run_passes_its_parent_trajectory(ledger):
     assert opened[0]["parent_trajectory_id"] == "parent-traj"
 
 
+def test_malformed_counts_do_not_crash_a_publish(ledger):
+    """Counts are reporting figures, not control flow. A ValueError here would
+    escape the handler that closes the trajectory and strand it open."""
+    _seal_run(ledger, "run_1", ["a"])
+    completions = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/trajectories"):
+            return httpx.Response(201, json={"trajectory_id": "traj-1"})
+        if path.endswith("/complete"):
+            completions.append(json.loads(request.content))
+            return httpx.Response(200, json={})
+        return httpx.Response(
+            201, json={"recorded": None, "flagged": "not-a-number", "traces": []}
+        )
+
+    with _client(handler) as client:
+        result = publish_session(
+            client, coriqo_agent_id=_CORIQO_AGENT, ledger=ledger, session_id="run_1"
+        )
+
+    assert result is not None
+    assert (result.recorded, result.flagged) == (0, 0)
+    assert completions == [{"status": "completed"}], "the trajectory was left open"
+
+
+def test_numeric_string_counts_are_still_counted(ledger):
+    """A JSON encoder that quotes its numbers is reporting a real count —
+    zeroing it would undercount silently."""
+    _seal_run(ledger, "run_1", ["a", "b"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/trajectories"):
+            return httpx.Response(201, json={"trajectory_id": "traj-1"})
+        if path.endswith("/complete"):
+            return httpx.Response(200, json={})
+        return httpx.Response(201, json={"recorded": "2", "flagged": "1", "traces": []})
+
+    with _client(handler) as client:
+        result = publish_session(
+            client, coriqo_agent_id=_CORIQO_AGENT, ledger=ledger, session_id="run_1"
+        )
+
+    assert result is not None
+    assert (result.recorded, result.flagged) == (2, 1)
+    # A flagged step still drives the trajectory's closing status.
+    assert result.status == "flagged"
+
+
 def test_a_failure_mid_run_still_closes_the_trajectory(ledger):
     """An abandoned open trajectory sits in Coriqo as permanently in-progress
     and blocks its parent from ever completing. Since callers typically log and

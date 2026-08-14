@@ -10,6 +10,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.1.0a5] - 2026-08-14
+
+### Added
+- **Agent recorder (`byoai.recorder`, opt-in).** With `BYOAI_RECORDER_ENABLED=1`, `byoai-cache`
+  seals every `tool_use`/`tool_result` pair the agent exchanges with the model into a local
+  hash-chained SQLite ledger, signed in checkpoints by a device-held Ed25519 key. It tees bytes
+  that have already been forwarded, so it never blocks or delays the token stream, and a recording
+  failure is logged rather than failing the request unless `BYOAI_RECORDER_STRICT=1`. Ships behind
+  its own extra: `pip install --pre "byoai-runtime[recorder]"`.
+
+  New console scripts: `coriqo-verify` (offline verification — re-derives every hash from the
+  stored ledger rather than trusting it, catching a tampered row, a deleted one, or a forged
+  checkpoint signature), `byoai-recorder-enroll`, and `byoai-recorder-rotate-key` (rotates a
+  device key with cross-signed continuity, so the handoff is itself sealed into the chain).
+
+  `BYOAI_RECORDER_PAYLOAD_MODE` chooses what payload bytes reach the ledger — `hash-only`,
+  `redacted` (the default; masks detected secrets and PII), or `full`. `payload_hash` always
+  commits to the raw, unredacted payload regardless of mode, so redaction never weakens the
+  evidence. Events carry `trace_id`/`span_id`/`parent_span_id` attribution, so a ledger holds
+  enough lineage to reconstruct sub-agent trees and resumed sessions without changing the chain's
+  flat, append-only shape.
+
+- **Publishing runs to Coriqo's agent API (`byoai.recorder.coriqo_agents`).** Registers an agent
+  with a Coriqo instance and publishes each recorded run as a trajectory plus one decision trace
+  per sealed step, so Coriqo holds the agent registry, the mandate each agent may act under, and
+  its own hash-chained trail of what the agent did.
+
+  Two properties make what lands there evidence rather than telemetry: steps are read back out of
+  the sealed ledger (nothing is published that wasn't recorded first), and each step's
+  `args_hash`/`result_hash` are the ledger's own `payload_hash` values, with the row's
+  `entry_hash` cited as an external grounding anchor. Both stores therefore commit to the same
+  bytes — a hash off a Coriqo trace resolves to the sealed row behind it, and `coriqo-verify`
+  still checks the ledger offline. Only digests cross the wire, never raw payloads.
+
+  Nothing here runs automatically: session boundaries and agent identity are application concepts
+  the recorder can't infer, so the caller drives it. Configured with `BYOAI_CORIQO_URL`,
+  `BYOAI_CORIQO_API_KEY`, and `BYOAI_CORIQO_TENANT_SLUG`; unset means nothing is published.
+
+- `Ledger.read_session()` — reconstructs one run from the ledger by `session_id`, replacing the
+  hand-rolled SQLite query callers were otherwise writing.
+
+- **`examples/agent_showcase`** — a runnable demo of nine banking and healthcare agents with a
+  UI, live Anthropic/OpenAI calls (falling back to recorded transcripts when a key is absent),
+  sealed replay, a tamper demo, and end-to-end Coriqo publishing. Serves on port 8001, since a
+  local Coriqo API binds 8000.
+
+### Fixed
+- Recorder key revocation could be bypassed: stale-key detection gated on the device-controlled
+  `ts_device` field, which the schema itself documents as untrusted, so a device could keep
+  signing with a revoked key and backdate `ts_device` to slip past detection. Detection now keys
+  off the `KEY_ROTATED` event's own trusted `seq`.
+- `rotate_key()` promoted a staged key with two non-atomic `os.replace` calls, leaving a crash
+  window with no live private key — after which key loading would silently generate a brand-new
+  random orphan identity. Promotion now resolves deterministically to either the old or the new
+  key after a crash at any point, never a third one.
+- The `record_failure` marker inherited the `session_id` of whichever dropped event happened to
+  be last in a batch, mislabelling earlier sessions' drops; it now uses a device-level sentinel.
+- `byoai-recorder-enroll` crashed with a raw traceback when the on-disk device key was truncated
+  or corrupt, instead of the clean `enrollment failed: …` exit — which is precisely the situation
+  someone runs the command to recover from.
+- Recorder robustness: `extract.py` no longer silently drops `tool_use` input when a delta arrives
+  before its content-block start (it emits a parse-failure marker instead); the shipper no longer
+  advances its watermark past server-rejected checkpoints; and Rekor audit-path reconstruction is
+  iterative rather than recursive, so an adversarial `hashes` list can't exhaust the stack.
+
+### Changed
+- **Docs correction.** README and CONFIGURATION described the recorder's device ledger sync
+  (`/v1/enroll`, `/v1/ingest/batch`) as an available feature. No Coriqo serves those endpoints —
+  the client is built against the spec and exercised only against the mock server under
+  `tests/recorder/`. Both documents now say so, and point at the agent API above as the
+  integration that works today.
+
 ## [0.1.0a4] - 2026-08-10
 
 ### Fixed
@@ -244,7 +316,8 @@ Initial alpha release.
   documented "a semantic-cache or embedder hiccup must never fail a request" guarantee.
   Broadened to catch any exception.
 
-[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a4...HEAD
+[Unreleased]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a5...HEAD
+[0.1.0a5]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a4...v0.1.0a5
 [0.1.0a4]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a3...v0.1.0a4
 [0.1.0a3]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a2...v0.1.0a3
 [0.1.0a2]: https://github.com/ravikings/byoai-runtime/compare/v0.1.0a1...v0.1.0a2
