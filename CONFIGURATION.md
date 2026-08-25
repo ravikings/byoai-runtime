@@ -881,6 +881,83 @@ rejection) and `AgentSuspendedError` on 423. `CoriqoAgentsError` now also
 derives from `ByoAIError` alongside `RuntimeError`, so one `except ByoAIError`
 covers the whole runtime; existing `except RuntimeError` code is unaffected.
 
+#### Enforcing the mandate locally (`byoai.recorder.mandate`)
+
+`MandateGate` answers one question — *may this agent call this tool?* — from a
+**local cached snapshot**, never a synchronous call to Coriqo. Putting a
+governance service on an agent's hot path makes the agent's availability a
+function of that service's, which is not something a bank will ship. The gate
+refreshes on a background interval and decides in memory.
+
+```python
+from byoai.recorder.mandate import Allow, Deny, mandate_gate
+
+gate = mandate_gate(coriqo_agent_id)        # identity resolved from this host
+async with gate:                            # first fetch, then a refresh loop
+    verdict = gate.decide("send_payment")   # no network I/O, safe off-thread
+    if isinstance(verdict, Deny):
+        ...                                 # terminal: do not run the tool
+```
+
+`decide()` returns one of three verdicts. `Flag` is a subclass of `Allow` — a
+flagged call still runs, it is the record that differs — so
+`isinstance(verdict, Allow)` (or `verdict.allowed`) is the test for *may this
+proceed*. Every verdict carries `reason`, `mandate_version_id`,
+`snapshot_age_s`, `tool`, `posture` and an operator-facing `detail`.
+
+**Two server fields, two questions.** `mandate_enforcement`
+(`enforce`/`observe`) is the tenant's rollout dial: does a scope breach count
+as a violation. `enforcement_posture` (`fail_open`/`fail_closed`) is about this
+runtime: what happens when the gate cannot evaluate. They are separate, so an
+observing agent can still run under a fail-closed posture.
+
+| Situation | `fail_open` | `fail_closed` |
+| --- | --- | --- |
+| snapshot fresh, tool in scope | allow | allow |
+| fresh, out of scope, `enforce` | **deny** | **deny** |
+| fresh, out of scope, `observe` | allow + flag | allow + flag |
+| snapshot stale past `max_staleness_s` | allow + flag | **deny** |
+| agent suspended | **deny** | **deny** |
+| no snapshot ever fetched | allow + flag | **deny** |
+
+Suspension denies under both postures — it is a decision Coriqo made and this
+runtime read, not a failure to evaluate. And what trips the fail-closed branch
+is *staleness*, not reachability: a failed refresh keeps the cached snapshot,
+so one blip cannot become an outage, and the snapshot stops counting only when
+it is older than the budget the tenant set.
+
+**`allowed_tools: null` is not `allowed_tools: []`.** `null` means
+unrestricted; `[]` means nothing is permitted. Both are valid on the wire and
+they are opposite instructions, so the snapshot keeps them apart (`None` vs
+`()`) and never uses a falsy test to tell them apart.
+
+**A denial is not a tool error.** If a denial reaches the model as an ordinary
+failure — worse, one naming the tool and the scope — the model will rephrase,
+try an adjacent tool, and route around the control. So `Deny.model_message` is
+a single fixed sentence, identical for every reason, and everything an operator
+needs stays in `detail` and the logs.
+
+**Refresh.** `start()` fetches once and then refreshes every
+`max_staleness_s / 2` (floor: 1s), a per-agent value that comes from the
+snapshot itself, so the interval follows the agent's own budget. Coriqo answers
+`304` when the mandate has not changed; that is read as *still fresh, keep what
+you have* — the age resets and the cached scope stands.
+
+Without any Coriqo identity on the host, `mandate_gate()` returns a working
+no-op: everything is allowed, one line is logged, so the enforcement code path
+can be adopted before enrolment. A *static API key* identity is refused with
+`EnforcementIdentityUnavailableError` instead — an absence is fine, a
+credential that could widen the agent's own mandate is not.
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `BYOAI_MANDATE_POSTURE` | `fail_open` | `fail_open` or `fail_closed`, used only until the first snapshot names the tenant's own posture |
+| `BYOAI_MANDATE_MAX_STALENESS_S` | `300` | staleness budget used until a snapshot names its own `max_staleness_s` |
+
+Both are bootstrap values for the window before the first snapshot lands; after
+that Coriqo's values win. `MandateGate(default_posture=…,
+default_max_staleness_s=…)` overrides them in code.
+
 #### Rotating or revoking a device key
 
 Rotate a device's key without losing verifiable continuity of the ledger:

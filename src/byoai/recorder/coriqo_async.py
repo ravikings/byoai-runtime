@@ -374,6 +374,7 @@ class AsyncCoriqoAgentsClient:
         json_body: Any | None,
         params: Mapping[str, Any] | None,
         signed: bool,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> httpx.Request:
         """One attempt's request, signed at build time.
 
@@ -383,6 +384,8 @@ class AsyncCoriqoAgentsClient:
         """
         content = b"" if json_body is None else json.dumps(json_body).encode("utf-8")
         headers = self._base_headers(signed=signed)
+        if extra_headers:
+            headers.update(extra_headers)
         request = self._client.build_request(
             method,
             path,
@@ -416,6 +419,8 @@ class AsyncCoriqoAgentsClient:
         params: Mapping[str, Any] | None = None,
         signed: bool = False,
         idempotent: bool = False,
+        extra_headers: Mapping[str, str] | None = None,
+        collect_headers: dict[str, str] | None = None,
     ) -> tuple[Any, int]:
         """Perform the request, returning ``(parsed_body, status_code)``.
 
@@ -425,6 +430,10 @@ class AsyncCoriqoAgentsClient:
         Retry happens only when ``idempotent`` is true. Each attempt is rebuilt
         from scratch so a signed retry carries a fresh timestamp rather than
         the stale one Coriqo would refuse.
+
+        ``collect_headers``, when given, is filled with the headers of the
+        attempt that answered. Conditional requests need one of them (``ETag``)
+        and the parsed body alone cannot carry it.
         """
         attempts = self._retry.attempts if idempotent else 1
         last_error: Exception | None = None
@@ -434,7 +443,12 @@ class AsyncCoriqoAgentsClient:
             try:
                 response = await self._client.send(
                     self._build(
-                        method, path, json_body=json_body, params=params, signed=signed
+                        method,
+                        path,
+                        json_body=json_body,
+                        params=params,
+                        signed=signed,
+                        extra_headers=extra_headers,
                     )
                 )
             except ProviderError as exc:
@@ -450,6 +464,8 @@ class AsyncCoriqoAgentsClient:
                 last_error = CoriqoAgentsError(None, f"request to {path} failed: {exc}")
             else:
                 if response.status_code not in self._retry.retry_statuses:
+                    if collect_headers is not None:
+                        collect_headers.update(response.headers)
                     return parse_response(response, path=path)
                 retry_after = _parse_retry_after(response.headers.get("retry-after"))
                 last_error = _error_for(response, path=path)
@@ -672,6 +688,33 @@ class AsyncCoriqoAgentsClient:
             signed=True,
             idempotent=True,
         )
+
+    async def fetch_mandate_conditional(
+        self, coriqo_agent_id: str, *, etag: str | None = None
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """:meth:`fetch_mandate`, as a conditional request.
+
+        Returns ``(snapshot, etag)``. A ``304`` — Coriqo's answer when the
+        mandate has not changed since ``etag`` — comes back as
+        ``(None, etag)``: *still fresh, keep what you have*, not an empty
+        snapshot. A refresh loop that read it as either an error or an empty
+        mandate would age out or empty a scope that never changed.
+        """
+        headers: dict[str, str] = {}
+        body, status = await self._send(
+            "GET",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/mandate",
+            signed=True,
+            idempotent=True,
+            extra_headers={"If-None-Match": etag} if etag else None,
+            collect_headers=headers,
+        )
+        new_etag = headers.get("etag") or etag
+        if status == 304:
+            return None, new_etag
+        if not isinstance(body, dict):
+            raise CoriqoAgentsError(status, "mandate response was not an object")
+        return body, new_etag
 
     async def record_verdict(
         self,

@@ -483,6 +483,30 @@ publishing runs. Retry policy, the signed-request format, and which calls are
 retryable are in
 **[CONFIGURATION.md](CONFIGURATION.md#async-publishing-and-enforcement-byoairecordercoriqo_async)**.
 
+`byoai.recorder.mandate` is what enforces the mandate in the agent's own
+process. `MandateGate.decide()` answers *may this agent call this tool?* from
+the cached snapshot — no network call on the hot path, so the agent does not
+stop working while Coriqo is redeploying — and the snapshot refreshes on a
+background interval inside the staleness budget Coriqo sets per agent.
+
+```python
+from byoai.recorder.mandate import Allow, mandate_gate
+
+gate = mandate_gate(agent_id)
+async with gate:
+    if isinstance(gate.decide("send_payment"), Allow):
+        ...
+```
+
+A verdict is `Allow`, `Flag` (allowed, and recorded as off-mandate — that is
+what `mandate_enforcement: observe` is for) or `Deny`, which is terminal and
+tells the model nothing it could route around. A stale snapshot allows and
+flags under `fail_open` and denies under `fail_closed`; a suspended agent
+denies under both. Without a Coriqo identity the gate is a no-op, so the code
+path can go in before a device is enrolled. The full behavior table, the
+`allowed_tools` null-vs-empty rule and the two env vars are in
+**[CONFIGURATION.md](CONFIGURATION.md#enforcing-the-mandate-locally-byoairecordermandate)**.
+
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
 Dedup itself no longer uses this state. It compares occurrences inside a single

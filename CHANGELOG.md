@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Local mandate enforcement (`byoai.recorder.mandate`).** `MandateGate.decide()` answers whether
+  a proposed tool call is inside the agent's approved scope from a cached snapshot, with no network
+  I/O on the decide path — an agent whose availability depended on a governance service's is not
+  one a bank ships. The snapshot refreshes on a background interval of half the per-agent
+  `max_staleness_s`, handles Coriqo's `304` as "unchanged, still fresh", and survives a failed
+  refresh with the cached snapshot intact, so a blip cannot become an outage. Verdicts are `Allow`,
+  `Flag` (allowed and recorded, which is what `mandate_enforcement: observe` is for) and `Deny`,
+  each carrying `reason`, `mandate_version_id` and `snapshot_age_s`; a `Deny` is terminal and its
+  `model_message` is one fixed sentence, because a denial that explains itself is a hint sheet for
+  routing around the control. `enforcement_posture` (`fail_open`/`fail_closed`) governs only the
+  cases the gate cannot evaluate — a stale snapshot or none at all — while a suspended agent denies
+  under both. `allowed_tools: null` (unrestricted) and `[]` (nothing permitted) stay distinct.
+  New env vars `BYOAI_MANDATE_POSTURE` and `BYOAI_MANDATE_MAX_STALENESS_S` cover the window before
+  the first snapshot lands. With no Coriqo identity configured the gate is a logged no-op; a static
+  API-key identity is refused with `EnforcementIdentityUnavailableError`.
+  `AsyncCoriqoAgentsClient.fetch_mandate_conditional()` is the conditional (`If-None-Match`) fetch
+  behind it; `fetch_mandate()` is unchanged.
 - **Enrollment records the Coriqo tenant.** `byoai-recorder-enroll` takes `--tenant-slug`, and a
   `tenant_slug` in the enrollment response takes precedence over it; either way it is persisted in
   `enrollment.json` and exposed as `CoriqoIdentity.tenant_slug`. An enrolled device can now set
