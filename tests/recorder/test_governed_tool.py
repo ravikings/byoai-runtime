@@ -361,7 +361,7 @@ def test_arguments_are_carried_onto_the_proposed_action():
 
     gate = Recording(None, agent_id=_AGENT)
 
-    @governed_tool
+    @governed_tool(capture_arguments=True)
     def search(query, limit=10):
         return "ok"
 
@@ -370,6 +370,29 @@ def test_arguments_are_carried_onto_the_proposed_action():
 
     assert seen[0].tool == "search"
     assert seen[0].arguments == {"query": "rates", "limit": 3}
+
+
+def test_arguments_are_not_captured_by_default():
+    """Capture is opt-in: a governed tool's arguments routinely hold account
+    numbers and credentials, and nothing redacts them yet."""
+    seen = []
+
+    class Recording(MandateGate):
+        def decide(self, action):
+            seen.append(action)
+            return super().decide(action)
+
+    gate = Recording(None, agent_id=_AGENT)
+
+    @governed_tool
+    def search(query, limit=10):
+        return "ok"
+
+    with use_gate(gate):
+        search("rates", limit=3)
+
+    assert seen[0].tool == "search"
+    assert seen[0].arguments is None
 
 
 def test_argument_capture_can_be_turned_off():
