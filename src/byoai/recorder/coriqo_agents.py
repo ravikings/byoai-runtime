@@ -67,6 +67,8 @@ from typing import Any
 
 import httpx
 
+from byoai.errors import ByoAIError
+
 from .ledger import Ledger
 from .schema import EventKind
 
@@ -81,8 +83,10 @@ __all__ = [
     "PublishResult",
     "ToolStep",
     "ensure_registered",
+    "parse_response",
     "publish_session",
     "read_tool_steps",
+    "trace_body",
 ]
 
 log = logging.getLogger(__name__)
@@ -98,8 +102,12 @@ MAX_TRACE_BATCH = 200
 GROUNDING_SYSTEM = "byoai-recorder"
 
 
-class CoriqoAgentsError(RuntimeError):
+class CoriqoAgentsError(ByoAIError, RuntimeError):
     """Any non-2xx from Coriqo, or a response that isn't usable JSON.
+
+    Derives from :class:`~byoai.errors.ByoAIError` like every other runtime
+    error, and still from ``RuntimeError`` so code written against the
+    original hierarchy keeps catching it.
 
     ``status_code`` and ``detail`` let a caller branch on a specific failure
     (409 = the agent has no mandate version yet, 403 = the service account is
@@ -302,6 +310,38 @@ def _as_utc_isoformat(ts_device: str) -> str | None:
     return parsed.replace(tzinfo=timezone.utc).isoformat()
 
 
+def parse_response(response: httpx.Response, *, path: str = "") -> tuple[Any, int]:
+    """Turn one Coriqo response into ``(parsed_body, status_code)``, or raise.
+
+    The single definition of this API's error contract, shared with the async
+    client in :mod:`byoai.recorder.coriqo_async` so the two cannot drift into
+    disagreeing about what a 423 means. ``path`` is accepted for callers that
+    want it in a message and is otherwise unused.
+    """
+    if response.status_code >= 400:
+        detail = response.text
+        if response.headers.get("content-type", "").startswith("application/json"):
+            try:
+                detail = response.json().get("detail", response.text)
+            except ValueError:
+                pass
+        if response.status_code == 423:
+            raise AgentSuspendedError(response.status_code, detail)
+        raise CoriqoAgentsError(response.status_code, detail)
+
+    if not response.content:
+        return None, response.status_code
+    try:
+        return response.json(), response.status_code
+    except ValueError as exc:
+        # A 2xx carrying a non-JSON body isn't a Coriqo response at all —
+        # usually a proxy or maintenance page. Surface it as the same error
+        # type every other failure uses so one `except` covers it.
+        raise CoriqoAgentsError(
+            response.status_code, f"non-JSON response body: {exc}"
+        ) from exc
+
+
 # -- the client ------------------------------------------------------------
 
 
@@ -361,29 +401,7 @@ class CoriqoAgentsClient:
             response = self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
             raise CoriqoAgentsError(None, f"request to {path} failed: {exc}") from exc
-
-        if response.status_code >= 400:
-            detail = response.text
-            if response.headers.get("content-type", "").startswith("application/json"):
-                try:
-                    detail = response.json().get("detail", response.text)
-                except ValueError:
-                    pass
-            if response.status_code == 423:
-                raise AgentSuspendedError(response.status_code, detail)
-            raise CoriqoAgentsError(response.status_code, detail)
-
-        if not response.content:
-            return None, response.status_code
-        try:
-            return response.json(), response.status_code
-        except ValueError as exc:
-            # A 2xx carrying a non-JSON body isn't a Coriqo response at all —
-            # usually a proxy or maintenance page. Surface it as the same error
-            # type every other failure uses so one `except` covers it.
-            raise CoriqoAgentsError(
-                response.status_code, f"non-JSON response body: {exc}"
-            ) from exc
+        return parse_response(response, path=path)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         body, _status = self._send(method, path, **kwargs)
@@ -531,7 +549,7 @@ class CoriqoAgentsClient:
         return self._request(
             "POST",
             f"/api/v1/agents/{coriqo_agent_id}/traces",
-            json=_trace_body(
+            json=trace_body(
                 inputs=inputs,
                 output=output,
                 tool_calls=tool_calls,
@@ -639,7 +657,7 @@ def _required(body: Any, key: str, path: str) -> Any:
     return body[key]
 
 
-def _trace_body(
+def trace_body(
     *,
     inputs: Any | None,
     output: str | None,
@@ -652,6 +670,12 @@ def _trace_body(
     token_count: int | None,
     occurred_at: str | None,
 ) -> dict[str, Any]:
+    """The wire body for one decision trace.
+
+    Shared with the async client so both spell Coriqo's strict schema the same
+    way; ``occurred_at`` is omitted rather than sent as null so Coriqo stamps
+    its own receipt time when the caller has none.
+    """
     body: dict[str, Any] = {
         "inputs": inputs,
         "output": output,
@@ -795,7 +819,7 @@ def publish_session(
             else None
         )
         bodies.append(
-            _trace_body(
+            trace_body(
                 inputs=inputs,
                 output=final_output if step.index == last_index else None,
                 tool_calls=[

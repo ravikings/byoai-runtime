@@ -458,6 +458,25 @@ carries `governance:approve` is the agent holding the key to its own cage.
 `identity.require_enforcement()` raises `EnforcementIdentityUnavailableError`
 (a `ByoAIError`) naming the `byoai-recorder-enroll` command to run.
 
+Enforcing a mandate is a different shape of call from publishing a finished
+run: the runtime refreshes a cached policy snapshot on a background interval
+while the agent is mid-turn. `byoai.recorder.coriqo_async` is the async,
+retrying client for that path — device-signed on the enforcement endpoints, and
+retrying reads only, since a resent trace or verdict is a second decision in a
+record whose whole value is that it is accurate.
+
+```python
+from byoai.recorder.coriqo_async import AsyncCoriqoAgentsClient
+
+async with AsyncCoriqoAgentsClient(resolve_identity()) as client:
+    mandate = await client.fetch_mandate(agent_id)
+```
+
+The synchronous `CoriqoAgentsClient` is unchanged and stays the one to use for
+publishing runs. Retry policy, the signed-request format, and which calls are
+retryable are in
+**[CONFIGURATION.md](CONFIGURATION.md#async-publishing-and-enforcement-byoairecordercoriqo_async)**.
+
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
 Dedup itself no longer uses this state. It compares occurrences inside a single
