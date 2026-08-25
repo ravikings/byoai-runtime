@@ -6,9 +6,11 @@ import time
 import uuid
 
 import httpx
+import pytest
 from starlette.testclient import TestClient
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
+from byoai.recorder.denial_latch import denial_latch
 from byoai.recorder.schema import (
     EVENT_SCHEMA_VERSION,
     AgentEvent,
@@ -73,3 +75,16 @@ def asgi_client(mock: MockCoriqo, *, base_url: str = "http://mock-coriqo.test") 
     use it via ``with`` so that stays true if it ever grows any.
     """
     return TestClient(mock.app, base_url=base_url)
+
+
+@pytest.fixture(autouse=True)
+def _clean_denial_latch():
+    """The denial latch is per-process by design, so tests must not inherit it.
+
+    Without this, one test's denied tool halts a later test's run — and the
+    anonymous run id is per-context, which for a pytest run in one thread means
+    every test shares a bucket.
+    """
+    denial_latch().reset()
+    yield
+    denial_latch().reset()

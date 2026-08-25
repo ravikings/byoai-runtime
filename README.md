@@ -530,6 +530,22 @@ mandate) or per-tool via `gate=`, and with no gate bound the decorator just runs
 the function — see
 **[CONFIGURATION.md](CONFIGURATION.md#governed_tool--enforcing-at-the-call-site-byoairecordergoverned_tool)**.
 
+A denial stops one call, which is not enough on its own: an agent that ignores
+the refusal can go at the same tool until its loop stops. The denial latch counts
+those attempts per run and per tool, refuses every repeat straight from memory
+without re-running the scope check, and at the third attempt halts the run —
+subsequent calls raise `MandateRunHaltedError`, a subclass of
+`MandateDeniedError`, so a supervising loop can tell "this tool is refused" from
+"this run is over". The model reads the same fixed sentence throughout. Latch
+state is per-process: a run that spans processes starts counting again.
+
+When one agent hands work to another, the second agent has no mandate of its own
+for that run. `delegated_gate(parent, child)` gives it the intersection of its
+own mandate with the delegator's effective scope, pinned to the delegator's
+`mandate_version_id`, so delegation can only narrow — spawning a sub-agent is
+never a route to a tool the parent was refused. Both are documented in
+**[CONFIGURATION.md](CONFIGURATION.md#the-denial-latch--repeats-and-the-halt-byoairecorderdenial_latch)**.
+
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
 Dedup itself no longer uses this state. It compares occurrences inside a single

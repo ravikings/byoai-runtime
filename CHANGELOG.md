@@ -23,6 +23,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.arguments` explicitly when logging for an operator.
 
 ### Added
+- **Denial latch (`byoai.recorder.denial_latch`).** A denial used to stop one
+  call and nothing else, so an agent that ignored the refusal could attempt the
+  same out-of-mandate tool for as long as its loop ran, and nothing counted it.
+  The latch is keyed on `(run, principal, tool)`: the first denial is remembered,
+  every later attempt at that tool is refused straight from the latch **without
+  re-running the scope check** — the same tool against the same snapshot cannot
+  answer differently — and at `BYOAI_MANDATE_HALT_THRESHOLD` attempts (default 3,
+  counting the first denial) the run is halted. A halted run refuses every
+  subsequent call, in-scope tools included, with `MandateRunHaltedError` (new, in
+  `byoai.errors`, subclassing `MandateDeniedError`), so an existing handler still
+  stops the call while `isinstance` / `exc.halted` tells a supervising loop "this
+  tool is refused" from "this run is over"; `exc.attempts` and `exc.run_id` carry
+  the finding. The model-facing string is the same fixed `MODEL_MESSAGE` across
+  first denial, repeat and halt — escalating detail as an agent tries harder
+  would hand it a hint sheet exactly when it is probing the control — while the
+  count and the halt go to the operator `WARNING` and to `LatchedDenial.attempts`
+  for the packet that will seal verdicts. The run is `ProposedAction.trajectory_id`,
+  else the run bound by `run_scope()`, else a fallback id belonging to the
+  `MandateGate`, so unrelated agents in one process never share a bucket and the
+  latch is never silently off. Latch state is per-process and in memory: a run
+  spanning processes, or a restarted host, starts counting from zero. Only scope
+  denials are latched: a suspension, a stale snapshot and a missing one are all
+  transient, and remembering them would turn one refresh blip into a permanently
+  halted run. A new mandate version clears that agent's buckets, and its halt if
+  it was that agent's doing, because that is the one thing that can change the
+  answer; it is tracked per agent rather than per run so a delegator and its
+  delegated child, which hold different versions, do not wipe each other's count.
+- **Delegated scope attenuation (`byoai.recorder.delegation`).** When one agent
+  hands work to another, the second has no mandate of its own for that run. Its
+  effective scope is the intersection of its own mandate with the delegator's
+  effective scope at the moment of delegation, pinned to the delegator's
+  `mandate_version_id`, so delegation can only narrow and spawning a sub-agent is
+  never a route to a tool the parent was refused. The child's standing mandate is
+  untouched. `delegated_gate(parent, child)` returns a `DelegatedGate`, a
+  `MandateGate` subclass that wraps the child's gate rather than replacing it —
+  suspension, staleness and the fail-open/fail-closed fork still decide, and the
+  delegated scope only narrows the result — so `@governed_tool` needs no separate
+  wiring. `delegation_policy` must be `attenuated`; `none`, absent or
+  unrecognised raises `DelegationRefusedError`, as does passing
+  `max_delegation_depth` (where `0` forbids delegation and `null` leaves the
+  policy as the only gate). An undeclared delegation gets the empty scope, which
+  denies by rule rather than by accident. `intersect_tools` branches on `is None`
+  and nothing else: unrestricted ∩ X is X, anything ∩ `[]` is `[]`. The delegated
+  gate also keeps the delegator's gate and asks it first, so suspending or
+  narrowing the delegator reaches the sub-agent it lent authority to within one
+  refresh interval rather than never. `mandate_enforcement` and
+  `max_delegation_depth` attenuate along with the tools — the delegator's dial
+  decides whether a delegated breach blocks, any `enforce` up the chain enforces,
+  and the depth limit is the tightest one anywhere up the chain. This applies
+  to *delegation* between different agents, not to *nesting* — a sub-run of the
+  same agent is already covered by that agent's one mandate.
 - **`@governed_tool` (`byoai.recorder.governed_tool`).** The decorator integrators put on their own
   tool functions, and the seam where a mandate denial actually stops something: the gate is
   consulted first and on a `Deny` the wrapped function is never entered. One decorator handles sync
