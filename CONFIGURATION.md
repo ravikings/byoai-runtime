@@ -604,13 +604,22 @@ a two-step, opt-in flow on top of everything above:
 
 ```bash
 byoai-recorder-enroll --coriqo-url https://coriqo.example.com \
-    --token cik_live_... --key-dir ~/.byoai/recorder
+    --token cik_live_... --key-dir ~/.byoai/recorder \
+    --tenant-slug acme_bank
 ```
 
 This generates (or reuses) the device's Ed25519 keypair locally and sends
 only the **public** key plus the single-use enrollment token to Coriqo —
 the private key never leaves the machine. Coriqo replies with a `device_id`,
 persisted alongside the key as `~/.byoai/recorder/enrollment.json`.
+
+`--tenant-slug` records which Coriqo tenant the device belongs to, so
+enforcement requests can set `X-Tenant-Slug` from enrollment state instead of
+needing the legacy `BYOAI_CORIQO_TENANT_SLUG` in the agent's environment. A
+`tenant_slug` in the enrollment response takes precedence — the server issued
+the token and knows which tenant it was issued for — so the flag is what fills
+the field in until a server returns one. It is optional: leave it off and the
+device still enrolls, it just can't name its own tenant.
 
 Once enrolled, the next time the recorder starts (`BYOAI_RECORDER_ENABLED=1`)
 it launches a background shipper thread automatically — no separate command
@@ -748,6 +757,13 @@ It tries, in order:
 No new env vars: the device path reads the recorder's existing
 `BYOAI_RECORDER_DIR`, the static path the existing `BYOAI_CORIQO_*` trio.
 
+`identity.tenant_slug` is the tenant this identity acts in, for Coriqo's
+`X-Tenant-Slug` header — from `enrollment.json` for a device, from
+`BYOAI_CORIQO_TENANT_SLUG` for a static key. It is `None` on a device enrolled
+before the tenant was persisted; that state loads normally and keeps signing,
+and `resolve_identity()` logs one warning per process naming the re-enrollment
+command (`... --tenant-slug <slug> --force`).
+
 The split matters because of what a credential is used *for*. A static key is a
 long-lived bearer secret living in the agent's own environment, and the one
 that registers agents carries `governance:approve` — so anything that decides
@@ -801,10 +817,14 @@ async with AsyncCoriqoAgentsClient(identity, retry=RetryPolicy(attempts=3)) as c
 It takes a `CoriqoIdentity` (or plain `CoriqoCredentials`, for symmetry with
 the sync client) and mirrors its construction options — `http_client`,
 `timeout` — including that a caller-supplied client is never closed by
-`close()`. No new env vars: a device identity has no tenant in
-`enrollment.json`, so the tenant comes from `tenant_slug=…` or the existing
-`BYOAI_CORIQO_TENANT_SLUG`, and a signed call without one is refused before it
-reaches the network.
+`close()`. No new env vars. The tenant for `X-Tenant-Slug` is resolved in this
+order: an explicit `tenant_slug=…`, then the identity's own tenant
+(`enrollment.json` for a device, `BYOAI_CORIQO_TENANT_SLUG` via
+`CoriqoCredentials` for a static key), then `BYOAI_CORIQO_TENANT_SLUG` directly.
+A signed call with none of those is refused before it reaches the network. The
+last step exists for devices enrolled before the tenant was persisted — an
+enrolled device that also passes `--tenant-slug` needs nothing else in its
+environment to enforce.
 
 **What gets retried.** Reads only, by default:
 

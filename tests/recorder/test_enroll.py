@@ -267,3 +267,113 @@ def test_enroll_cli_failure_returns_nonzero(tmp_path, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "enrollment failed" in err
+
+
+def test_enroll_persists_the_tenant_from_the_response(tmp_path):
+    """Coriqo issued the enrollment token and knows which tenant it belongs
+    to, so a tenant in the response wins over the one the operator typed."""
+    key_dir = tmp_path / "device"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            201, json={"device_id": "dev_T", "tenant_slug": "server_bank"}
+        )
+
+    client = httpx.Client(transport=_mock_transport(handler))
+    state = enroll(
+        coriqo_base_url="https://coriqo.example.com",
+        token="cik_live_abc123",
+        key_dir=key_dir,
+        tenant_slug="typed_bank",
+        http_client=client,
+    )
+
+    assert state.tenant_slug == "server_bank"
+    assert load_enrollment_state(key_dir).tenant_slug == "server_bank"
+    assert json.loads((key_dir / "enrollment.json").read_text())["tenant_slug"] == (
+        "server_bank"
+    )
+
+
+def test_enroll_falls_back_to_the_supplied_tenant(tmp_path):
+    """No released Coriqo returns a tenant on enrollment yet, so the operator's
+    --tenant-slug is what actually lands on disk today."""
+    key_dir = tmp_path / "device"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"device_id": "dev_T"})
+
+    client = httpx.Client(transport=_mock_transport(handler))
+    state = enroll(
+        coriqo_base_url="https://coriqo.example.com",
+        token="cik_live_abc123",
+        key_dir=key_dir,
+        tenant_slug="typed_bank",
+        http_client=client,
+    )
+
+    assert state.tenant_slug == "typed_bank"
+
+
+def test_enroll_without_a_tenant_leaves_it_unset(tmp_path):
+    key_dir = tmp_path / "device"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"device_id": "dev_T"})
+
+    client = httpx.Client(transport=_mock_transport(handler))
+    state = enroll(
+        coriqo_base_url="https://coriqo.example.com",
+        token="cik_live_abc123",
+        key_dir=key_dir,
+        http_client=client,
+    )
+
+    assert state.tenant_slug is None
+
+
+def test_pre_existing_enrollment_state_without_a_tenant_loads(tmp_path):
+    """The upgrade case: enrollment.json written before the field existed must
+    load as an enrolled device, not raise and not read as 'not enrolled'."""
+    key_dir = tmp_path / "device"
+    key_dir.mkdir(parents=True)
+    (key_dir / "enrollment.json").write_text(
+        json.dumps(
+            {
+                "device_id": "dev_OLD",
+                "coriqo_base_url": "https://coriqo.example.com",
+                "enrolled_at": "2026-01-01T00:00:00.000000Z",
+            }
+        )
+    )
+
+    state = load_enrollment_state(key_dir)
+
+    assert state is not None
+    assert state.device_id == "dev_OLD"
+    assert state.tenant_slug is None
+
+
+def test_enroll_cli_accepts_and_reports_a_tenant(tmp_path, capsys):
+    key_dir = tmp_path / "device"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"device_id": "dev_CLI"})
+
+    with _mocked_httpx_client(handler):
+        rc = enroll_cli(
+            [
+                "--coriqo-url",
+                "https://coriqo.example.com",
+                "--token",
+                "cik_live_abc123",
+                "--key-dir",
+                str(key_dir),
+                "--tenant-slug",
+                "acme_bank",
+            ]
+        )
+
+    assert rc == 0
+    assert "acme_bank" in capsys.readouterr().out
+    assert load_enrollment_state(key_dir).tenant_slug == "acme_bank"

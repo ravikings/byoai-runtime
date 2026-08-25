@@ -306,7 +306,13 @@ class AsyncCoriqoAgentsClient:
         """``http_client`` supplies your own transport or a test double, and
         is never closed by :meth:`close` — closing something shared out from
         under its owner breaks its next use. ``sleep`` exists so tests can
-        observe the backoff without spending it."""
+        observe the backoff without spending it.
+
+        ``tenant_slug`` overrides the tenant the identity already carries;
+        without it, the tenant comes from the identity (``enrollment.json``
+        for a device, ``BYOAI_CORIQO_TENANT_SLUG`` for a static key) and
+        finally from ``BYOAI_CORIQO_TENANT_SLUG`` — see
+        :func:`_default_tenant_slug`."""
         if isinstance(identity, CoriqoCredentials):
             identity = CoriqoIdentity.from_credentials(identity)
         self._identity = identity
@@ -350,8 +356,9 @@ class AsyncCoriqoAgentsClient:
         elif signed:
             raise CoriqoAgentsError(
                 None,
-                "a device-signed request needs a tenant: pass tenant_slug=… or set "
-                "BYOAI_CORIQO_TENANT_SLUG (enrollment.json does not record one)",
+                "a device-signed request needs a tenant: re-enroll this device so "
+                "enrollment.json records one, pass tenant_slug=…, or set "
+                "BYOAI_CORIQO_TENANT_SLUG",
             )
         if not signed and self._identity.source == IdentitySource.API_KEY:
             credentials = self._identity.credentials
@@ -733,14 +740,22 @@ class AsyncCoriqoAgentsClient:
 
 
 def _default_tenant_slug(identity: CoriqoIdentity) -> str | None:
-    """Tenant for the ``X-Tenant-Slug`` header.
+    """Tenant for the ``X-Tenant-Slug`` header, when the caller named none.
 
-    A static-key identity already carries one. An enrolled device does not —
-    ``enrollment.json`` records the device id and base URL only — so the device
-    path falls back to the env var the static path already uses rather than
-    introducing a second name for the same value.
+    Both kinds of identity carry their own tenant: a static-key one from
+    ``BYOAI_CORIQO_TENANT_SLUG`` via :class:`CoriqoCredentials`, an enrolled
+    device from ``enrollment.json``. The env var stays as the fallback for the
+    one case that has neither — a device enrolled before the tenant was
+    persisted, which is every device already in the field. Falling back keeps
+    those hosts enforcing until they are re-enrolled; ``identity.py`` warns
+    once that they should be.
     """
+    if identity.tenant_slug:
+        return identity.tenant_slug
     if identity.credentials is not None:
+        # A CoriqoIdentity built by hand rather than through
+        # from_credentials() has credentials but no mirrored tenant_slug;
+        # reading it here keeps that construction working as it did before.
         return identity.credentials.tenant_slug
     return os.environ.get("BYOAI_CORIQO_TENANT_SLUG") or None
 

@@ -76,7 +76,10 @@ def _client(handler, **kwargs) -> AsyncCoriqoAgentsClient:
 def _device_client(handler, tmp_path, **kwargs) -> AsyncCoriqoAgentsClient:
     key = load_or_create_device_key(tmp_path)
     identity = CoriqoIdentity.from_device(
-        base_url=_BASE, device_id=key.device_id, signer=key
+        base_url=_BASE,
+        device_id=key.device_id,
+        signer=key,
+        tenant_slug=kwargs.pop("enrolled_tenant", None),
     )
     return _client(handler, identity=identity, **kwargs)
 
@@ -588,3 +591,64 @@ async def test_a_signed_request_without_a_tenant_is_refused_before_it_is_sent(
             await client.fetch_mandate(_AGENT)
     finally:
         await client.close()
+
+
+async def test_an_enrolled_device_supplies_its_own_tenant(tmp_path, monkeypatch):
+    """The point of persisting the tenant: a fully enrolled device enforces
+    without a stray legacy env var left in its environment."""
+    monkeypatch.delenv("BYOAI_CORIQO_TENANT_SLUG", raising=False)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"agent_id": _AGENT})
+
+    client = _device_client(
+        handler, tmp_path, tenant_slug=None, enrolled_tenant="enrolled_bank"
+    )
+    try:
+        await client.fetch_mandate(_AGENT)
+    finally:
+        await client.close()
+
+    assert seen[0].headers["X-Tenant-Slug"] == "enrolled_bank"
+    assert "X-API-Key" not in seen[0].headers
+
+
+async def test_an_explicit_tenant_argument_beats_the_enrolled_one(tmp_path):
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"agent_id": _AGENT})
+
+    client = _device_client(
+        handler, tmp_path, tenant_slug="explicit_bank", enrolled_tenant="enrolled_bank"
+    )
+    try:
+        await client.fetch_mandate(_AGENT)
+    finally:
+        await client.close()
+
+    assert seen[0].headers["X-Tenant-Slug"] == "explicit_bank"
+
+
+async def test_a_tenantless_enrollment_still_falls_back_to_the_env_var(
+    tmp_path, monkeypatch
+):
+    """Devices enrolled before the tenant was persisted are the normal case,
+    not an edge case: they keep enforcing on the legacy env var."""
+    monkeypatch.setenv("BYOAI_CORIQO_TENANT_SLUG", "legacy_bank")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"agent_id": _AGENT})
+
+    client = _device_client(handler, tmp_path, tenant_slug=None, enrolled_tenant=None)
+    try:
+        await client.fetch_mandate(_AGENT)
+    finally:
+        await client.close()
+
+    assert seen[0].headers["X-Tenant-Slug"] == "legacy_bank"

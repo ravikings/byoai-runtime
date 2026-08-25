@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Enrollment records the Coriqo tenant.** `byoai-recorder-enroll` takes `--tenant-slug`, and a
+  `tenant_slug` in the enrollment response takes precedence over it; either way it is persisted in
+  `enrollment.json` and exposed as `CoriqoIdentity.tenant_slug`. An enrolled device can now set
+  `X-Tenant-Slug` on signed enforcement requests from its own state, instead of also needing the
+  legacy publish-only `BYOAI_CORIQO_TENANT_SLUG` in its environment.
+  `AsyncCoriqoAgentsClient` resolves the tenant from an explicit `tenant_slug=`, then the identity,
+  then `BYOAI_CORIQO_TENANT_SLUG`, and still refuses a signed call with none of them before it
+  reaches the network. An `enrollment.json` written before this change loads unchanged, falls back
+  to the env var, and logs one warning per process naming the re-enrollment command.
 - **One Coriqo identity resolver (`byoai.recorder.identity`).** `resolve_identity()` returns the
   device-enrolled Ed25519 identity when this host has one, falls back to the static
   `BYOAI_CORIQO_API_KEY` credentials (publish-only, warned about once per process), and returns

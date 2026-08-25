@@ -44,18 +44,22 @@ def static_key(monkeypatch):
     monkeypatch.setenv("BYOAI_CORIQO_TENANT_SLUG", "acme_bank")
 
 
-def _enroll_on_disk(key_dir, *, base_url="https://device.coriqo.test") -> DeviceKey:
+def _enroll_on_disk(
+    key_dir, *, base_url="https://device.coriqo.test", tenant_slug=None
+) -> DeviceKey:
+    """Write enrollment state by hand. ``tenant_slug=None`` reproduces a file
+    written before the tenant was recorded — the state every device already in
+    the field is in."""
     key_dir.mkdir(parents=True, exist_ok=True)
     key = load_or_create_device_key(key_dir)
-    (key_dir / ENROLLMENT_FILENAME).write_text(
-        json.dumps(
-            {
-                "device_id": "dev_enrolled_1",
-                "coriqo_base_url": base_url,
-                "enrolled_at": "2026-01-01T00:00:00Z",
-            }
-        )
-    )
+    state = {
+        "device_id": "dev_enrolled_1",
+        "coriqo_base_url": base_url,
+        "enrolled_at": "2026-01-01T00:00:00Z",
+    }
+    if tenant_slug is not None:
+        state["tenant_slug"] = tenant_slug
+    (key_dir / ENROLLMENT_FILENAME).write_text(json.dumps(state))
     return key
 
 
@@ -219,3 +223,43 @@ def test_signer_defers_key_load_until_used(tmp_path):
     assert signer.key_dir == tmp_path / "missing"  # constructing touched nothing
     with pytest.raises(CoriqoIdentityError):
         signer.sign(b"x")
+
+
+def test_device_identity_exposes_the_enrolled_tenant(tmp_path, no_static_key):
+    _enroll_on_disk(tmp_path, tenant_slug="enrolled_bank")
+
+    identity = resolve_identity(key_dir=tmp_path)
+
+    assert identity is not None
+    assert identity.tenant_slug == "enrolled_bank"
+
+
+def test_static_key_identity_exposes_its_tenant(tmp_path, static_key):
+    identity = resolve_identity(key_dir=tmp_path / "empty")
+
+    assert identity is not None
+    assert identity.source == IdentitySource.API_KEY
+    assert identity.tenant_slug == "acme_bank"
+
+
+def test_a_tenantless_enrollment_loads_and_warns_once(tmp_path, no_static_key, caplog):
+    """An enrollment.json written before the tenant field existed must keep
+    working: no crash, no silent re-enrollment, and one note naming what to
+    run — not one per resolve, which a refresh loop would turn into a flood."""
+    _enroll_on_disk(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="byoai.recorder.identity"):
+        first = resolve_identity(key_dir=tmp_path)
+        second = resolve_identity(key_dir=tmp_path)
+
+    assert first is not None and second is not None
+    assert first.source == IdentitySource.DEVICE
+    assert first.enforcement_capable is True
+    assert first.tenant_slug is None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert ENROLLMENT_FILENAME in message
+    assert "BYOAI_CORIQO_TENANT_SLUG" in message
+    assert "byoai-recorder-enroll" in message

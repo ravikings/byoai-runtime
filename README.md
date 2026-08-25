@@ -472,6 +472,12 @@ async with AsyncCoriqoAgentsClient(resolve_identity()) as client:
     mandate = await client.fetch_mandate(agent_id)
 ```
 
+Enrolling with `--tenant-slug` records the device's tenant in
+`enrollment.json`, so signed enforcement requests carry `X-Tenant-Slug` from
+the enrolled identity rather than needing the legacy
+`BYOAI_CORIQO_TENANT_SLUG` in the agent's environment. Devices enrolled before
+that field existed keep working on the env var, with one warning saying so.
+
 The synchronous `CoriqoAgentsClient` is unchanged and stays the one to use for
 publishing runs. Retry policy, the signed-request format, and which calls are
 retryable are in

@@ -62,6 +62,7 @@ ENROLL_COMMAND = "byoai-recorder-enroll --coriqo-url <url> --token <token> --key
 
 _warned_lock = threading.Lock()
 _warned_legacy = False
+_warned_tenantless = False
 
 
 @runtime_checkable
@@ -177,6 +178,11 @@ class CoriqoIdentity:
     signer: Signer | None = None
     enrolled_device_id: str | None = None
     credentials: CoriqoCredentials | None = None
+    #: Tenant this identity acts in, for Coriqo's ``X-Tenant-Slug`` header.
+    #: Taken from the static credentials, or from ``enrollment.json`` for a
+    #: device. ``None`` on a device enrolled before the tenant was persisted;
+    #: callers fall back to ``BYOAI_CORIQO_TENANT_SLUG``.
+    tenant_slug: str | None = None
 
     @property
     def enforcement_capable(self) -> bool:
@@ -199,12 +205,20 @@ class CoriqoIdentity:
         return self.enrolled_device_id
 
     @classmethod
-    def from_device(cls, *, base_url: str, device_id: str, signer: Signer) -> CoriqoIdentity:
+    def from_device(
+        cls,
+        *,
+        base_url: str,
+        device_id: str,
+        signer: Signer,
+        tenant_slug: str | None = None,
+    ) -> CoriqoIdentity:
         return cls(
             base_url=base_url.rstrip("/"),
             source=IdentitySource.DEVICE,
             signer=signer,
             enrolled_device_id=device_id,
+            tenant_slug=tenant_slug,
         )
 
     @classmethod
@@ -213,6 +227,7 @@ class CoriqoIdentity:
             base_url=credentials.base_url.rstrip("/"),
             source=IdentitySource.API_KEY,
             credentials=credentials,
+            tenant_slug=credentials.tenant_slug,
         )
 
     def sign(self, data: bytes) -> str:
@@ -276,10 +291,13 @@ def resolve_identity(*, key_dir: Path | str | None = None) -> CoriqoIdentity | N
         ) from exc
 
     if state is not None:
+        if state.tenant_slug is None:
+            _warn_tenantless_enrollment_once(directory)
         return CoriqoIdentity.from_device(
             base_url=state.coriqo_base_url,
             device_id=state.device_id,
             signer=DeviceKeySigner(directory),
+            tenant_slug=state.tenant_slug,
         )
 
     credentials = CoriqoCredentials.from_env()
@@ -305,8 +323,32 @@ def _warn_legacy_once() -> None:
     )
 
 
+def _warn_tenantless_enrollment_once(directory: Path) -> None:
+    """Say once that this device predates the persisted tenant.
+
+    Not an error: the device identity is intact and signs fine, it just can't
+    name its own tenant, so an enforcement caller still needs
+    ``BYOAI_CORIQO_TENANT_SLUG``. Once per process, like the legacy-credentials
+    warning — this is read on a refresh interval, and one note per refresh
+    would be a log flood.
+    """
+    global _warned_tenantless
+    with _warned_lock:
+        if _warned_tenantless:
+            return
+        _warned_tenantless = True
+    log.warning(
+        "%s was written before the tenant was recorded, so enforcement requests "
+        "still need BYOAI_CORIQO_TENANT_SLUG (or an explicit tenant_slug=). "
+        "Re-enroll to persist it: %s --tenant-slug <slug> --force",
+        directory / ENROLLMENT_FILENAME,
+        ENROLL_COMMAND,
+    )
+
+
 def reset_identity_warning_for_tests() -> None:
-    """Re-arm the once-per-process legacy warning. Tests only."""
-    global _warned_legacy
+    """Re-arm the once-per-process legacy and tenantless warnings. Tests only."""
+    global _warned_legacy, _warned_tenantless
     with _warned_lock:
         _warned_legacy = False
+        _warned_tenantless = False
