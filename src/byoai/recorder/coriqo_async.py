@@ -1,0 +1,758 @@
+"""Async, retrying client for Coriqo's agent API and its enforcement path.
+
+:mod:`byoai.recorder.coriqo_agents` publishes finished runs from a script, so a
+blocking ``httpx.Client`` that never retries is the right shape there: the
+caller is already between turns, and a duplicate publish would corrupt the
+record it exists to keep.
+
+Mandate enforcement is a different shape. The runtime refreshes a cached policy
+snapshot on a background interval while the agent is mid-turn, so a blocking
+call there stalls the event loop for a whole round trip, and a single transient
+blip would be read as "the policy could not be refreshed". This module is the
+variant for that path:
+
+* **async** — ``httpx.AsyncClient``, same construction options as the sync
+  client (a caller-supplied client is never closed by :meth:`close`);
+* **retrying, but only reads.** :class:`RetryPolicy` retries idempotent
+  requests with exponential backoff and jitter, honours a server-sent
+  ``Retry-After``, and leaves writes alone. A retried publish can duplicate a
+  decision, and an accurate record is the whole product;
+* **device-signed** where it has to be. Enforcement endpoints under
+  ``/api/v1/agent-runtime/`` authenticate with the device key resolved by
+  :mod:`byoai.recorder.identity`, never the static service-account key — the
+  credential that fetches an agent's permitted scope must not be one the agent
+  itself can use to widen that scope.
+
+The error contract is the sync client's, unchanged: every failure is a
+:class:`~byoai.recorder.coriqo_agents.CoriqoAgentsError` carrying
+``status_code``/``detail``, with 423 raised as
+:class:`~byoai.recorder.coriqo_agents.AgentSuspendedError`.
+
+The signature format
+--------------------
+Coriqo verifies an Ed25519 signature over canonical JSON of::
+
+    {"body_sha256": <hex sha256 of the exact request body bytes>,
+     "method":      <uppercase HTTP method>,
+     "path":        <path, plus "?"+query when a query string is present>,
+     "public_key":  <the signer's own public key, lowercase hex>,
+     "timestamp":   <the X-Coriqo-Timestamp value, verbatim>}
+
+Everything that selects what a request does is covered, so a captured
+signature cannot be replayed against a different method, path, query or body,
+and the signer's own key sits inside the signed bytes so it cannot be replayed
+under a different claimed identity. Coriqo accepts a timestamp up to 120s old
+and 30s in the future, so every attempt — including a retry — is signed afresh
+rather than resent with the timestamp of the attempt before it.
+
+Note the encodings: the recorder's own wire format is base64
+(``public_key_b64``, ``ed25519:<base64>`` signatures) and this API's headers
+are hex. :func:`signing_payload` and :func:`device_headers` are the one place
+that conversion happens.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import binascii
+import hashlib
+import json
+import logging
+import os
+import random
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
+
+from byoai.errors import ByoAIError, ProviderError
+
+from .canonical import canonicalize
+from .coriqo_agents import (
+    MAX_TRACE_BATCH,
+    AgentRegistration,
+    CoriqoAgentsError,
+    CoriqoCredentials,
+    parse_response,
+    trace_body,
+)
+from .identity import CoriqoIdentity, IdentitySource, Signer
+
+__all__ = [
+    "ENFORCEMENT_PREFIX",
+    "AsyncCoriqoAgentsClient",
+    "RetryPolicy",
+    "SignatureError",
+    "device_headers",
+    "request_path",
+    "signing_payload",
+    "signing_timestamp",
+]
+
+log = logging.getLogger(__name__)
+
+_DEFAULT_TIMEOUT = 10.0
+_LIST_PAGE_SIZE = 200  # Coriqo caps `limit` at 200 on GET /api/v1/agents.
+
+#: Path prefix Coriqo serves with device-signed auth. Requests below it are
+#: signed and must NOT carry ``X-API-Key`` — Coriqo answers 403 to a service
+#: account key here on purpose, so sending both is worse than sending neither.
+ENFORCEMENT_PREFIX = "/api/v1/agent-runtime"
+
+#: The signature prefix :meth:`byoai.recorder.keys.DeviceKey.sign` emits.
+_SIG_PREFIX = "ed25519:"
+
+#: Statuses worth a second attempt on an idempotent request: a rate limit and
+#: the three gateway-ish failures that mean "nothing durable happened here".
+#: 500 is deliberately absent — it can mean the write landed and the response
+#: didn't.
+DEFAULT_RETRY_STATUSES = frozenset({429, 502, 503, 504})
+
+
+class SignatureError(ByoAIError):
+    """A request could not be signed for Coriqo.
+
+    Distinct from :class:`~byoai.errors.EnforcementIdentityUnavailableError`,
+    which means there is no device identity at all: this means there is one and
+    its key material or signature came back in a shape the wire format cannot
+    carry.
+    """
+
+
+# -- signing ---------------------------------------------------------------
+
+
+def _b64_to_hex(value: str, *, what: str) -> str:
+    try:
+        return base64.b64decode(value, validate=True).hex()
+    except (binascii.Error, ValueError) as exc:
+        raise SignatureError(f"{what} is not valid base64: {exc}") from exc
+
+
+def signing_payload(
+    *, method: str, path: str, body: bytes, timestamp: str, public_key_hex: str
+) -> bytes:
+    """The exact bytes a device signs for one enforcement request.
+
+    ``path`` must already include the query string when there is one — see
+    :func:`request_path`.
+
+    Canonicalization is :mod:`byoai.recorder.canonical` (RFC 8785), rather than
+    a second serializer written for this one tuple. Coriqo canonicalizes with
+    sorted keys and compact separators, which agrees with JCS byte for byte on
+    a flat object of ASCII strings, and every field here is one: two hex
+    digests, an uppercase method, a URL path and an RFC 3339 timestamp.
+    """
+    return canonicalize(
+        {
+            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "method": method.upper(),
+            "path": path,
+            "public_key": public_key_hex.lower(),
+            "timestamp": timestamp,
+        }
+    )
+
+
+def request_path(url: httpx.URL) -> str:
+    """Path as it is signed: query string included when present, because it
+    selects what the request does."""
+    query = url.query.decode("ascii")
+    return url.path + (f"?{query}" if query else "")
+
+
+def signing_timestamp(now: datetime | None = None) -> str:
+    """RFC 3339 UTC, whole seconds. Coriqo compares this against its own clock
+    with a 120s past / 30s future window."""
+    moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return moment.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def device_headers(
+    signer: Signer,
+    *,
+    method: str,
+    path: str,
+    body: bytes,
+    timestamp: str | None = None,
+) -> dict[str, str]:
+    """The four (plus one) headers a device-signed request carries.
+
+    ``X-Coriqo-Device`` is sent as a diagnostic hint only. Coriqo resolves
+    identity from the key that verified the signature, which is the honest
+    answer after ``byoai-recorder-rotate-key`` has replaced the live key
+    without rewriting ``enrollment.json``.
+    """
+    stamp = timestamp or signing_timestamp()
+    public_key_hex = _b64_to_hex(signer.public_key_b64, what="device public key")
+    signature = signer.sign(
+        signing_payload(
+            method=method,
+            path=path,
+            body=body,
+            timestamp=stamp,
+            public_key_hex=public_key_hex,
+        )
+    )
+    if not signature.startswith(_SIG_PREFIX):
+        raise SignatureError(
+            f"signer returned {signature[:16]!r}…, expected an {_SIG_PREFIX!r} signature"
+        )
+    return {
+        "X-Coriqo-Public-Key": public_key_hex,
+        "X-Coriqo-Signature": _b64_to_hex(
+            signature[len(_SIG_PREFIX) :], what="signature"
+        ),
+        "X-Coriqo-Timestamp": stamp,
+        "X-Coriqo-Device": signer.device_id,
+    }
+
+
+# -- retry -----------------------------------------------------------------
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Seconds from a ``Retry-After`` header. Only the delta-seconds form —
+    an HTTP-date is ignored rather than guessed at against a device clock that
+    may itself be the reason the request was refused."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
+
+
+@dataclass(frozen=True, slots=True)
+class RetryPolicy:
+    """Bounded retry with exponential backoff and jitter, for reads.
+
+    ``attempts`` counts total tries, not extra ones: ``attempts=1`` disables
+    retry entirely. Backoff for attempt *n* is ``min(base * 2**n, max_delay)``
+    scaled by a random factor in ``[1 - jitter, 1)``, so a fleet that all lost
+    the same Coriqo does not come back in lockstep.
+
+    ``retry_writes`` is off by default and stays that way for anything that
+    records a decision. Turning it on makes exactly one write retryable —
+    :meth:`AsyncCoriqoAgentsClient.register_agent` when the registration
+    carries an ``external_id``, which Coriqo treats as an idempotency key and
+    answers with the existing agent rather than a second copy. The cost of
+    turning it on is that ``created`` can come back ``False`` for an agent this
+    process did create, if the first attempt landed and its response was lost.
+    """
+
+    attempts: int = 3
+    base_delay: float = 0.2
+    max_delay: float = 5.0
+    jitter: float = 0.5
+    max_retry_after: float = 30.0
+    retry_statuses: frozenset[int] = field(default=DEFAULT_RETRY_STATUSES)
+    retry_writes: bool = False
+
+    def __post_init__(self) -> None:
+        if self.attempts < 1:
+            raise ValueError("attempts must be at least 1")
+        if not 0.0 <= self.jitter <= 1.0:
+            raise ValueError("jitter must be between 0 and 1")
+
+    def delay_for(
+        self, attempt: int, *, retry_after: float | None = None, rand: float | None = None
+    ) -> float:
+        """Seconds to wait before attempt ``attempt + 1`` (0-based).
+
+        A server-sent ``retry_after`` wins over the computed backoff and is not
+        jittered — the server named a time, and spreading it would be second-
+        guessing it — but it is still capped by ``max_retry_after`` so a
+        mistaken header cannot park a refresh loop for an hour.
+        """
+        if retry_after is not None:
+            return max(0.0, min(retry_after, self.max_retry_after))
+        capped = min(self.base_delay * (2**attempt), self.max_delay)
+        factor = rand if rand is not None else random.random()
+        return capped * (1.0 - self.jitter + self.jitter * factor)
+
+
+# -- the client ------------------------------------------------------------
+
+
+class AsyncCoriqoAgentsClient:
+    """Async client for Coriqo's agent API, plus its device-signed
+    enforcement endpoints.
+
+    Takes a :class:`~byoai.recorder.identity.CoriqoIdentity` (or, for symmetry
+    with the sync client, plain :class:`CoriqoCredentials`). A device identity
+    can do everything; a static-key identity can publish, and raises
+    :class:`~byoai.errors.EnforcementIdentityUnavailableError` the moment it is
+    asked for an enforcement call — refused at the client rather than as a 403
+    from a server that does not accept the key at all.
+
+    One client per event loop, as with any ``httpx.AsyncClient``.
+    """
+
+    def __init__(
+        self,
+        identity: CoriqoIdentity | CoriqoCredentials,
+        *,
+        tenant_slug: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
+        timeout: float = _DEFAULT_TIMEOUT,
+        retry: RetryPolicy | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """``http_client`` supplies your own transport or a test double, and
+        is never closed by :meth:`close` — closing something shared out from
+        under its owner breaks its next use. ``sleep`` exists so tests can
+        observe the backoff without spending it."""
+        if isinstance(identity, CoriqoCredentials):
+            identity = CoriqoIdentity.from_credentials(identity)
+        self._identity = identity
+        self._retry = retry or RetryPolicy()
+        self._sleep = sleep
+        self._tenant_slug = tenant_slug or _default_tenant_slug(identity)
+
+        if http_client is not None:
+            self._client = http_client
+            self._owns_client = False
+        else:
+            self._client = httpx.AsyncClient(
+                base_url=identity.base_url, timeout=timeout
+            )
+            self._owns_client = True
+
+    @property
+    def identity(self) -> CoriqoIdentity:
+        return self._identity
+
+    @property
+    def retry_policy(self) -> RetryPolicy:
+        return self._retry
+
+    async def close(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def __aenter__(self) -> AsyncCoriqoAgentsClient:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
+
+    # -- request plumbing --------------------------------------------------
+
+    def _base_headers(self, *, signed: bool) -> dict[str, str]:
+        headers = {"content-type": "application/json"}
+        if self._tenant_slug:
+            headers["X-Tenant-Slug"] = self._tenant_slug
+        elif signed:
+            raise CoriqoAgentsError(
+                None,
+                "a device-signed request needs a tenant: pass tenant_slug=… or set "
+                "BYOAI_CORIQO_TENANT_SLUG (enrollment.json does not record one)",
+            )
+        if not signed and self._identity.source == IdentitySource.API_KEY:
+            credentials = self._identity.credentials
+            if credentials is not None:
+                headers["X-API-Key"] = credentials.api_key
+        return headers
+
+    def _build(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Any | None,
+        params: Mapping[str, Any] | None,
+        signed: bool,
+    ) -> httpx.Request:
+        """One attempt's request, signed at build time.
+
+        The body is serialized here rather than handed to httpx as ``json=``
+        because the signature commits to the exact bytes on the wire: any
+        re-encoding between signing and sending would invalidate it.
+        """
+        content = b"" if json_body is None else json.dumps(json_body).encode("utf-8")
+        headers = self._base_headers(signed=signed)
+        request = self._client.build_request(
+            method,
+            path,
+            params=params,
+            content=content or None,
+            headers=headers,
+        )
+        if signed:
+            signer = self._identity.require_enforcement()
+            # A caller-supplied client may carry a service-account key in its
+            # default headers. Coriqo refuses any enforcement request that
+            # presents one, so drop it here rather than let a correctly signed
+            # request come back 403.
+            request.headers.pop("X-API-Key", None)
+            request.headers.update(
+                device_headers(
+                    signer,
+                    method=method,
+                    path=request_path(request.url),
+                    body=content,
+                )
+            )
+        return request
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Any | None = None,
+        params: Mapping[str, Any] | None = None,
+        signed: bool = False,
+        idempotent: bool = False,
+    ) -> tuple[Any, int]:
+        """Perform the request, returning ``(parsed_body, status_code)``.
+
+        Registration needs the status code itself — Coriqo distinguishes
+        "created" from "already existed" by 201 vs 200, not by the body.
+
+        Retry happens only when ``idempotent`` is true. Each attempt is rebuilt
+        from scratch so a signed retry carries a fresh timestamp rather than
+        the stale one Coriqo would refuse.
+        """
+        attempts = self._retry.attempts if idempotent else 1
+        last_error: Exception | None = None
+
+        for attempt in range(attempts):
+            retry_after: float | None = None
+            try:
+                response = await self._client.send(
+                    self._build(
+                        method, path, json_body=json_body, params=params, signed=signed
+                    )
+                )
+            except ProviderError as exc:
+                # A transport or hook that already speaks the runtime's own
+                # error vocabulary (RateLimitError and friends) has said
+                # whether this is worth another go; don't second-guess it.
+                if not exc.retryable:
+                    raise
+                last_error, retry_after = exc, exc.retry_after
+            except httpx.HTTPError as exc:
+                # Connect/read failures: nothing was necessarily durable, and
+                # this only runs for requests the caller marked idempotent.
+                last_error = CoriqoAgentsError(None, f"request to {path} failed: {exc}")
+            else:
+                if response.status_code not in self._retry.retry_statuses:
+                    return parse_response(response, path=path)
+                retry_after = _parse_retry_after(response.headers.get("retry-after"))
+                last_error = _error_for(response, path=path)
+
+            if attempt == attempts - 1:
+                break
+            delay = self._retry.delay_for(attempt, retry_after=retry_after)
+            log.debug(
+                "coriqo: retrying %s %s in %.2fs (attempt %d/%d): %s",
+                method,
+                path,
+                delay,
+                attempt + 1,
+                attempts,
+                last_error,
+            )
+            await self._sleep(delay)
+
+        if last_error is None:  # pragma: no cover - the loop always sets one
+            last_error = CoriqoAgentsError(None, f"request to {path} made no attempt")
+        raise last_error
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        body, _status = await self._send(method, path, **kwargs)
+        return body
+
+    # -- agents (service-account auth) -------------------------------------
+
+    async def list_agents(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Every agent in the tenant, paging until the reported total is reached.
+
+        Coriqo caps ``limit`` at 200 per request, so one call cannot see a
+        larger tenant; without paging, a caller using this to decide whether an
+        agent exists would register a duplicate for every agent past the first
+        page.
+        """
+        collected: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page_size = _LIST_PAGE_SIZE
+            if limit is not None:
+                page_size = min(page_size, limit - len(collected))
+                if page_size <= 0:
+                    return collected
+            page = await self._request(
+                "GET",
+                "/api/v1/agents",
+                params={"limit": page_size, "offset": offset},
+                idempotent=True,
+            )
+            if not isinstance(page, dict):
+                return collected
+            items = page.get("items") or []
+            collected.extend(items)
+            total = page.get("total")
+            offset += len(items)
+            # Stop on an empty page even if `total` disagrees, so a miscounted
+            # total can't spin this loop forever.
+            if not items or (isinstance(total, int) and offset >= total):
+                return collected
+
+    async def get_agent(self, coriqo_agent_id: str) -> dict[str, Any]:
+        return await self._request(
+            "GET", f"/api/v1/agents/{coriqo_agent_id}", idempotent=True
+        )
+
+    async def register_agent(
+        self, registration: AgentRegistration
+    ) -> tuple[dict[str, Any], bool]:
+        """Register an agent, returning ``(record, created)``.
+
+        Retried only under ``RetryPolicy(retry_writes=True)`` *and* only with an
+        ``external_id``, which is Coriqo's idempotency key: a repeat lands on
+        the existing agent rather than creating a second one. Without one,
+        every call creates a new agent, so a retry would leave a duplicate
+        behind — see :class:`RetryPolicy`.
+        """
+        idempotent = self._retry.retry_writes and registration.external_id is not None
+        body, status = await self._send(
+            "POST",
+            "/api/v1/agents",
+            json_body=registration.to_body(),
+            idempotent=idempotent,
+        )
+        if not isinstance(body, dict):
+            raise CoriqoAgentsError(status, "registration response was not an object")
+        return body, status == 201
+
+    # -- runs (service-account auth) ---------------------------------------
+
+    async def open_trajectory(
+        self,
+        coriqo_agent_id: str,
+        *,
+        goal: str | None = None,
+        use_case: str | None = None,
+        parent_trajectory_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Open a run. Never retried: each call creates a trajectory."""
+        body: dict[str, Any] = {"goal": goal}
+        if use_case is not None:
+            body["use_case"] = use_case
+        if parent_trajectory_id is not None:
+            body["parent_trajectory_id"] = parent_trajectory_id
+        return await self._request(
+            "POST", f"/api/v1/agents/{coriqo_agent_id}/trajectories", json_body=body
+        )
+
+    async def complete_trajectory(
+        self, coriqo_agent_id: str, trajectory_id: str, *, status: str = "completed"
+    ) -> dict[str, Any]:
+        """Close a run. Coriqo answers 409 while it still has open sub-runs."""
+        return await self._request(
+            "POST",
+            f"/api/v1/agents/{coriqo_agent_id}/trajectories/{trajectory_id}/complete",
+            json_body={"status": status},
+        )
+
+    async def list_trajectories(
+        self, coriqo_agent_id: str, *, status: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit}
+        if status is not None:
+            params["status"] = status
+        return await self._request(
+            "GET",
+            f"/api/v1/agents/{coriqo_agent_id}/trajectories",
+            params=params,
+            idempotent=True,
+        )
+
+    async def record_trace(
+        self,
+        coriqo_agent_id: str,
+        *,
+        inputs: Any | None = None,
+        output: str | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        grounding_refs: list[Any] | None = None,
+        trajectory_id: str | None = None,
+        step_index: int | None = None,
+        latency_ms: int | None = None,
+        cost_usd: float | None = None,
+        token_count: int | None = None,
+        occurred_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Record one decision. Never retried — a resent trace is a second
+        decision in the record, and there is no idempotency key to collapse it
+        back onto the first."""
+        return await self._request(
+            "POST",
+            f"/api/v1/agents/{coriqo_agent_id}/traces",
+            json_body=trace_body(
+                inputs=inputs,
+                output=output,
+                tool_calls=tool_calls,
+                grounding_refs=grounding_refs,
+                trajectory_id=trajectory_id,
+                step_index=step_index,
+                latency_ms=latency_ms,
+                cost_usd=cost_usd,
+                token_count=token_count,
+                occurred_at=occurred_at,
+            ),
+        )
+
+    async def record_traces(
+        self, coriqo_agent_id: str, traces: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Record up to :data:`MAX_TRACE_BATCH` decisions in one request.
+        All-or-nothing on Coriqo's side, and never retried here."""
+        if not traces:
+            raise ValueError("traces must not be empty")
+        if len(traces) > MAX_TRACE_BATCH:
+            raise ValueError(
+                f"a batch holds at most {MAX_TRACE_BATCH} traces, got {len(traces)}"
+            )
+        return await self._request(
+            "POST",
+            f"/api/v1/agents/{coriqo_agent_id}/traces/batch",
+            json_body={"traces": [dict(t) for t in traces]},
+        )
+
+    async def authorize(
+        self,
+        coriqo_agent_id: str,
+        *,
+        tool: str,
+        trajectory_id: str | None = None,
+        step_index: int | None = None,
+    ) -> dict[str, Any]:
+        """Pre-act mandate check returning a sealed ``allow``/``deny`` verdict.
+        Advisory — Coriqo records the verdict, honoring it is the caller's job.
+        Sealed, so never retried."""
+        return await self._request(
+            "POST",
+            f"/api/v1/agents/{coriqo_agent_id}/authorize",
+            json_body={
+                "tool": tool,
+                "trajectory_id": trajectory_id,
+                "step_index": step_index,
+            },
+        )
+
+    # -- enforcement (device-signed) ---------------------------------------
+
+    async def fetch_mandate(self, coriqo_agent_id: str) -> dict[str, Any]:
+        """The scope this runtime enforces, for the cached policy snapshot.
+
+        The one call worth retrying hard: it is a read, it is what a refresh
+        loop repeats on an interval, and treating one blip as a refresh failure
+        would age out a snapshot that is still perfectly good. Coriqo binds the
+        agent to this device on first contact and refuses an agent another host
+        already holds, which is a one-time effect and identical on every later
+        call.
+        """
+        return await self._request(
+            "GET",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/mandate",
+            signed=True,
+            idempotent=True,
+        )
+
+    async def record_verdict(
+        self,
+        coriqo_agent_id: str,
+        *,
+        tool: str,
+        verdict: str,
+        reason: str | None = None,
+        trajectory_id: str | None = None,
+        step_index: int | None = None,
+    ) -> dict[str, Any]:
+        """Append what the runtime did about one tool call — permitted or
+        blocked — sealed onto the agent's mandate chain.
+
+        Never retried: it appends to a chain, so a resent verdict is a second
+        blocked call that never happened.
+        """
+        return await self._request(
+            "POST",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/verdicts",
+            json_body={
+                "tool": tool,
+                "verdict": verdict,
+                "reason": reason,
+                "trajectory_id": trajectory_id,
+                "step_index": step_index,
+            },
+            signed=True,
+        )
+
+    async def record_signed_trace(
+        self,
+        coriqo_agent_id: str,
+        *,
+        inputs: Any | None = None,
+        output: str | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        grounding_refs: list[Any] | None = None,
+        trajectory_id: str | None = None,
+        step_index: int | None = None,
+        latency_ms: int | None = None,
+        cost_usd: float | None = None,
+        token_count: int | None = None,
+        occurred_at: str | None = None,
+    ) -> dict[str, Any]:
+        """:meth:`record_trace` attested by the device key instead of a
+        service-account key. Same sealing path on Coriqo's side; what differs
+        is who the sealed event names as actor. Never retried."""
+        return await self._request(
+            "POST",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/traces",
+            json_body=trace_body(
+                inputs=inputs,
+                output=output,
+                tool_calls=tool_calls,
+                grounding_refs=grounding_refs,
+                trajectory_id=trajectory_id,
+                step_index=step_index,
+                latency_ms=latency_ms,
+                cost_usd=cost_usd,
+                token_count=token_count,
+                occurred_at=occurred_at,
+            ),
+            signed=True,
+        )
+
+
+def _default_tenant_slug(identity: CoriqoIdentity) -> str | None:
+    """Tenant for the ``X-Tenant-Slug`` header.
+
+    A static-key identity already carries one. An enrolled device does not —
+    ``enrollment.json`` records the device id and base URL only — so the device
+    path falls back to the env var the static path already uses rather than
+    introducing a second name for the same value.
+    """
+    if identity.credentials is not None:
+        return identity.credentials.tenant_slug
+    return os.environ.get("BYOAI_CORIQO_TENANT_SLUG") or None
+
+
+def _error_for(response: httpx.Response, *, path: str) -> CoriqoAgentsError:
+    """The error a retryable status would raise if it were the last attempt.
+
+    Built through :func:`parse_response` so a retried-then-exhausted failure is
+    indistinguishable from a first-attempt one — same type, same ``detail``.
+    """
+    try:
+        parse_response(response, path=path)
+    except CoriqoAgentsError as exc:
+        return exc
+    return CoriqoAgentsError(response.status_code, response.text)

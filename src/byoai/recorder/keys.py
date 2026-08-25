@@ -33,6 +33,7 @@ __all__ = [
     "SIG_PREFIX",
     "atomic_write_bytes",
     "derive_device_id",
+    "load_device_key",
     "load_or_create_device_key",
 ]
 # _finish_pending_rotation is intentionally not exported (leading underscore,
@@ -244,6 +245,23 @@ def _finish_pending_rotation(directory: Path, *, old_device_id: str | None = Non
     except OSError:  # pragma: no cover - leftover files, harmless
         pass
     return True
+
+
+def load_device_key(dir: Path | str) -> DeviceKey | None:  # noqa: A002 - matches sibling
+    """Load the device key from ``dir``, or return ``None`` if there isn't one.
+
+    The load-only half of :func:`load_or_create_device_key`, for callers that
+    must never mint an identity as a side effect — an already-enrolled device
+    whose key file has gone missing needs an error, not a fresh keypair bound
+    to nothing. Any interrupted rotation is still reconciled first, so a
+    confirmed staged key is promoted rather than reported as absent.
+    """
+    directory = Path(dir)
+    _finish_pending_rotation(directory)
+    key_path = directory / PRIVATE_KEY_FILENAME
+    if not key_path.exists():
+        return None
+    return _load(key_path)
 
 
 def load_or_create_device_key(dir: Path | str) -> DeviceKey:  # noqa: A002 - contract name

@@ -722,6 +722,145 @@ rather than swallowing failures, leaving it to the application to decide whether
 Coriqo being unreachable should matter. See
 `examples/agent_showcase/coriqo_sync.py` for a caller that log-and-continues.
 
+#### Which credential Coriqo sees (`byoai.recorder.identity`)
+
+An agent host can hold two Coriqo credentials, and they are not
+interchangeable. `resolve_identity()` is the single place that picks one:
+
+```python
+from byoai.recorder.identity import resolve_identity
+
+identity = resolve_identity()          # or resolve_identity(key_dir=...)
+```
+
+It tries, in order:
+
+1. **Device enrollment state** — `enrollment.json` plus the Ed25519 key under
+   the recorder's directory (`BYOAI_RECORDER_DIR`, default
+   `~/.byoai/recorder`), written by `byoai-recorder-enroll`. Enforcement-capable:
+   `identity.enforcement_capable` is `True` and `identity.sign(data)` returns
+   `ed25519:<base64>`, verifiable with `DeviceKey.verify`.
+2. **`CoriqoCredentials.from_env()`** — the static `BYOAI_CORIQO_API_KEY` pair.
+   Publish-only. Resolving one logs a warning naming the enrollment command,
+   once per process rather than once per call.
+3. **`None`** — no Coriqo identity configured. A supported state; callers no-op.
+
+No new env vars: the device path reads the recorder's existing
+`BYOAI_RECORDER_DIR`, the static path the existing `BYOAI_CORIQO_*` trio.
+
+The split matters because of what a credential is used *for*. A static key is a
+long-lived bearer secret living in the agent's own environment, and the one
+that registers agents carries `governance:approve` — so anything that decides
+what an agent is allowed to do must not authenticate with it. Callers on that
+path ask for a signer rather than testing a boolean:
+
+```python
+signer = identity.require_enforcement()   # EnforcementIdentityUnavailableError on a static key
+```
+
+`EnforcementIdentityUnavailableError` derives from `CoriqoIdentityError`, which
+derives from `ByoAIError`, and its message names the `byoai-recorder-enroll`
+command to run. `CoriqoIdentityError` is also raised when `enrollment.json`
+exists but is unreadable, or when an enrolled directory has lost its private
+key — neither silently falls back to the static key, since that substitution is
+exactly what this resolver exists to prevent.
+
+The private key never leaves `byoai.recorder.keys`. `CoriqoIdentity` holds a
+`Signer` (public key, `device_id`, `sign`), never key bytes, so tests can inject
+a fake signer and the on-disk permission checks stay in one module. Loading goes
+through `keys.load_device_key()`, which loads or returns `None` and never
+creates — an enrolled device whose key file has gone missing gets an error
+rather than a fresh keypair bound to nothing.
+
+`identity.device_id` is the id of the key that signs. It can differ from
+`identity.enrolled_device_id` after `byoai-recorder-rotate-key`, which replaces
+the live key without rewriting `enrollment.json`; the rotation is followable
+through the ledger's `KEY_ROTATED` event, and reporting the enrolled id
+alongside a signature from the rotated key would describe two different keys.
+
+#### Async publishing and enforcement (`byoai.recorder.coriqo_async`)
+
+`CoriqoAgentsClient` is synchronous and never retries, which is right for
+publishing a finished run from a script. Mandate enforcement is a different
+shape: the runtime refreshes a cached policy snapshot on a background interval
+while the agent is mid-turn, so a blocking call stalls the event loop for a
+whole round trip and one transient blip reads as a failed refresh.
+`AsyncCoriqoAgentsClient` is the variant for that path. The sync client is
+unchanged and stays the recommended one for batch publishing.
+
+```python
+from byoai.recorder.coriqo_async import AsyncCoriqoAgentsClient, RetryPolicy
+from byoai.recorder.identity import resolve_identity
+
+identity = resolve_identity()
+async with AsyncCoriqoAgentsClient(identity, retry=RetryPolicy(attempts=3)) as client:
+    mandate = await client.fetch_mandate(coriqo_agent_id)     # device-signed, retried
+    await client.record_verdict(coriqo_agent_id, tool="rm", verdict="blocked")
+```
+
+It takes a `CoriqoIdentity` (or plain `CoriqoCredentials`, for symmetry with
+the sync client) and mirrors its construction options — `http_client`,
+`timeout` — including that a caller-supplied client is never closed by
+`close()`. No new env vars: a device identity has no tenant in
+`enrollment.json`, so the tenant comes from `tenant_slug=…` or the existing
+`BYOAI_CORIQO_TENANT_SLUG`, and a signed call without one is refused before it
+reaches the network.
+
+**What gets retried.** Reads only, by default:
+
+| Retried | Not retried |
+| --- | --- |
+| `fetch_mandate`, `get_agent`, `list_agents`, `list_trajectories` | `record_trace`, `record_traces`, `record_signed_trace`, `record_verdict`, `open_trajectory`, `complete_trajectory`, `authorize`, `register_agent` |
+
+A resent trace or verdict is a second decision in the record, and Coriqo has no
+idempotency key to collapse it back onto the first — so those are sent once and
+the failure is the caller's to handle. The single exception is opt-in:
+`RetryPolicy(retry_writes=True)` makes `register_agent` retryable *only* when
+the registration carries an `external_id`, which is Coriqo's own idempotency
+key (a repeat returns the existing agent instead of creating a second copy).
+The cost is that `created` can come back `False` for an agent this process did
+create, when the first attempt landed and its response was lost.
+
+`RetryPolicy` retries 429/502/503/504 — 500 is deliberately absent, since it
+can mean the write landed and the response didn't. Backoff for attempt *n* is
+`min(base_delay * 2**n, max_delay)` scaled by a random factor in
+`[1 - jitter, 1)`, so a fleet that all lost the same Coriqo doesn't come back
+in lockstep. A `Retry-After` header (or the `retry_after` on a `RateLimitError`
+raised by a transport hook) wins over the computed backoff and is not jittered,
+capped by `max_retry_after` so a mistaken header can't park a refresh loop.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `attempts` | `3` | total tries, not extra ones — `1` disables retry |
+| `base_delay` | `0.2` | first backoff, in seconds, before jitter |
+| `max_delay` | `5.0` | ceiling on the exponential growth |
+| `jitter` | `0.5` | fraction of each delay that is randomized |
+| `max_retry_after` | `30.0` | ceiling on a server-sent `Retry-After` |
+| `retry_statuses` | `{429, 502, 503, 504}` | statuses worth another attempt |
+| `retry_writes` | `False` | see above — affects `register_agent` only |
+
+**Enforcement endpoints are device-signed.** Calls under
+`/api/v1/agent-runtime` (`fetch_mandate`, `record_verdict`,
+`record_signed_trace`) authenticate with the enrolled device key and never send
+`X-API-Key` — Coriqo rejects a service-account key on that path on purpose,
+because the credential that fetches an agent's permitted scope must not be one
+the agent can use to widen it. A static-key identity raises
+`EnforcementIdentityUnavailableError` at the client rather than collecting a
+403. Each request carries `X-Coriqo-Public-Key`, `X-Coriqo-Timestamp` and
+`X-Coriqo-Signature`, an Ed25519 signature over canonical JSON of
+`{body_sha256, method, path, public_key, timestamp}` — `path` includes the
+query string, and the signer's own key is inside the signed bytes, so a
+captured signature can't be replayed against a different request or under a
+different identity. Coriqo accepts a timestamp up to 120s old and 30s in the
+future, so every attempt is signed afresh rather than resent with the previous
+attempt's timestamp.
+
+Errors are the sync client's, unchanged: `CoriqoAgentsError` with
+`status_code`/`detail` (409 no mandate version, 403 missing role, 422 schema
+rejection) and `AgentSuspendedError` on 423. `CoriqoAgentsError` now also
+derives from `ByoAIError` alongside `RuntimeError`, so one `except ByoAIError`
+covers the whole runtime; existing `except RuntimeError` code is unaffected.
+
 #### Rotating or revoking a device key
 
 Rotate a device's key without losing verifiable continuity of the ledger:

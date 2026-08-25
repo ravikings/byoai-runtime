@@ -88,6 +88,20 @@ class FilterError(ByoAIError):
     """An AST filter expression is malformed or unsupported by the target dialect."""
 
 
+class CoriqoIdentityError(ByoAIError):
+    """The Coriqo identity on this host could not be resolved or used."""
+
+
+class EnforcementIdentityUnavailableError(CoriqoIdentityError):
+    """An enforcement-capable identity was required, and none is configured.
+
+    Raised when the only Coriqo identity available is a static API key (or
+    nothing at all). Mandate enforcement decides what an agent may do, so it
+    has to authenticate with the device key rather than a bearer secret that
+    lives in the agent's own environment.
+    """
+
+
 # Pre-0.1 names, kept as aliases so existing `except PipelineNotFound` /
 # `except AllProvidersFailed` code keeps working. New code should use the
 # PEP 8 ``*Error`` names.

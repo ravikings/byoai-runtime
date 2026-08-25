@@ -13,6 +13,8 @@ from .errors import (
     ByoAIError,
     CacheError,
     ConfigurationError,
+    CoriqoIdentityError,
+    EnforcementIdentityUnavailableError,
     FilterError,
     MiddlewareError,
     PipelineError,
@@ -54,6 +56,8 @@ __all__ = [
     "CacheError",
     "VectorStoreError",
     "FilterError",
+    "CoriqoIdentityError",
+    "EnforcementIdentityUnavailableError",
 ]
 
 # Library convention: never configure logging for the application, but make

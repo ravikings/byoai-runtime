@@ -8,7 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **One Coriqo identity resolver (`byoai.recorder.identity`).** `resolve_identity()` returns the
+  device-enrolled Ed25519 identity when this host has one, falls back to the static
+  `BYOAI_CORIQO_API_KEY` credentials (publish-only, warned about once per process), and returns
+  `None` when neither is configured. `CoriqoIdentity.require_enforcement()` is what mandate
+  enforcement calls: it hands back a signer for a device identity and raises
+  `EnforcementIdentityUnavailableError` for a static key, which cannot sign and, carrying
+  `governance:approve`, would let an agent edit its own mandate. Key material stays inside
+  `byoai.recorder.keys` — the identity holds a `Signer`, never raw bytes. New errors
+  `CoriqoIdentityError` and `EnforcementIdentityUnavailableError` derive from `ByoAIError`.
+  `CoriqoCredentials` and `CoriqoAgentsClient` are unchanged.
+- **Async, retrying Coriqo client (`byoai.recorder.coriqo_async`).** `AsyncCoriqoAgentsClient`
+  mirrors the synchronous client on `httpx.AsyncClient`, for the mandate-enforcement path: a
+  runtime that refreshes a cached policy snapshot on a background interval can't block its event
+  loop for a round trip, and shouldn't read one transient blip as a failed refresh. `RetryPolicy`
+  retries 429/502/503/504 with exponential backoff and jitter and honours a server-sent
+  `Retry-After` (and the `retry_after` on a `RateLimitError` from a transport hook) — but only for
+  idempotent reads. Writes are sent once: a resent trace or verdict is a second decision in the
+  record. The one opt-in exception, `RetryPolicy(retry_writes=True)`, covers `register_agent` with
+  an `external_id`, which is Coriqo's own idempotency key.
+
+  Enforcement calls (`fetch_mandate`, `record_verdict`, `record_signed_trace`) authenticate with
+  the device key from `resolve_identity()` and never send `X-API-Key`, signing each attempt over
+  canonical JSON of `{body_sha256, method, path, public_key, timestamp}` with the query string in
+  the path and the signer's own key inside the signed bytes. A static-key identity raises
+  `EnforcementIdentityUnavailableError` at the client. Errors keep the sync contract:
+  `CoriqoAgentsError` with `status_code`/`detail`, `AgentSuspendedError` on 423.
+
+  The synchronous `CoriqoAgentsClient` is unchanged.
+
+- **`byoai.recorder.keys.load_device_key()`** — the load-only half of
+  `load_or_create_device_key()`, returning `None` instead of minting a keypair when the directory
+  has no key. It still reconciles an interrupted rotation first, so a confirmed staged key is
+  promoted rather than reported absent.
+
+### Changed
+- `CoriqoAgentsError` now derives from `ByoAIError` as well as `RuntimeError`, so one
+  `except ByoAIError` covers every runtime failure. Existing `except RuntimeError` code keeps
+  working.
 
 ## [0.1.0a5] - 2026-08-14
 
