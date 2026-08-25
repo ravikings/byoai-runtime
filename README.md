@@ -507,6 +507,29 @@ path can go in before a device is enrolled. The full behavior table, the
 `allowed_tools` null-vs-empty rule and the two env vars are in
 **[CONFIGURATION.md](CONFIGURATION.md#enforcing-the-mandate-locally-byoairecordermandate)**.
 
+`@governed_tool` is where that verdict stops something. It wraps your own tool
+functions — sync or async, same decorator — consults the gate, and on a `Deny`
+raises `MandateDeniedError` without entering the function:
+
+```python
+from byoai.recorder.governed_tool import governed_tool, set_default_gate
+
+set_default_gate(gate)
+
+@governed_tool(name="payments.send")
+async def send_payment(iban: str, amount: str) -> str:
+    return await bank.transfer(iban, amount)
+```
+
+`str(MandateDeniedError)` is the one fixed sentence and nothing else, because
+that is the string a framework feeds back into the model; the tool, the mandate
+version and the reason are on `exc.verdict` and in the logs. It is not
+retryable and does not look it. The gate comes from `set_default_gate()` /
+`use_gate()` (a `ContextVar`, so two agents in one process don't share a
+mandate) or per-tool via `gate=`, and with no gate bound the decorator just runs
+the function — see
+**[CONFIGURATION.md](CONFIGURATION.md#governed_tool--enforcing-at-the-call-site-byoairecordergoverned_tool)**.
+
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
 Dedup itself no longer uses this state. It compares occurrences inside a single

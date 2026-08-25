@@ -958,6 +958,81 @@ Both are bootstrap values for the window before the first snapshot lands; after
 that Coriqo's values win. `MandateGate(default_posture=…,
 default_max_staleness_s=…)` overrides them in code.
 
+#### `@governed_tool` — enforcing at the call site (`byoai.recorder.governed_tool`)
+
+`MandateGate` decides; `@governed_tool` is where the decision stops something.
+Put it on your own tool functions and a `Deny` means the function is never
+entered — not entered and its result discarded, and not handed to the model as
+an error it can work around.
+
+```python
+from byoai.recorder.governed_tool import governed_tool, set_default_gate
+from byoai.recorder.mandate import mandate_gate
+
+gate = mandate_gate(coriqo_agent_id)
+
+@governed_tool
+def search(query: str, limit: int = 10) -> list[str]:
+    """Search the corpus."""
+    return corpus.query(query, limit=limit)
+
+@governed_tool(name="payments.send")       # the name Coriqo approved
+async def send_payment(iban: str, amount: str) -> str:
+    return await bank.transfer(iban, amount)
+
+async def main():
+    async with gate:                        # first fetch, then the refresh loop
+        set_default_gate(gate)
+        search("rates")                     # in scope: runs normally
+        await send_payment("DE…", "10.00")  # out of scope: raises, never runs
+```
+
+One decorator covers sync and async tools — the tool name, the gate lookup and
+the denial contract are identical either way, and `inspect.iscoroutinefunction`
+already knows which you wrote. It is `functools.wraps`-based and sets
+`__signature__`, so a framework that builds its tool schema by introspection
+sees the real function: same `__name__`, `__doc__`, signature and annotations.
+The tool name defaults to `fn.__name__`; pass `name=` when the Python function
+and the tool Coriqo approved are not called the same thing, which is common
+once a framework namespaces them. The call's arguments are bound onto the
+`ProposedAction` for the record; `capture_arguments=False` turns that off for a
+tool whose arguments are large or sensitive.
+
+**A denial raises `MandateDeniedError`** (from `byoai.errors`, so it derives
+from `ByoAIError` like everything else the runtime raises). It is terminal and
+non-retryable *by construction*, not by convention:
+
+| | |
+| --- | --- |
+| `str(exc)` | the fixed `MODEL_MESSAGE`, and nothing else — `str(exc)` is what frameworks feed back into the model's context |
+| `exc.verdict` | the whole `Deny`: `reason`, `mandate_version_id`, `snapshot_age_s`, `tool`, `posture`, `detail` |
+| `exc.operator_detail` | those fields as one log line. Never put it in front of the model |
+| `exc.retryable` | `False`, and there is no `retry_after` — nothing about it reads as transient |
+
+The decorator also logs the operator detail at `WARNING` on the raising path,
+so a blocked call is in the record whether or not the caller catches it.
+Retrying is pointless in any case: the same action against the same snapshot
+denies again. A `Flag` is *not* a denial — an off-mandate call under
+`mandate_enforcement: observe` runs exactly as it would have, which is the
+whole point of `observe`.
+
+**Getting a gate to the decorator.** Tools are defined at import time; gates
+are built at startup. Resolution is layered, most specific first:
+
+1. `@governed_tool(gate=…)` — a `MandateGate`, or a zero-argument callable
+   returning one, for that tool only. The callable is evaluated per call, so a
+   tool decorated at import time can still see a gate built later.
+2. Whatever `set_default_gate(gate)` or `with use_gate(gate):` bound.
+
+The default lives in a `ContextVar`, not a module global, so two agents in one
+process do not share a mandate and `use_gate` restores the previous binding on
+exit. `set_default_gate` returns the token if you want to unwind it yourself;
+`default_gate()` reads the current one.
+
+With no gate bound at all — or a gate from `mandate_gate()` on a host with no
+Coriqo identity — the decorator runs the function and logs one line. Adopting
+it is never the thing that breaks a build.
+
 #### Rotating or revoking a device key
 
 Rotate a device's key without losing verifiable continuity of the ledger:

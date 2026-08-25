@@ -6,6 +6,11 @@ can catch runtime failures without depending on provider SDK exception types.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from byoai.recorder.mandate import Deny
+
 
 class ByoAIError(Exception):
     """Base class for all runtime errors."""
@@ -100,6 +105,60 @@ class EnforcementIdentityUnavailableError(CoriqoIdentityError):
     has to authenticate with the device key rather than a bearer secret that
     lives in the agent's own environment.
     """
+
+
+class MandateDeniedError(ByoAIError):
+    """A tool call was outside the agent's approved mandate, and did not run.
+
+    Terminal and non-retryable **by construction**, not by convention. If a
+    denial reaches the model as an ordinary tool error — worse, one naming the
+    tool and the scope it missed — the model does the competent thing with a
+    failure: rephrases, tries an adjacent tool, and routes around the control.
+    So:
+
+    * ``str(exc)`` is the fixed :data:`~byoai.recorder.mandate.MODEL_MESSAGE`
+      and nothing else, because ``str(exc)`` is what agent frameworks put back
+      into the model's context;
+    * :attr:`operator_detail` — which tool, which mandate version, how stale,
+      why — is for logs and never for the model;
+    * :attr:`retryable` is ``False`` and there is no ``retry_after``, so the
+      error cannot be mistaken for a :class:`ProviderError`-shaped transient.
+
+    Retrying is pointless anyway: the same action against the same snapshot
+    denies again.
+    """
+
+    #: Mirrors :attr:`ProviderError.retryable` so a router that branches on the
+    #: attribute rather than the type sees the answer, not an ``AttributeError``.
+    retryable = False
+
+    def __init__(self, verdict: Deny) -> None:
+        # The *only* argument is the fixed sentence, so str(), repr() and any
+        # framework that formats the exception all stay model-safe.
+        super().__init__(verdict.model_message)
+        self.verdict = verdict
+
+    @property
+    def model_message(self) -> str:
+        """The one sentence this denial may put in front of a model."""
+        return self.verdict.model_message
+
+    @property
+    def tool(self) -> str | None:
+        return self.verdict.tool
+
+    @property
+    def operator_detail(self) -> str:
+        """Everything an operator needs, and the model must never see."""
+        parts = [f"reason={self.verdict.reason}", f"tool={self.verdict.tool!r}"]
+        if self.verdict.mandate_version_id is not None:
+            parts.append(f"mandate_version_id={self.verdict.mandate_version_id}")
+        if self.verdict.snapshot_age_s is not None:
+            parts.append(f"snapshot_age_s={self.verdict.snapshot_age_s:.1f}")
+        parts.append(f"posture={self.verdict.posture}")
+        if self.verdict.detail:
+            parts.append(f"detail={self.verdict.detail}")
+        return " ".join(parts)
 
 
 # Pre-0.1 names, kept as aliases so existing `except PipelineNotFound` /

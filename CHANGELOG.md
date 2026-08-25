@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`@governed_tool` (`byoai.recorder.governed_tool`).** The decorator integrators put on their own
+  tool functions, and the seam where a mandate denial actually stops something: the gate is
+  consulted first and on a `Deny` the wrapped function is never entered. One decorator handles sync
+  and async tools, preserves `__name__`, `__doc__` and the signature via `functools.wraps` plus an
+  explicit `__signature__`, defaults the tool name to `fn.__name__` and takes `name=` when the
+  Python name and the approved name differ. A denial raises `MandateDeniedError` (new, in
+  `byoai.errors`, deriving from `ByoAIError`), which is terminal and non-retryable by construction:
+  `str(exc)` is the fixed `MODEL_MESSAGE` and nothing else — that string is what agent frameworks
+  feed back into the model — while the tool, mandate version, staleness and reason live on
+  `exc.verdict` / `exc.operator_detail` and in a `WARNING` logged on the raising path. `retryable`
+  is `False` and there is no `retry_after`, so it cannot be mistaken for a transient provider error.
+  A `Flag` still runs the function, which is what `mandate_enforcement: observe` is for. The gate
+  is resolved per call from `@governed_tool(gate=…)` (a gate or a zero-argument factory) then from
+  `set_default_gate()` / `use_gate()`, held in a `ContextVar` so two agents in one process do not
+  share a mandate and tests do not leak bindings. With no gate bound, or a no-op gate from an
+  unenrolled host, the decorator runs the function and logs one line.
 - **Local mandate enforcement (`byoai.recorder.mandate`).** `MandateGate.decide()` answers whether
   a proposed tool call is inside the agent's approved scope from a cached snapshot, with no network
   I/O on the decide path — an agent whose availability depended on a governance service's is not
