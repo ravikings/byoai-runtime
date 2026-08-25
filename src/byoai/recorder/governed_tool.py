@@ -31,6 +31,15 @@ rule and a real chance of them drifting — and the integrator would have to kno
 which one to reach for, which is a question about their function that
 :func:`inspect.iscoroutinefunction` can answer for them.
 
+**Repeats are latched, not re-decided.** The first denial of a tool goes to
+:mod:`byoai.recorder.denial_latch`, and every later attempt at that tool in the
+same run is refused straight from there — no scope check — until the run passes
+the halt threshold and stops entirely with
+:class:`~byoai.errors.MandateRunHaltedError`. The model's sentence never
+changes through any of it. Bind the run with
+:func:`~byoai.recorder.denial_latch.run_scope` when your tool functions do not
+receive a trajectory id.
+
 Getting a gate to the decorator
 -------------------------------
 A tool function is usually defined at import time, far from wherever the gate
@@ -66,13 +75,21 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, TypeAlias, TypeVar, overload
 
-from byoai.errors import MandateDeniedError
+from byoai.errors import MandateDeniedError, MandateRunHaltedError
 
+from .denial_latch import (
+    LatchedDenial,
+    current_run_id,
+    denial_latch,
+    resolve_principal,
+    resolve_run_id,
+)
 from .mandate import Deny, MandateGate, ProposedAction, Verdict
 
 __all__ = [
     "GateSource",
     "MandateDeniedError",
+    "MandateRunHaltedError",
     "default_gate",
     "governed_tool",
     "set_default_gate",
@@ -156,17 +173,68 @@ def _arguments(
 
 
 def _check(gate: MandateGate | None, action: ProposedAction) -> Verdict | None:
+    """The one place a verdict becomes a consequence.
+
+    Order matters here. The latch is consulted *before* the gate, so a tool
+    already denied in this run — and every tool once the run is halted — is
+    refused without a scope check. The same action against the same snapshot
+    cannot decide differently, so re-evaluating would buy nothing and would let
+    a model turn the control into a benchmark.
+
+    The mandate version in hand goes to the latch with the question, because a
+    new version is the one thing that *can* change the answer: the latch drops
+    the run's buckets and lets the gate decide again.
+    """
     if gate is None:
         _log_ungated_once()
         return None
+
+    latch = denial_latch()
+    run_id = resolve_run_id(action, gate)
+    principal = resolve_principal(gate)
+    version = gate.latch_version
+    latched = latch.check(run_id, principal, action.tool, version)
+    if latched is not None:
+        raise _denial(latched.verdict, run_id=run_id, latched=latched)
+
     verdict = gate.decide(action)
     if verdict.allowed or not isinstance(verdict, Deny):
         return verdict
-    denied = MandateDeniedError(verdict)
+    raise _denial(
+        verdict,
+        run_id=run_id,
+        latched=latch.record(run_id, principal, verdict, version),
+    )
+
+
+def _denial(
+    verdict: Deny, *, run_id: str, latched: LatchedDenial
+) -> MandateDeniedError:
+    """Build the exception a denial raises — halting or not.
+
+    Both carry the same fixed sentence for the model. The difference is the
+    type, which is for the loop above: ``MandateRunHaltedError`` says stop
+    scheduling turns for this run, an ordinary denial says only that this tool
+    is refused.
+    """
+    if latched.halted:
+        error: MandateDeniedError = MandateRunHaltedError(
+            verdict, run_id=run_id, attempts=latched.attempts
+        )
+    else:
+        error = MandateDeniedError(verdict)
     # Logged here rather than left to the caller: a blocked call that nobody
-    # writes down is indistinguishable from one that never happened.
-    log.warning("coriqo: blocked tool call - %s", denied.operator_detail)
-    raise denied
+    # writes down is indistinguishable from one that never happened. The
+    # attempt count rides along, because "the fourth try at the same denied
+    # tool" is the fact worth having and a bare denial line does not carry it.
+    log.warning(
+        "coriqo: blocked tool call - %s run_id=%s attempts=%d%s",
+        error.operator_detail,
+        run_id,
+        latched.attempts,
+        " HALTED" if latched.halted else "",
+    )
+    return error
 
 
 @overload
@@ -237,7 +305,9 @@ def governed_tool(
                 _check(
                     _resolve_gate(gate),
                     ProposedAction(
-                        tool=tool, arguments=_arguments(signature, args, kwargs)
+                        tool=tool,
+                        trajectory_id=current_run_id(),
+                        arguments=_arguments(signature, args, kwargs),
                     ),
                 )
                 return await target(*args, **kwargs)
@@ -250,7 +320,9 @@ def governed_tool(
                 _check(
                     _resolve_gate(gate),
                     ProposedAction(
-                        tool=tool, arguments=_arguments(signature, args, kwargs)
+                        tool=tool,
+                        trajectory_id=current_run_id(),
+                        arguments=_arguments(signature, args, kwargs),
                     ),
                 )
                 return target(*args, **kwargs)

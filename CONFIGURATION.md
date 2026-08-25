@@ -1033,6 +1033,148 @@ With no gate bound at all — or a gate from `mandate_gate()` on a host with no
 Coriqo identity — the decorator runs the function and logs one line. Adopting
 it is never the thing that breaks a build.
 
+#### The denial latch — repeats and the halt (`byoai.recorder.denial_latch`)
+
+A denial stops one call. On its own that leaves an agent free to attempt the
+same refused tool for as long as its loop keeps turning, and the record shows a
+row of identical single denials with nothing tying them together. The latch ties
+them together.
+
+It is keyed on the run, the agent asking, and the tool. The first denial goes
+into it; every later attempt at that tool is refused **from the latch, without
+re-running the scope check**, because the same tool against the same snapshot
+cannot answer differently. At the threshold — 3 attempts by default, counting
+the first denial — the run is halted: every subsequent call in that run, including
+tools that were in scope all along, raises `MandateRunHaltedError`.
+
+```python
+from byoai.errors import MandateDeniedError, MandateRunHaltedError
+from byoai.recorder.denial_latch import run_scope
+
+with run_scope(trajectory_id):        # names the run for every call inside
+    try:
+        result = send_payment("DE…", "10.00")
+    except MandateRunHaltedError as exc:
+        stop_the_run(exc.run_id, attempts=exc.attempts)   # the run is over
+    except MandateDeniedError:
+        pick_another_tool()                                # this tool is refused
+```
+
+`MandateRunHaltedError` subclasses `MandateDeniedError`, so every handler already
+written keeps stopping the call, and `isinstance` (or `exc.halted`) is what tells
+a supervising loop *this tool is refused* from *this run is over*.
+
+**Only scope denials are latched.** A suspension is lifted, a stale snapshot
+refreshes, a first snapshot arrives — all three deny under `fail_closed`, and all
+three are transient. Remembering them would turn one refresh blip into a
+permanently halted run, which is the outage the refresh path exists to prevent.
+Only `out_of_scope` (and its delegated form) goes into the latch.
+
+**A new mandate version clears that agent's buckets.** The latch's licence to
+refuse without re-evaluating is that the answer cannot have changed; a new
+mandate version is exactly when it can have, because somebody approved something.
+The buckets go, and the halt with them if it was that agent's doing — one agent's
+new mandate says nothing about what another did. The version is read once per
+call from `MandateGate.latch_version`, which a `DelegatedGate` answers with the
+delegator's live version, the pinned delegation and its own, combined. Both sides
+of a lookup must be fed that one value: two sources look like a version flapping
+on every call, and a flapping version wipes the buckets it just wrote.
+
+**The model's sentence never changes.** First denial, fourth repeat, halt: all
+of them are the same fixed `MODEL_MESSAGE`. Escalating the detail as the agent
+tries harder would hand it a hint sheet at the moment it is probing the control.
+The attempt count and the halt go to the operator — a `WARNING` on the raising
+path, and `LatchedDenial.attempts` on the verdict path for whatever seals it.
+
+**Which run.** `ProposedAction.trajectory_id` when it is set, else the run bound
+by `run_scope()`, else a fallback id belonging to the `MandateGate` — one gate is
+built per agent per run in every wiring here, and two gate objects are two
+different mandates. The imprecision runs the safe way: an application reusing one
+long-lived gate across several sequential runs shares one bucket until it names
+them, which latches too eagerly rather than too late.
+
+**Buckets carry the agent too**, because a delegated sub-agent and its delegator
+share a run and not a scope — a child's denial must not latch a tool the parent
+may still legitimately call. The halt is the exception and is run-wide: once a
+run is over, which agent asks next is beside the point.
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `BYOAI_MANDATE_HALT_THRESHOLD` | `3` | attempts at one already-denied tool before the run is halted, counting the first denial. Values below 1 and non-integers fall back to the default |
+
+The process-wide latch reads that variable once, at import, so set it before
+importing `byoai.recorder.governed_tool` — or pass the threshold in code.
+
+`DenialLatch(threshold=…)` overrides it in code. `latch.reset(run_id)` clears one
+run, for a supervisor that has taken its own decision about a halted one. A latch
+also holds at most `max_runs` runs (1024 by default), dropping the oldest first,
+so a process that runs for months does not accumulate a bucket per run.
+
+**Latch state is per-process and in memory.** A run that spans two processes, or
+a host that restarts mid-run, starts counting from zero. Nothing persists it yet.
+
+#### Delegated scope attenuation (`byoai.recorder.delegation`)
+
+Two relations get confused with each other, and only one of them narrows scope.
+*Nesting* is a sub-run of the same agent — one mandate already covers it.
+*Delegation* is agent A handing work to agent B, and for that work B has no
+mandate of its own: nobody approved B to act inside A's task.
+
+So B's effective scope for that run is the **intersection** of B's own mandate
+with A's effective scope at the moment of delegation, pinned to A's
+`mandate_version_id`. Delegation can only narrow. If it could widen, spawning a
+sub-agent would be a route to tools the parent was refused — and the easy route,
+since a model that has just been denied is one prompt away from asking a helper.
+B's standing mandate is untouched; the narrowing lives on the delegated run.
+
+```python
+from byoai.recorder.delegation import delegated_gate
+from byoai.recorder.governed_tool import use_gate
+
+child = delegated_gate(parent_gate, child_gate)   # intersection, pinned to the parent
+with use_gate(child):
+    await sub_agent.run(task)
+```
+
+`DelegatedGate` subclasses `MandateGate`, so `@governed_tool` needs no separate
+wiring, and it *wraps* the child's gate rather than replacing it: suspension,
+staleness, the fail-open/fail-closed fork and the unenrolled no-op path all still
+decide, and the delegated scope only ever narrows the result.
+
+It also keeps the delegator's gate and asks it first. The pinned scope is a
+photograph taken when the delegation happened, and a photograph cannot notice
+that the delegator has since been suspended or had its mandate narrowed —
+consulting the live parent is what makes a revocation reach the sub-agent within
+one refresh interval.
+
+Enforcement and depth attenuate the same way tools do. The `mandate_enforcement`
+that decides whether a delegated breach blocks or only flags is the *delegator's*,
+and any `enforce` up the chain enforces; otherwise picking a sub-agent still in
+observe rollout would be a working route around the parent's mandate. Likewise
+`max_delegation_depth` is the tightest limit anywhere up the chain, so a middle
+agent's own generous limit cannot loosen the root's.
+
+Two snapshot fields govern it:
+
+| Field | Meaning |
+| --- | --- |
+| `delegation_policy` | `attenuated` permits delegation; `none` forbids it. Absent or unrecognised is read as `none` — a snapshot that does not say delegation was approved has not approved it |
+| `max_delegation_depth` | bounds the chain. `0` forbids delegation outright, `null` leaves the policy as the only gate. A value that was sent and cannot be read as an integer is treated as `0`, so a typo in a payload cannot lift a limit |
+
+A refusal raises `DelegationRefusedError` where the delegation is set up, not at
+the first tool call — there is no scope to build, and the integrator wiring the
+sub-agent up is the right person to see it.
+
+An **undeclared** delegation — one Coriqo was never told about — gets the empty
+scope instead. It denies every tool under `enforce`, which is the same practical
+outcome as a refusal, but it is a decision the record can explain rather than a
+crash in a spawn path.
+
+**`null` is not `[]`.** `allowed_tools: null` is unrestricted, `[]` permits
+nothing, and `intersect_tools` branches on `is None` and nothing else: unrestricted
+∩ X is X, and anything ∩ `[]` is `[]`. A falsy check here is how "permitted
+nothing" becomes "permitted everything".
+
 #### Rotating or revoking a device key
 
 Rotate a device's key without losing verifiable continuity of the ledger:

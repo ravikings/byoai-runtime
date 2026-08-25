@@ -132,6 +132,10 @@ class MandateDeniedError(ByoAIError):
     #: attribute rather than the type sees the answer, not an ``AttributeError``.
     retryable = False
 
+    #: False here, True on :class:`MandateRunHaltedError`. Present on both so a
+    #: supervisor can ask "is the run over?" without importing the subclass.
+    halted = False
+
     def __init__(self, verdict: Deny) -> None:
         # The *only* argument is the fixed sentence, so str(), repr() and any
         # framework that formats the exception all stay model-safe.
@@ -159,6 +163,31 @@ class MandateDeniedError(ByoAIError):
         if self.verdict.detail:
             parts.append(f"detail={self.verdict.detail}")
         return " ".join(parts)
+
+
+class MandateRunHaltedError(MandateDeniedError):
+    """The run was halted after repeated attempts at an already-denied tool.
+
+    A subclass of :class:`MandateDeniedError` so every ``except
+    MandateDeniedError`` already written keeps stopping the call, and so
+    ``str(exc)`` is still the one fixed sentence — a model that has been
+    grinding against a control learns nothing new at the moment it is cut off.
+
+    The distinction is for the supervising loop, not the model. ``isinstance``
+    (or :attr:`halted`) separates *this tool is refused, try something else*
+    from *this run is over, stop scheduling turns for it*. :attr:`attempts`
+    says how many times the tool was tried, and :attr:`run_id` which run was
+    halted, so the caller can say so in a finding rather than in prose.
+    """
+
+    #: True on every instance. A caller branching on the attribute rather than
+    #: the type sees the answer on an ordinary denial too, where it is False.
+    halted = True
+
+    def __init__(self, verdict: Deny, *, run_id: str, attempts: int) -> None:
+        super().__init__(verdict)
+        self.run_id = run_id
+        self.attempts = attempts
 
 
 # Pre-0.1 names, kept as aliases so existing `except PipelineNotFound` /

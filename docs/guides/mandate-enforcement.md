@@ -149,13 +149,156 @@ truthiness, and rejects a bare string instead of iterating it into single charac
 you write your own client against Coriqo's mandate endpoint, do the same. A falsy check
 turns "permitted nothing" into "permitted everything".
 
+## Repeat attempts are latched
+
+A denial stops one call. On its own that is not much of a control: an agent that
+ignores the message can attempt the same refused tool for as long as its loop
+keeps turning, and your logs fill with identical single denials that nothing ties
+together. The interesting fact — *this agent went at a control it had already
+been refused, four times in ninety seconds* — is the one a risk committee asks
+about, so the runtime keeps it.
+
+The latch is keyed on the run, the agent asking, and the tool:
+
+- the first denial is remembered;
+- every later attempt at that tool in that run is refused **from the latch**,
+  without re-running the scope check — the same tool against the same snapshot
+  cannot answer differently, so re-evaluating would be theatre;
+- at the third attempt (counting the first denial) the run is halted. Every
+  subsequent call in that run, including tools that were in scope all along,
+  raises `MandateRunHaltedError`.
+
+```python
+from byoai.errors import MandateDeniedError, MandateRunHaltedError
+from byoai.recorder.denial_latch import run_scope
+
+with run_scope(trajectory_id):
+    try:
+        result = wire_transfer("ACC-1", 500)
+    except MandateRunHaltedError as exc:
+        stop_the_run(exc.run_id, attempts=exc.attempts)
+    except MandateDeniedError:
+        try_something_else()
+```
+
+`MandateRunHaltedError` derives from `MandateDeniedError`, so a handler you have
+already written keeps stopping the call. The distinction is for the loop above
+it, not for the model: `isinstance` (or `exc.halted`) separates "this tool is
+refused, try another" from "stop scheduling turns for this run".
+
+The model's sentence does not change through any of it. First denial, fourth
+repeat, halt — the same fixed sentence every time. Escalating the detail as the
+agent tries harder would be handing it a hint sheet at exactly the moment it is
+probing the control. The count goes to the operator instead, in the `WARNING`
+logged on the raising path.
+
+Set the threshold with `BYOAI_MANDATE_HALT_THRESHOLD`, or `DenialLatch(threshold=…)`
+in code. The process-wide latch reads the variable at import, so set it before
+importing the runtime.
+
+### What is not latched
+
+Only denials about *scope*. A suspension is lifted, a stale snapshot refreshes, a
+first snapshot arrives — all three deny under `fail_closed` and all three are
+temporary. Remembering them would turn one refresh blip into a permanently halted
+run, which is the failure the refresh path is built to avoid.
+
+And a new mandate version clears that agent's buckets, its halt included. The
+latch's licence to refuse without looking is that the answer cannot have changed;
+a new version is exactly the case where somebody changed it. It is tracked per
+agent rather than per run, because a run holds a delegator and its delegated
+child at two different versions, and tracking it per run would have each of them
+wipe the other's count on every call — which would hand any agent with a
+sub-agent a halt it can never reach.
+
+### Which run, and which agent
+
+The run is `ProposedAction.trajectory_id` when your tools carry one. Failing
+that, `run_scope()` binds one for a block of calls. Failing that, the runtime
+falls back to an id belonging to the `MandateGate` itself — one gate is built per
+agent per run in every wiring this package encourages, and two gate objects are
+two different mandates, so unrelated agents in one process never halt each other.
+The imprecision runs the safe way round: an application that reuses one
+long-lived gate across several sequential runs shares one bucket until it names
+the runs, which latches too eagerly rather than too late.
+
+Buckets carry the agent as well as the run, because a delegated sub-agent and its
+delegator share a run and do not share a scope. A child's denial must not latch a
+tool the parent may still legitimately call. The halt is the exception, and is
+deliberately run-wide.
+
+### The limit worth knowing
+
+Latch state lives in process memory. A run that spans two processes, and a host
+that restarts mid-run, both start counting from zero. Nothing persists it yet, so
+an agent that can get itself restarted can reset its own count — treat the halt
+as a control against a model grinding away inside one run, not as one against an
+orchestrator that respawns workers.
+
+A latch also holds a bounded number of runs (1024 by default) and drops the
+oldest first, so a long-lived process does not accumulate a bucket per run. A run
+that has been idle for that many runs and then comes back starts counting again.
+
+## Delegation narrows, it never widens
+
+When agent A hands work to agent B, B has no mandate of its own for that run —
+nobody approved B to act inside A's task. Its effective scope is the intersection
+of B's own mandate with A's effective scope at the moment of delegation, pinned
+to A's `mandate_version_id`.
+
+```python
+from byoai.recorder.delegation import delegated_gate
+from byoai.recorder.governed_tool import use_gate
+
+child = delegated_gate(parent_gate, child_gate)
+with use_gate(child):
+    await sub_agent.run(task)
+```
+
+This is not the same thing as a *nested* run. A sub-run of the same agent is
+still that agent, and its one mandate already scopes it; nothing attenuates.
+Attenuation is about two different agents, and it is one-directional on purpose.
+If delegation could widen, "ask another agent to do it" would be the cheapest way
+around a denial, and a model that has just been refused is one prompt away from
+trying it.
+
+B's standing mandate is untouched. It is still B, with its own scope, the moment
+it runs its own work.
+
+`DelegatedGate` also keeps A's gate and asks it first, so suspending A, or
+narrowing A's mandate, stops B within one refresh interval. The pinned scope is a
+photograph of the moment of delegation, and a photograph cannot notice a
+revocation.
+
+Two dials attenuate along with the tools. Whether a delegated breach blocks or
+only flags is read off the *delegator's* `mandate_enforcement`, and any `enforce`
+up the chain enforces — otherwise handing work to a sub-agent that happens to be
+in observe rollout would be a working way around the parent's mandate. And
+`max_delegation_depth` is the tightest limit anywhere up the chain, so a middle
+agent cannot raise a bound the root set.
+
+Two fields on the snapshot govern the hand-off. `delegation_policy` must be
+`attenuated`; `none` — and anything absent or unrecognised, because a snapshot
+that does not say delegation was approved has not approved it — refuses with
+`DelegationRefusedError`. `max_delegation_depth` bounds the chain, where `0`
+forbids delegation outright and `null` leaves the policy as the only gate.
+
+A delegation Coriqo was never told about gets the empty scope rather than a
+refusal: it denies every tool under `enforce`, which is the same practical
+outcome, but as a decision the record can explain instead of a crash in your
+spawn path.
+
+Intersecting is where the null-vs-empty rule earns its keep. `allowed_tools: null`
+is unrestricted and contributes no restriction, so unrestricted ∩ X is X. `[]`
+permits nothing and survives every intersection, so anything ∩ `[]` is `[]`. The
+runtime branches on `is None`; if you write your own, do the same, because a
+falsy check turns "permitted nothing" into "permitted everything".
+
 ## Not built yet
 
-Two things you may expect are still missing, and it is better to know now than to discover
-them in a demo:
+One thing you may expect is still missing, and it is better to know now than to
+discover it in a demo:
 
-- **Repeat attempts are not counted.** A denial stops one call. A model that ignores the
-  message can attempt the same denied tool indefinitely, and nothing yet halts the run or
-  raises a finding.
-- **Verdicts are logged, not sealed.** They do not reach the local ledger or Coriqo yet, so
-  a denial is visible in your process logs and nowhere else.
+- **Verdicts are logged, not sealed.** They do not reach the local ledger or
+  Coriqo yet, so a denial — including a latched repeat and a halt, with its
+  attempt count — is visible in your process logs and nowhere else.

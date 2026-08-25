@@ -145,6 +145,22 @@ class Reason:
     NO_SNAPSHOT = "no_snapshot"
     AGENT_SUSPENDED = "agent_suspended"
     ENFORCEMENT_UNCONFIGURED = "enforcement_unconfigured"
+    #: A tool already denied for this run, refused from the latch without
+    #: re-evaluating scope: the answer cannot have changed.
+    REPEAT_DENIED = "repeat_denied"
+    #: The repeat threshold was reached and the run is over.
+    RUN_HALTED = "run_halted"
+    #: Inside the delegated agent's own mandate, outside the scope it was
+    #: delegated — the intersection, not the child's standing mandate.
+    DELEGATED_OUT_OF_SCOPE = "delegated_out_of_scope"
+    DELEGATED_OUT_OF_SCOPE_OBSERVED = "delegated_out_of_scope_observed"
+
+
+class DelegationPolicy:
+    """Whether an agent may hand work to another agent at all."""
+
+    NONE = "none"
+    ATTENUATED = "attenuated"
 
 
 class MandateError(ByoAIError):
@@ -524,6 +540,18 @@ class MandateGate:
     def snapshot_age_s(self) -> float | None:
         snapshot = self.snapshot
         return None if snapshot is None else snapshot.age_s(self._clock())
+
+    @property
+    def latch_version(self) -> str | None:
+        """What the denial latch treats as "the mandate in hand".
+
+        One value, asked of the gate, so that both sides of a latch lookup agree.
+        A delegated gate answers with the delegation it is running under rather
+        than with the child's own snapshot version — see
+        :class:`~byoai.recorder.delegation.DelegatedGate`.
+        """
+        snapshot = self.snapshot
+        return None if snapshot is None else snapshot.mandate_version_id
 
     @property
     def posture(self) -> str:
