@@ -439,6 +439,25 @@ checks the ledger offline. Setup, roles, and env vars in
 **[CONFIGURATION.md](CONFIGURATION.md#publishing-runs-to-coriqos-agent-api-byoairecordercoriqo_agents)**;
 `examples/agent_showcase/` is a working end-to-end wiring.
 
+Two credentials can reach Coriqo from an agent host — the enrolled device key
+and a static `BYOAI_CORIQO_API_KEY` — and `byoai.recorder.identity` is the one
+place that picks between them:
+
+```python
+from byoai.recorder.identity import resolve_identity
+
+identity = resolve_identity()          # None when neither is configured
+if identity is not None and identity.enforcement_capable:
+    signature = identity.sign(request_bytes)
+```
+
+The device key wins when both are present. The static key still publishes, but
+it can't sign, so it can't be used for anything that decides what an agent is
+allowed to do — a bearer secret that lives in the agent's own environment and
+carries `governance:approve` is the agent holding the key to its own cage.
+`identity.require_enforcement()` raises `EnforcementIdentityUnavailableError`
+(a `ByoAIError`) naming the `byoai-recorder-enroll` command to run.
+
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
 Dedup itself no longer uses this state. It compares occurrences inside a single

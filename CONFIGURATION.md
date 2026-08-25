@@ -722,6 +722,62 @@ rather than swallowing failures, leaving it to the application to decide whether
 Coriqo being unreachable should matter. See
 `examples/agent_showcase/coriqo_sync.py` for a caller that log-and-continues.
 
+#### Which credential Coriqo sees (`byoai.recorder.identity`)
+
+An agent host can hold two Coriqo credentials, and they are not
+interchangeable. `resolve_identity()` is the single place that picks one:
+
+```python
+from byoai.recorder.identity import resolve_identity
+
+identity = resolve_identity()          # or resolve_identity(key_dir=...)
+```
+
+It tries, in order:
+
+1. **Device enrollment state** — `enrollment.json` plus the Ed25519 key under
+   the recorder's directory (`BYOAI_RECORDER_DIR`, default
+   `~/.byoai/recorder`), written by `byoai-recorder-enroll`. Enforcement-capable:
+   `identity.enforcement_capable` is `True` and `identity.sign(data)` returns
+   `ed25519:<base64>`, verifiable with `DeviceKey.verify`.
+2. **`CoriqoCredentials.from_env()`** — the static `BYOAI_CORIQO_API_KEY` pair.
+   Publish-only. Resolving one logs a warning naming the enrollment command,
+   once per process rather than once per call.
+3. **`None`** — no Coriqo identity configured. A supported state; callers no-op.
+
+No new env vars: the device path reads the recorder's existing
+`BYOAI_RECORDER_DIR`, the static path the existing `BYOAI_CORIQO_*` trio.
+
+The split matters because of what a credential is used *for*. A static key is a
+long-lived bearer secret living in the agent's own environment, and the one
+that registers agents carries `governance:approve` — so anything that decides
+what an agent is allowed to do must not authenticate with it. Callers on that
+path ask for a signer rather than testing a boolean:
+
+```python
+signer = identity.require_enforcement()   # EnforcementIdentityUnavailableError on a static key
+```
+
+`EnforcementIdentityUnavailableError` derives from `CoriqoIdentityError`, which
+derives from `ByoAIError`, and its message names the `byoai-recorder-enroll`
+command to run. `CoriqoIdentityError` is also raised when `enrollment.json`
+exists but is unreadable, or when an enrolled directory has lost its private
+key — neither silently falls back to the static key, since that substitution is
+exactly what this resolver exists to prevent.
+
+The private key never leaves `byoai.recorder.keys`. `CoriqoIdentity` holds a
+`Signer` (public key, `device_id`, `sign`), never key bytes, so tests can inject
+a fake signer and the on-disk permission checks stay in one module. Loading goes
+through `keys.load_device_key()`, which loads or returns `None` and never
+creates — an enrolled device whose key file has gone missing gets an error
+rather than a fresh keypair bound to nothing.
+
+`identity.device_id` is the id of the key that signs. It can differ from
+`identity.enrolled_device_id` after `byoai-recorder-rotate-key`, which replaces
+the live key without rewriting `enrollment.json`; the rotation is followable
+through the ledger's `KEY_ROTATED` event, and reporting the enrolled id
+alongside a signature from the rotated key would describe two different keys.
+
 #### Rotating or revoking a device key
 
 Rotate a device's key without losing verifiable continuity of the ledger:

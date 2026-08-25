@@ -8,7 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **One Coriqo identity resolver (`byoai.recorder.identity`).** `resolve_identity()` returns the
+  device-enrolled Ed25519 identity when this host has one, falls back to the static
+  `BYOAI_CORIQO_API_KEY` credentials (publish-only, warned about once per process), and returns
+  `None` when neither is configured. `CoriqoIdentity.require_enforcement()` is what mandate
+  enforcement calls: it hands back a signer for a device identity and raises
+  `EnforcementIdentityUnavailableError` for a static key, which cannot sign and, carrying
+  `governance:approve`, would let an agent edit its own mandate. Key material stays inside
+  `byoai.recorder.keys` — the identity holds a `Signer`, never raw bytes. New errors
+  `CoriqoIdentityError` and `EnforcementIdentityUnavailableError` derive from `ByoAIError`.
+  `CoriqoCredentials` and `CoriqoAgentsClient` are unchanged.
+- **`byoai.recorder.keys.load_device_key()`** — the load-only half of
+  `load_or_create_device_key()`, returning `None` instead of minting a keypair when the directory
+  has no key. It still reconciles an interrupted rotation first, so a confirmed staged key is
+  promoted rather than reported absent.
 
 ## [0.1.0a5] - 2026-08-14
 
