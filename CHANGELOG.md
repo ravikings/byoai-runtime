@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`@governed_tool(capture_arguments=…)` now defaults to `False`.** A governed
+  tool's arguments routinely carry account numbers, customer identifiers and
+  credentials, and nothing redacts them yet, so capturing them by default meant
+  a package built to produce a defensible record was quietly collecting secrets.
+  Opt in per tool once the arguments are known to be safe.
+- **`Verdict.__repr__` and `ProposedAction.__repr__` no longer render
+  `detail` / `arguments`.** The dataclass-generated reprs put the denied tool,
+  its mandate and the call's arguments into any log line, traceback or f-string
+  that formatted them — including one an integrator writes back into a model's
+  context. `MandateDeniedError` already kept `detail` out of `str()`; this
+  closes the same hole on the verdict object itself. Read `.detail` and
+  `.arguments` explicitly when logging for an operator.
+
 ### Added
 - **`@governed_tool` (`byoai.recorder.governed_tool`).** The decorator integrators put on their own
   tool functions, and the seam where a mandate denial actually stops something: the gate is

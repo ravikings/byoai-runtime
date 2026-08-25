@@ -187,7 +187,7 @@ def governed_tool(
     *,
     name: str | None = None,
     gate: GateSource = None,
-    capture_arguments: bool = True,
+    capture_arguments: bool = False,
 ) -> Any:
     """Enforce the agent's approved mandate around a tool function.
 
@@ -204,8 +204,17 @@ def governed_tool(
             :func:`use_gate` / :func:`set_default_gate` bound.
         capture_arguments: bind the call's arguments onto the
             :class:`~byoai.recorder.mandate.ProposedAction` so a later packet
-            can record *what* was attempted, not only which tool. Turn it off
-            for a tool whose arguments are large or sensitive.
+            can record *what* was attempted, not only which tool.
+
+            Off by default, deliberately. A tool's arguments hold whatever the
+            caller passed it, and for a governed tool that routinely includes
+            account numbers, customer identifiers and credentials. Capturing
+            them by default would mean a package whose entire premise is a
+            defensible record quietly collecting secrets that nothing has
+            redacted yet. Turn it on per tool once the arguments are known to
+            be safe, or once verdict recording routes them through
+            ``recorder/redact.py`` — until then the verdict carries the tool
+            name, which is what the mandate decision is actually about.
 
     Raises:
         MandateDeniedError: the mandate denied the call. The wrapped function
