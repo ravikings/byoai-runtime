@@ -188,3 +188,7 @@ CLAUDE.md
 note.txt
 ai_context/
 *.db
+node_modules/
+web/dist/
+web/.tanstack/
+*.tsbuildinfo

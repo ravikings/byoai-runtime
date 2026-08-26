@@ -59,6 +59,32 @@ otherwise-identical calls with a different `user_id` doesn't defeat caching.
 
 ---
 
+## Console (web UI)
+
+The console lives in `web/` and is built with Vite. It is a read-only UI over
+the recorder's shipped evidence; it never writes to a ledger.
+
+| Variable | Where | Default | Meaning |
+|---|---|---|---|
+| `BYOAI_PROXY_URL` | dev server (shell) | `http://127.0.0.1:8787` | Origin the Vite dev server proxies `/v1` to. Set this when the context-cache proxy runs on another host or port. |
+| `VITE_API_BASE` | build/runtime | `/v1/console` | Base path the console calls. Change only if the console API is mounted somewhere other than the proxy's `/v1/console`. |
+| `VITE_BYOAI_TENANT` | build time | `acme-prod` | Tenant the console lands on when a URL names none (`/` and `/console` redirect to `/console/{tenant}/fleet`). Baked in at build time, so a deployment serving one tenant should set it rather than rely on the placeholder default. |
+
+Commands, run from `web/`:
+
+| Command | Does |
+|---|---|
+| `npm run dev` | Dev server on `http://localhost:5173/console/`, with the MSW mock API enabled. |
+| `npm run build` | Type-checks and builds to `web/dist`, served under the `/console/` base path. |
+| `npm run typecheck` | TypeScript only. |
+| `npm test` | Vitest — includes tests asserting the API contract in `web/src/api/schemas.ts` is enforced rather than coerced. |
+
+**Mock data.** With no ingest backend yet, `npm run dev` serves a deterministic
+40-device fixture fleet through MSW. Responses are validated against the same
+zod schemas that will validate real ones, so a contract drift surfaces as a
+visible error rather than a silently empty screen.
+
+
 ## Providers
 
 One shared HTTP plumbing layer (`byoai/providers/base.py`):
