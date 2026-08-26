@@ -85,6 +85,7 @@ from .denial_latch import (
     resolve_run_id,
 )
 from .mandate import Deny, MandateGate, ProposedAction, Verdict
+from .verdicts import verdict_recorder
 
 __all__ = [
     "GateSource",
@@ -195,15 +196,55 @@ def _check(gate: MandateGate | None, action: ProposedAction) -> Verdict | None:
     version = gate.latch_version
     latched = latch.check(run_id, principal, action.tool, version)
     if latched is not None:
+        _record(gate, latched.verdict, action, run_id, principal, latched=latched)
         raise _denial(latched.verdict, run_id=run_id, latched=latched)
 
     verdict = gate.decide(action)
     if verdict.allowed or not isinstance(verdict, Deny):
+        _record(gate, verdict, action, run_id, principal)
         return verdict
-    raise _denial(
+    recorded = latch.record(run_id, principal, verdict, version)
+    _record(gate, verdict, action, run_id, principal, latched=recorded)
+    raise _denial(verdict, run_id=run_id, latched=recorded)
+
+
+def _record(
+    gate: MandateGate,
+    verdict: Verdict,
+    action: ProposedAction,
+    run_id: str,
+    principal: str,
+    *,
+    latched: LatchedDenial | None = None,
+) -> None:
+    """Hand the verdict to whatever is recording, if anything is.
+
+    Called from here rather than from inside ``MandateGate.decide``, and that
+    placement is the point: ``decide`` reads memory and returns, with no I/O of
+    any kind, and an agent's availability must not become a function of whether
+    a ledger write succeeded. This seam runs after the decision exists, on the
+    same call path that was already about to raise or dispatch.
+
+    The run and the principal are passed for every verdict, not only for
+    denials. An allow that does not name its run cannot be counted against the
+    denials in that run, and that ratio is the reason allows are recorded at all.
+
+    Only the *count* of captured arguments crosses over. ``capture_arguments``
+    is off by default because a governed tool's arguments hold account numbers
+    and credentials and nothing redacts them yet; a recorder that quietly wrote
+    them into a ledger — or shipped them to Coriqo — would be the exact leak the
+    default is there to prevent.
+    """
+    recorder = verdict_recorder()
+    if recorder is None:
+        return
+    recorder.record(
         verdict,
+        agent_id=gate.agent_id,
+        latched=latched,
         run_id=run_id,
-        latched=latch.record(run_id, principal, verdict, version),
+        principal=principal,
+        argument_count=None if action.arguments is None else len(action.arguments),
     )
 
 

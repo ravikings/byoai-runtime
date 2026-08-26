@@ -59,6 +59,10 @@ class EventKind(str, Enum):
     STREAM_ABORTED = "stream_aborted"
     PARSE_FAILURE = "parse_failure"
     KEY_ROTATED = "key_rotated"
+    #: One mandate gate decision — allowed, flagged or blocked alike.
+    #: Written by byoai.recorder.verdicts, which is also where the reason
+    #: codes that tell a first denial from a latched repeat are set.
+    MANDATE_VERDICT = "mandate_verdict"
 
 
 @dataclass(frozen=True, slots=True)

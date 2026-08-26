@@ -61,6 +61,7 @@ import json
 import logging
 import os
 import random
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -83,10 +84,13 @@ from .identity import CoriqoIdentity, IdentitySource, Signer
 
 __all__ = [
     "ENFORCEMENT_PREFIX",
+    "MAX_VERDICT_BATCH",
+    "VERDICT_RETRY_STATUSES",
     "AsyncCoriqoAgentsClient",
     "RetryPolicy",
     "SignatureError",
     "device_headers",
+    "new_batch_key",
     "request_path",
     "signing_payload",
     "signing_timestamp",
@@ -110,6 +114,18 @@ _SIG_PREFIX = "ed25519:"
 #: 500 is deliberately absent — it can mean the write landed and the response
 #: didn't.
 DEFAULT_RETRY_STATUSES = frozenset({429, 502, 503, 504})
+
+#: Verdicts Coriqo accepts in one batch; over-cap is a 422.
+MAX_VERDICT_BATCH = 200
+
+#: Extra retry status for verdict batches only. A 409 there means two
+#: copies of the same batch_key raced a unique index and this one lost —
+#: the server is asking for the retry, not reporting a conflict to give up
+#: on.
+VERDICT_RETRY_STATUSES = frozenset({409})
+
+#: Verdict words Coriqo requires a reason for.
+_REASON_REQUIRED = frozenset({"flagged", "blocked"})
 
 
 class SignatureError(ByoAIError):
@@ -212,6 +228,11 @@ def device_headers(
 
 
 # -- retry -----------------------------------------------------------------
+
+
+def new_batch_key() -> str:
+    """A fresh device-chosen idempotency key for one verdict batch."""
+    return "vb_" + uuid.uuid4().hex
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -421,6 +442,7 @@ class AsyncCoriqoAgentsClient:
         idempotent: bool = False,
         extra_headers: Mapping[str, str] | None = None,
         collect_headers: dict[str, str] | None = None,
+        extra_retry_statuses: frozenset[int] | None = None,
     ) -> tuple[Any, int]:
         """Perform the request, returning ``(parsed_body, status_code)``.
 
@@ -436,6 +458,9 @@ class AsyncCoriqoAgentsClient:
         and the parsed body alone cannot carry it.
         """
         attempts = self._retry.attempts if idempotent else 1
+        retry_statuses = self._retry.retry_statuses
+        if extra_retry_statuses:
+            retry_statuses = retry_statuses | extra_retry_statuses
         last_error: Exception | None = None
 
         for attempt in range(attempts):
@@ -463,7 +488,7 @@ class AsyncCoriqoAgentsClient:
                 # this only runs for requests the caller marked idempotent.
                 last_error = CoriqoAgentsError(None, f"request to {path} failed: {exc}")
             else:
-                if response.status_code not in self._retry.retry_statuses:
+                if response.status_code not in retry_statuses:
                     if collect_headers is not None:
                         collect_headers.update(response.headers)
                     return parse_response(response, path=path)
@@ -743,6 +768,62 @@ class AsyncCoriqoAgentsClient:
                 "step_index": step_index,
             },
             signed=True,
+        )
+
+    async def record_verdict_batch(
+        self,
+        coriqo_agent_id: str,
+        *,
+        verdicts: Sequence[Mapping[str, Any]],
+        batch_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Ship a batch of local mandate verdicts, sealed as one governance event.
+
+        The one write in this client that is retryable, and the reason is
+        specific rather than a change of heart about writes. ``batch_key`` is
+        chosen by the device and unique per device server-side: a repeat replays
+        the stored result with ``duplicate: true`` and seals nothing, and two
+        concurrent copies race a unique index where the loser gets a 409 that
+        says *retry*. So a resend cannot produce a second governance record,
+        which was the whole objection to retrying a write. Everything else here
+        stays non-retryable.
+
+        A 409 therefore joins the retry set for this call only. A 422 does not:
+        an over-cap batch, a ``flagged``/``blocked`` verdict with no reason, or
+        a verdict naming a mandate version that belongs to a different agent are
+        all statements about the batch, and resending it changes nothing.
+
+        The cap is enforced here rather than discovered as a 422, and a missing
+        reason on a non-``allowed`` verdict likewise — both are things the
+        caller can still fix at this point.
+
+        Returns Coriqo's response, which carries ``anchor_mandate_version_id``
+        and ``stale_mandate_version_count``: a host whose snapshot has drifted
+        learns it from the reply rather than by reading the chain later.
+        """
+        if not verdicts:
+            raise ValueError("verdicts must not be empty")
+        if len(verdicts) > MAX_VERDICT_BATCH:
+            raise ValueError(
+                f"a batch holds at most {MAX_VERDICT_BATCH} verdicts, "
+                f"got {len(verdicts)}"
+            )
+        for verdict in verdicts:
+            if verdict.get("verdict") in _REASON_REQUIRED and not verdict.get("reason"):
+                raise ValueError(
+                    f"a {verdict.get('verdict')!r} verdict needs a reason; "
+                    f"{verdict.get('tool')!r} has none"
+                )
+        return await self._request(
+            "POST",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/verdicts/batch",
+            json_body={
+                "batch_key": batch_key or new_batch_key(),
+                "verdicts": [dict(v) for v in verdicts],
+            },
+            signed=True,
+            idempotent=True,
+            extra_retry_statuses=VERDICT_RETRY_STATUSES,
         )
 
     async def record_signed_trace(
