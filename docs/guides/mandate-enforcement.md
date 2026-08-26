@@ -343,8 +343,16 @@ shipper logs it so you learn from the reply rather than from the chain.
 
 ## Not built yet
 
-One thing you may expect is still missing, and it is better to know now than to
-discover it in a demo:
+Two things you may expect are still missing, and it is better to know now than to
+discover them in a demo:
+
+- **The local ledger has no destination yet.** Verdicts reach Coriqo through the
+  verdict endpoint, but the ledger underneath them — the hash-chained record the
+  shipper posts to `/v1/ingest/batch` — has no server-side implementation, so
+  those uploads have nowhere to land. Your host keeps a complete, verifiable
+  record; Coriqo currently sees the verdicts and not the events behind them.
+  Practically: `coriqo-verify` against a local export works, gap detection from
+  the Coriqo console does not.
 
 - **Tool arguments are not part of the record.** `capture_arguments=True` binds
   them onto the `ProposedAction`, but the verdict record keeps only how many
