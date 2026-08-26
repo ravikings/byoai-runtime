@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.arguments` explicitly when logging for an operator.
 
 ### Added
+- **`publish_session` takes a `redactor` parameter for name-level PII
+  redaction.** The default `redact_free_text` only catches fixed-shape
+  secrets/PII (email, SSN, credit card, API/AWS key) in a decision's
+  `final_output` — a documented, deliberate limit, since general name/address
+  detection needs something closer to NER, and bundling a model would add
+  real weight (a non-trivial dependency plus cold-start cost) to a path
+  meant to add near-zero latency per governed call, with no one choice
+  fitting every integrator's accuracy/latency budget. `redact.TextRedactor`
+  (`Callable[[str], str]`) is the new pluggable seam: pass your own
+  (spaCy, a DLP SDK, a hand-rolled list) to `publish_session`'s `redactor`
+  argument for detection beyond the default. Only called under
+  `payload_mode=PayloadMode.REDACTED`.
 - **Mandate enforcement at the proxy (`byoai.recorder.proxy_gate`).** Every
   `tool_use` block in a model response is now decided by the same `MandateGate`
   `@governed_tool` uses, before the agent sees it — enabled with

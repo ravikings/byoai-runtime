@@ -73,7 +73,7 @@ import httpx
 from byoai.errors import ByoAIError
 
 from .ledger import Ledger
-from .redact import PayloadMode, redact_free_text
+from .redact import PayloadMode, TextRedactor, redact_free_text
 from .schema import EventKind
 
 __all__ = [
@@ -759,6 +759,7 @@ def publish_session(
     use_case: str | None = None,
     final_output: str | None = None,
     payload_mode: PayloadMode = PayloadMode.REDACTED,
+    redactor: TextRedactor = redact_free_text,
     inputs_extra: Mapping[str, Any] | None = None,
     parent_trajectory_id: str | None = None,
     ground_in_ledger: bool = True,
@@ -778,11 +779,21 @@ def publish_session(
     by the same policy as the tool payloads that produced it, instead of
     always shipping raw regardless of what the device is configured to
     redact. ``full`` ships it unchanged, ``redacted`` (the default, matching
-    the recorder's own default) masks known secret/PII substrings via
-    :func:`~byoai.recorder.redact.redact_free_text` — see that function's
-    docstring for what it does and does not catch — and ``hash-only`` drops
-    it entirely, consistent with that mode shipping no payload bytes
-    anywhere else.
+    the recorder's own default) runs ``final_output`` through ``redactor``,
+    and ``hash-only`` drops it entirely, consistent with that mode shipping no
+    payload bytes anywhere else.
+
+    ``redactor`` defaults to :func:`~byoai.recorder.redact.redact_free_text`
+    — fast, dependency-free, and limited to fixed-shape secrets/PII (email,
+    SSN, credit card, API/AWS key); see that function's docstring for what it
+    does and does not catch. Pass a different :data:`~byoai.recorder.redact.TextRedactor`
+    (e.g. one backed by a local NER model, a DLP SDK, or a hand-rolled name
+    list) for detection beyond that — this package doesn't bundle one, since
+    a model adds real weight to a path meant to add near-zero latency per
+    governed call, and no fixed choice fits every integrator's
+    latency/accuracy tradeoff. ``redactor`` is only ever called under
+    ``payload_mode=PayloadMode.REDACTED``; it has no effect under ``full`` or
+    ``hash-only``.
 
     Steps go up in batches of :data:`MAX_TRACE_BATCH`, so an ordinary run costs
     one request. Each batch is atomic on Coriqo's side: one invalid trace
@@ -816,7 +827,7 @@ def publish_session(
         if payload_mode is PayloadMode.HASH_ONLY:
             final_output = None
         elif payload_mode is PayloadMode.REDACTED:
-            final_output = redact_free_text(final_output)
+            final_output = redactor(final_output)
         # PayloadMode.FULL ships final_output unchanged.
 
     trajectory = client.open_trajectory(

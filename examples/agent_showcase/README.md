@@ -198,12 +198,16 @@ Two things make this evidence rather than telemetry:
   trusted alone. No raw tool payloads are sent.
 - The one exception is the run's final decision text (a step's `output`),
   which ships as readable prose on purpose — that's the point of a decision
-  trace. Under the default `redacted` mode it's still passed through
-  `redact_free_text` first, masking known secret/PII shapes (email, SSN,
-  credit card, API key) wherever they appear in the sentence; anything
-  without a fixed shape (a name, an address) is not caught, since there's no
-  pattern to match it against. `hash-only` drops the field entirely instead;
-  `full` ships it untouched.
+  trace. Under the default `redacted` mode it's still passed through a
+  `TextRedactor` first — `redact_free_text` by default, masking known
+  secret/PII shapes (email, SSN, credit card, API key) wherever they appear
+  in the sentence; anything without a fixed shape (a name, an address) is not
+  caught by the default, since there's no pattern to match it against.
+  `publish_session`'s `redactor` parameter accepts a different one (e.g.
+  something NER-backed) for callers who need name-level redaction and are
+  willing to own that dependency/latency tradeoff themselves — this demo
+  doesn't wire one in, so it stays on the default. `hash-only` drops the
+  field entirely instead; `full` ships it untouched.
 
 Coriqo checks every recorded call against the agent's `allowed_tools`. Running
 the `b5-misfire-demo` agent shows both halves agreeing — its out-of-scope

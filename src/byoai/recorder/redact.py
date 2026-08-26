@@ -26,6 +26,23 @@ that isn't email/SSN/credit-card/API-key shaped (a name, a street address, a
 free-text account number) passes through untouched, because there is no
 pattern to match it against. Callers that hand an LLM's own words to this
 module should not treat a clean scan as a guarantee the text is free of PII.
+
+For that reason ``redact_free_text`` is deliberately swappable rather than
+grown into a bigger detector in place. Catching free-form PII like names or
+addresses needs something closer to NER, and that's a real tradeoff this
+package won't make on every caller's behalf: a local model adds real weight
+(a non-trivial dependency plus a cold-start cost) to a path that's meant to
+add near-zero latency per governed call (see ``recorder.verdicts``' "What
+this costs the call path"), a remote NER call defeats the point of redacting
+*before* data leaves the device, and no fixed choice fits every integrator's
+latency/accuracy budget. So the package ships one pluggable seam
+(``TextRedactor``) instead of a model: the default stays this module's fast,
+dependency-free scanner, and a caller who needs name-level redaction supplies
+their own — spaCy, a commercial DLP SDK, a hand-rolled gazetteer, whatever
+fits their own cost/accuracy line — through ``publish_session``'s
+``redactor`` parameter (see ``recorder.coriqo_agents``). Nothing here loads
+or requires such a redactor; the default is always safe to use with zero
+extra dependencies, matching what shipped before this seam existed.
 """
 
 from __future__ import annotations
@@ -33,9 +50,18 @@ from __future__ import annotations
 import hashlib
 import re
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
-__all__ = ["PayloadMode", "apply_payload_mode", "redact_free_text"]
+__all__ = ["PayloadMode", "TextRedactor", "apply_payload_mode", "redact_free_text"]
+
+#: A callable that takes free text and returns it with PII/secrets masked.
+#: ``redact_free_text`` (this module's default) implements this signature;
+#: pass a different one to ``coriqo_agents.publish_session``'s ``redactor``
+#: parameter for detection beyond fixed-shape patterns (see the module
+#: docstring for why that's a caller-supplied choice, not a built-in one).
+#: Exceptions are the caller's to handle — nothing here catches them, so a
+#: redactor that raises will raise into ``publish_session``.
+TextRedactor = Callable[[str], str]
 
 
 class PayloadMode(str, Enum):

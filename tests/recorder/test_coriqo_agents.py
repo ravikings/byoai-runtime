@@ -509,6 +509,53 @@ def test_publish_session_drops_final_output_under_hash_only_mode(ledger):
     assert all(t["output"] is None for t in seen["batches"][0])
 
 
+def test_publish_session_uses_a_custom_redactor_under_redacted_mode(ledger):
+    """A caller who needs detection beyond fixed-shape patterns (e.g. names)
+    supplies their own TextRedactor instead of the default scanner."""
+    _seal_run(ledger, "run_1", ["get_transaction", "flag_decision"])
+    seen: dict = {}
+
+    def redact_everything(text: str) -> str:
+        return "[REDACTED:custom]"
+
+    with _client(_batch_handler(seen)) as client:
+        publish_session(
+            client,
+            coriqo_agent_id=_CORIQO_AGENT,
+            ledger=ledger,
+            session_id="run_1",
+            final_output="Approved for Priya Kestrel.",
+            payload_mode=PayloadMode.REDACTED,
+            redactor=redact_everything,
+        )
+
+    outputs = [t["output"] for t in seen["batches"][0] if t["output"] is not None]
+    assert outputs == ["[REDACTED:custom]"]
+
+
+def test_publish_session_never_calls_redactor_outside_redacted_mode(ledger):
+    _seal_run(ledger, "run_1", ["get_transaction", "flag_decision"])
+    seen: dict = {}
+    calls: list[str] = []
+
+    def tracking_redactor(text: str) -> str:
+        calls.append(text)
+        return text
+
+    with _client(_batch_handler(seen)) as client:
+        publish_session(
+            client,
+            coriqo_agent_id=_CORIQO_AGENT,
+            ledger=ledger,
+            session_id="run_1",
+            final_output="Approved for Priya Kestrel.",
+            payload_mode=PayloadMode.FULL,
+            redactor=tracking_redactor,
+        )
+
+    assert calls == []
+
+
 def test_each_trace_cites_its_sealed_ledger_row_as_an_external_anchor(ledger):
     """Coriqo holds external anchors outside its integrity scoring, so citing a
     hash it has no copy of adds provenance without distorting the score."""

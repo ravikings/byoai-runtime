@@ -746,13 +746,32 @@ The one field that isn't digest-only is `final_output` — a run's decision
 text, attached to the last step, ships as readable prose on purpose. Its
 handling follows `publish_session`'s own `payload_mode` argument (default
 `redacted`, independent of the recorder instance's `payload_mode` unless you
-pass it explicitly — see the example above): `redacted` masks known
+pass it explicitly — see the example above): `redacted` runs the text through
+a `redactor` (a `redact.TextRedactor`, i.e. `Callable[[str], str]`), `hash-only`
+drops the field entirely, and `full` ships it unchanged.
+
+`redactor` defaults to `redact.redact_free_text`, which masks known
 secret/PII substrings (email, SSN, credit card, API/AWS key) wherever they
-appear in the text via `redact.redact_free_text`, `hash-only` drops the field
-entirely, and `full` ships it unchanged. Free-form PII with no fixed shape —
-a name, a street address — is not caught by any of these; there is no pattern
-to match it against, so treat `redacted` as narrowing what can leak, not as a
-guarantee the text is clean.
+appear in the text, but has no way to catch free-form PII with no fixed
+shape — a name, a street address. That's a deliberate boundary, not a bug:
+name-level detection needs something closer to NER, which trades away the
+near-zero latency this recording path is built around and has no one-size
+answer for every integrator's accuracy/latency budget, so the package ships
+a seam instead of a model. Pass your own `redactor` — spaCy, a DLP SDK, a
+hand-rolled list, whatever fits your own tradeoff — to `publish_session` for
+name-level redaction:
+
+```python
+def my_redactor(text: str) -> str:
+    text = redact_free_text(text)   # keep the fixed-shape coverage
+    return my_ner_model.scrub(text)  # then layer on name/address detection
+
+publish_session(..., redactor=my_redactor)
+```
+
+`redactor` is only ever called under `payload_mode=PayloadMode.REDACTED`; it
+has no effect under `full` or `hash-only`. Treat the default as narrowing
+what can leak, not as a guarantee the text is clean.
 
 Steps go up through Coriqo's batch endpoint, so an ordinary run costs one
 request; runs longer than `MAX_TRACE_BATCH` (200) steps are split. A batch is
