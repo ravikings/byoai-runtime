@@ -1110,9 +1110,10 @@ helper it invokes without asking the model, an MCP client it drives itself —
 never appears in a response body and is invisible here. That is what
 `@governed_tool` is for. The two seams compose; neither alone is total.
 
-It also covers the Anthropic `/v1/messages` path only. The OpenAI-compat bridge
-(`OPENAI_COMPAT_MODELS`) is translated in a separate handler that this seam does
-not sit on yet, so traffic routed through it is recorded but not gated.
+The OpenAI-compat bridge (`OPENAI_COMPAT_MODELS`) is gated too. It is a separate
+handler that returns before the Anthropic path's enforcement point, so it needs
+its own hook — but it translates the upstream response into Anthropic shape
+either way, so the same enforcer runs on it unchanged, buffered and streaming.
 
 #### The denial latch — repeats and the halt (`byoai.recorder.denial_latch`)
 

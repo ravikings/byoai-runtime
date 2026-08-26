@@ -532,6 +532,18 @@ async def proxy_openai_compat_request(
     is_stream = raw_body.get("stream", False)
     session_id = derive_session_id(request, raw_body)
 
+    # Seam B applies here too. This branch returns long before the Anthropic
+    # path's enforcement point, so without this a tenant that routes a model
+    # through the OpenAI-compat bridge gets no enforcement at all — silently,
+    # while the console says the agent is enforced. The bridge translates the
+    # upstream response INTO Anthropic shape either way, so the same enforcer
+    # works unchanged on both branches below.
+    enforcer = (
+        resolve_enforcer(request.headers, run_id=session_id)
+        if proxy_enforcement_enabled()
+        else None
+    )
+
     if not OPENAI_COMPAT_BASE_URL:
         return Response(
             content=json.dumps(
@@ -594,11 +606,21 @@ async def proxy_openai_compat_request(
                         yield line
 
         async def stream_translated():
+            sse_enforcer = SseEnforcer(enforcer) if enforcer is not None else None
             try:
                 async for anthropic_chunk in openai_compat.translate_openai_stream_to_anthropic_sse(
                     openai_line_iter(), requested_model, raw_body.get("stop_sequences")
                 ):
-                    yield anthropic_chunk
+                    if sse_enforcer is None:
+                        yield anthropic_chunk
+                    else:
+                        gated = sse_enforcer.feed(anthropic_chunk)
+                        if gated:
+                            yield gated
+                if sse_enforcer is not None:
+                    tail = sse_enforcer.close()
+                    if tail:
+                        yield tail
             finally:
                 await res.aclose()
 
@@ -613,6 +635,8 @@ async def proxy_openai_compat_request(
         anthropic_resp = openai_compat.openai_to_anthropic_response(
             openai_resp, requested_model, raw_body.get("stop_sequences")
         )
+        if enforcer is not None:
+            anthropic_resp, _changed = enforce_response_body(anthropic_resp, enforcer)
         log_usage(session_id, anthropic_resp.get("usage"))
         _fire_and_forget(
             db.record_usage_event(
