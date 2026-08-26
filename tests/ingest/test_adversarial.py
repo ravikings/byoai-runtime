@@ -19,6 +19,7 @@ import pytest
 from tests.ingest.conftest import device_identity
 
 from byoai.ingest.store import (
+    CheckpointConflict,
     DeviceRevoked,
     Enrolment,
     EnrolmentRefused,
@@ -629,3 +630,34 @@ def test_defends_revoked_device_cannot_write_on_either_path(store):
     row = store.devices("tenant-a")[0]
     assert row["entries_received"] == 1, "nothing written after revocation"
     assert row["last_checkpoint_seq"] is None
+
+
+def test_defends_conflicting_checkpoint_at_an_existing_seq_end_is_raised(store):
+    """A checkpoint resent at the same seq_end with a different chain head.
+
+    Identical rule to SeqConflict on the entries path: redelivery is
+    byte-identical, so the same position asserting a different chain head is a
+    contradiction about what history existed — which is precisely the claim a
+    checkpoint exists to make. It used to be absorbed as a duplicate, leaving
+    the first assertion in place with no signal that a second, incompatible
+    one had ever been offered.
+
+    This was the fourth divergence found between the two ingest paths; the
+    shared `_atomic` guard now holds the parts that must not differ.
+    """
+    did = _enrol(store, "tenant-a", "cpconflict")
+    cp = {"seq_start": 1, "seq_end": 9, "chain_head": "headA", "ts_device": "t", "sig": "s"}
+    store.accept_checkpoints(did, [cp])
+
+    # Byte-identical resend is ordinary redelivery.
+    assert store.accept_checkpoints(did, [cp]).duplicates == 1
+
+    with pytest.raises(CheckpointConflict) as excinfo:
+        store.accept_checkpoints(did, [{**cp, "chain_head": "headB"}])
+    assert excinfo.value.seq_end == 9
+    assert excinfo.value.stored_chain_head == "headA"
+
+    row = store._conn.execute(
+        "SELECT chain_head FROM checkpoints WHERE device_id = ? AND seq_end = 9", (did,)
+    ).fetchone()
+    assert row["chain_head"] == "headA"

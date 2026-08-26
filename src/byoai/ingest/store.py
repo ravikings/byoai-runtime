@@ -33,7 +33,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,6 +133,23 @@ CREATE TABLE IF NOT EXISTS device_state (
 """
 
 
+def _optional_str(name: str, value: object) -> str | None:
+    """A nullable wire string, validated rather than trusted.
+
+    Successive reviews found these one at a time — kind, then session_id,
+    ts_device, trace_id — each unvalidated field reaching sqlite as a raw bind
+    and surfacing as an InterfaceError instead of the typed refusal callers
+    branch on. Validating them through one helper ends the field-by-field
+    discovery: a new nullable column routes through here or it does not get
+    written.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise MalformedEntry(f"event.{name} must be a string or absent, got {value!r}")
+    return value
+
+
 def _require_seq(value: object) -> int:
     """A seq is a non-negative int, and nothing else.
 
@@ -193,6 +211,26 @@ class IngestStore:
         self.close()
 
     # ---------------------------------------------------------------- write
+
+    @contextmanager
+    def _atomic(self, device_id: str) -> Iterator[None]:
+        """The guard every ingest path shares: writable device, one transaction.
+
+        The two paths — entries and checkpoints — drifted apart four separate
+        times: the enrolment check, atomicity, field validation and conflict
+        detection each landed on one and not the other, and each divergence was
+        found by a different reviewer. They are the same operation on different
+        payloads, so the parts that must not differ live here rather than being
+        written twice and kept in step by attention.
+        """
+        self._require_writable(device_id)
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
 
     def ensure_tenant(self, slug: str) -> int:
         with self._lock:
@@ -292,17 +330,11 @@ class IngestStore:
         batch_max_seq: int | None = None
         accepted_seqs: list[int] = []
         with self._lock:
-            self._require_writable(device_id)
             head_row = self._conn.execute(
                 "SELECT last_seq_received FROM device_state WHERE device_id = ?", (device_id,)
             ).fetchone()
             prev_head = None if head_row is None else head_row["last_seq_received"]
-            # One transaction for the whole batch. Autocommitting per row meant
-            # a malformed entry left earlier rows committed with no result
-            # returned and liveness never updated — a half-ingested batch that
-            # neither side knows about.
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
+            with self._atomic(device_id):
                 for entry in entries:
                     seq = _require_seq(entry.get("seq"))
                     entry_hash = entry.get("entry_hash")
@@ -316,6 +348,15 @@ class IngestStore:
                     # The event's own device_id is untrusted wire data; the
                     # authenticated header is the truth. Disagreement is a
                     # finding, not something to normalise away silently.
+                    kind = event.get("kind")
+                    if not isinstance(kind, str) or kind == "":
+                        # str()-coercing this turned {"foo": 1} into the literal
+                        # row value "{'foo': 1}" — a garbled, non-enumerable
+                        # kind sitting in an index, and the caller told nothing
+                        # was wrong. Exactly the "malformed batch becomes a
+                        # plausible-looking row" outcome MalformedEntry exists
+                        # to prevent.
+                        raise MalformedEntry(f"event.kind must be a non-empty string, got {kind!r}")
                     claimed = event.get("device_id")
                     if claimed is not None and claimed != device_id:
                         raise MalformedEntry(
@@ -355,10 +396,10 @@ class IngestStore:
                             device_id,
                             seq,
                             entry_hash,
-                            str(event.get("kind", "")),
-                            event.get("session_id"),
-                            event.get("ts_device"),
-                            event.get("trace_id"),
+                            kind,
+                            _optional_str("session_id", event.get("session_id")),
+                            _optional_str("ts_device", event.get("ts_device")),
+                            _optional_str("trace_id", event.get("trace_id")),
                             json.dumps(event, separators=(",", ":"), sort_keys=True),
                             _now(),
                         ),
@@ -369,10 +410,6 @@ class IngestStore:
                         batch_max_seq = seq if batch_max_seq is None else max(batch_max_seq, seq)
                     else:
                         duplicates += 1
-            except Exception:
-                self._conn.execute("ROLLBACK")
-                raise
-            self._conn.execute("COMMIT")
 
             # True when every accepted seq extended the tail with no hole:
             # the common case, and the one where a full rescan proves nothing.
@@ -401,13 +438,7 @@ class IngestStore:
             # rather than the typed error the caller branches on — and the two
             # ingest paths must agree about who is allowed to write, or the
             # coverage denominator can be moved through the quieter one.
-            self._require_writable(device_id)
-
-            # Atomic, for the same reason accept_batch is: a malformed
-            # checkpoint partway through must not leave the earlier ones
-            # committed with no result returned to the caller.
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
+            with self._atomic(device_id):
                 for cp in checkpoints:
                     seq_start = _require_seq(cp.get("seq_start"))
                     seq_end = _require_seq(cp.get("seq_end"))
@@ -427,6 +458,31 @@ class IngestStore:
                                 f"checkpoint {name} must be a non-empty string, got {value!r}"
                             )
                         fields[name] = value
+                    prior_cp = self._conn.execute(
+                        "SELECT seq_start, chain_head, sig, ts_device FROM checkpoints"
+                        " WHERE device_id = ? AND seq_end = ?",
+                        (device_id, seq_end),
+                    ).fetchone()
+                    # Compare every field inside the signed checkpoint body.
+                    # seq_start and ts_device are part of the assertion, not
+                    # metadata — the same head over a different range, or at a
+                    # different claimed time, is a different claim about what
+                    # history existed. Each omission let one more difference
+                    # pass as redelivery.
+                    if prior_cp is not None and (
+                        prior_cp["chain_head"] != fields["chain_head"]
+                        or prior_cp["sig"] != fields["sig"]
+                        or int(prior_cp["seq_start"]) != seq_start
+                        or prior_cp["ts_device"] != fields["ts_device"]
+                    ):
+                        # Identical rule to SeqConflict on the entries path: a
+                        # resend is byte-identical, so the same seq_end
+                        # asserting a different chain head is a contradiction
+                        # about what history existed — exactly the claim a
+                        # checkpoint is for — and must not pass as redelivery.
+                        raise CheckpointConflict(
+                            device_id, seq_end, str(prior_cp["chain_head"]), fields["chain_head"]
+                        )
                     cur = self._conn.execute(
                         """INSERT OR IGNORE INTO checkpoints
                              (device_id, seq_start, seq_end, chain_head, ts_device, sig,
@@ -446,10 +502,6 @@ class IngestStore:
                         accepted += 1
                     else:
                         duplicates += 1
-            except Exception:
-                self._conn.execute("ROLLBACK")
-                raise
-            self._conn.execute("COMMIT")
             # Contact, deliberately NOT evidence. A checkpoint asserts "I held
             # this much history", but nothing here validates seq_end against
             # entries actually received — so counting it as evidence would let
@@ -672,6 +724,20 @@ class SeqConflict(RuntimeError):
         self.seq = seq
         self.stored_entry_hash = stored
         self.offered_entry_hash = offered
+
+
+class CheckpointConflict(RuntimeError):
+    """One seq_end asserted twice with different chain heads."""
+
+    def __init__(self, device_id: str, seq_end: int, stored: str, offered: str) -> None:
+        super().__init__(
+            f"device {device_id!r} offered a checkpoint at seq_end {seq_end} claiming chain head "
+            f"{offered!r}, but {stored!r} is already stored for that position"
+        )
+        self.device_id = device_id
+        self.seq_end = seq_end
+        self.stored_chain_head = stored
+        self.offered_chain_head = offered
 
 
 class EntryHashCollision(RuntimeError):
