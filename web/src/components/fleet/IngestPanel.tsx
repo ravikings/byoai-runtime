@@ -1,9 +1,11 @@
 import type { FleetSummary } from '@/api/schemas'
+import { useHref } from '@/app/hrefContext'
 import { Provenance } from './Provenance'
 import { Sparkline } from './Sparkline'
-import { ago, clock, duration, href, n, secondsSince } from './format'
+import { ago, clock, duration, n, secondsSince } from './format'
 
 export function IngestPanel({ summary, tenant }: { summary: FleetSummary; tenant: string }) {
+  const href = useHref()
   const { ingest, inclusion, window } = summary
   const flat = ingest.rate_flat_for_minutes
   const oldestS = secondsSince(ingest.oldest_unshipped_at)

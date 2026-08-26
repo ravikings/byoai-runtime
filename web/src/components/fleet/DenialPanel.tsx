@@ -1,9 +1,11 @@
 import type { FleetSummary } from '@/api/schemas'
+import { useHref } from '@/app/hrefContext'
 import { Provenance } from './Provenance'
 import { Sparkline } from './Sparkline'
-import { href, n, rate } from './format'
+import { n, rate } from './format'
 
 export function DenialPanel({ summary, tenant }: { summary: FleetSummary; tenant: string }) {
+  const href = useHref()
   const { denial, inclusion } = summary
   const prev = denial.previous_per_1k
   // Both figures are aggregated server-side in floating point, so two equal

@@ -1,4 +1,4 @@
-import { href } from '@/components/fleet/format'
+import { useHref } from '@/app/hrefContext'
 /**
  * The limit of the screen, in the product's own words.
  *
@@ -18,6 +18,7 @@ export function BlindSpotPanel(props: {
   blindSpot: CoverageReport['blind_spot']
   enrolled: number
 }) {
+  const href = useHref()
   const { tenant, blindSpot, enrolled } = props
   return (
     <section className="blindspot" style={secStyle}>

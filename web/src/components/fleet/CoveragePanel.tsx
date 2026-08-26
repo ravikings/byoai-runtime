@@ -1,7 +1,8 @@
 import type { Device, FleetSummary } from '@/api/schemas'
+import { useHref } from '@/app/hrefContext'
 import { Provenance } from './Provenance'
 import { PanelEmpty } from './PanelState'
-import { duration, href, n } from './format'
+import { duration, n } from './format'
 
 /** Silent first, longest quiet first; never-seen devices last because their
  *  quiet time is not a number — nothing has ever arrived to measure from. */
@@ -31,6 +32,7 @@ interface Props {
 }
 
 export function CoveragePanel({ summary, tenant, devices, devicesProblem }: Props) {
+  const href = useHref()
   const { coverage, inclusion } = summary
   const missing = coverage.enrolled - coverage.reporting
   const partial = missing > 0

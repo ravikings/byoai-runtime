@@ -13,8 +13,8 @@
  * rows sort worst-first by THAT class's own clock.
  */
 import { createFileRoute } from '@tanstack/react-router'
+import { useHref } from '@/app/hrefContext'
 import { useCoverage } from '@/api/queries'
-import { href } from '@/components/fleet/format'
 import { toScope } from '@/app/scope'
 import { ScopeLine } from '@/components/ScopeLine'
 import { BlindArea } from '@/components/coverage/BlindArea'
@@ -32,6 +32,7 @@ export const Route = createFileRoute('/console/$tenant/fleet/coverage')({
 })
 
 function CoveragePage() {
+  const href = useHref()
   const { tenant } = Route.useParams()
   const search = Route.useSearch()
   const query = useCoverage(toScope(tenant, search))

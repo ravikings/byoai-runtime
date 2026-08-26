@@ -8,6 +8,7 @@
  * with a denominator missing.
  */
 import { useEffect, useMemo } from 'react'
+import { useHref } from '@/app/hrefContext'
 import type { CSSProperties } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 
@@ -36,7 +37,8 @@ const GRID: CSSProperties = {
 }
 const COL: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--s4)' }
 
-function FleetOverview() {
+function FleetOverview() {  const href = useHref()
+
   const { tenant } = Route.useParams()
   const search = Route.useSearch()
   const scope = useMemo(() => toScope(tenant, search), [tenant, search])

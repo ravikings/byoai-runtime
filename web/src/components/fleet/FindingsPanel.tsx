@@ -1,7 +1,9 @@
 import type { Finding } from '@/api/schemas'
+import { useHref } from '@/app/hrefContext'
+import type { HrefMap } from '@/app/hrefContext'
 import type { Inclusion } from '@/api/schemas'
 import { PanelEmpty } from './PanelState'
-import { href, n } from './format'
+import { n } from './format'
 
 interface RefLink {
   label: string
@@ -12,7 +14,7 @@ interface RefLink {
  * A finding's ref is one of three shapes and none of them is addressable
  * without its device. Narrowed with `in`, never with a cast.
  */
-function refLink(tenant: string, finding: Finding): RefLink | null {
+function refLink(tenant: string, finding: Finding, href: HrefMap): RefLink | null {
   const ref = finding.ref
   if (ref === null) return null
   if ('seq' in ref) {
@@ -45,6 +47,7 @@ interface Props {
 }
 
 export function FindingsPanel({ findings, total, inclusion, tenant }: Props) {
+  const href = useHref()
   return (
     <section className="panel flush">
       <div className="panel-head" style={{ padding: 'var(--s4) var(--s4) var(--s3)' }}>
@@ -69,7 +72,7 @@ export function FindingsPanel({ findings, total, inclusion, tenant }: Props) {
           </PanelEmpty>
         ) : (
           findings.map((f) => {
-            const link = refLink(tenant, f)
+            const link = refLink(tenant, f, href)
             return (
               <div key={f.id} className={`finding ${f.severity}`}>
                 <span className={dotClass(f.severity)} style={{ marginTop: '.35rem' }} />

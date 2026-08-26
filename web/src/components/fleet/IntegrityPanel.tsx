@@ -1,6 +1,7 @@
 import type { FleetSummary } from '@/api/schemas'
+import { useHref } from '@/app/hrefContext'
 import { Provenance } from './Provenance'
-import { href, n } from './format'
+import { n } from './format'
 
 /**
  * Three segments, never two. `unverified` is not a shade of intact — a verify
@@ -8,6 +9,7 @@ import { href, n } from './format'
  * the single worst bug this screen could ship.
  */
 export function IntegrityPanel({ summary, tenant }: { summary: FleetSummary; tenant: string }) {
+  const href = useHref()
   const { integrity, coverage, inclusion } = summary
   const summed = integrity.intact + integrity.broken + integrity.unverified
   const reporting = coverage.reporting

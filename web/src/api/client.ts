@@ -205,7 +205,17 @@ export async function apiFetch<S extends z.ZodTypeAny>(
     throw new NetworkError(url, cause)
   }
 
-  const text = await response.text()
+  // A connection dropped while the body streams rejects here, AFTER fetch()
+  // resolved. Unguarded it escaped as a raw TypeError, past all four typed
+  // kinds this module promises — callers branching on those saw an
+  // unrecognised error and fell through to a generic failure path.
+  let text: string
+  try {
+    text = await response.text()
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
+    throw new NetworkError(url, cause)
+  }
 
   if (!response.ok) {
     throw new HttpError(url, response.status, response.statusText, text)

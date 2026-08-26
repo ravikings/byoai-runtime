@@ -17,6 +17,8 @@
  * screen is unwritten is worse than one that lands on a not-found.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ScopeQSProvider } from '@/app/hrefContext'
+import { withScope } from '@/lib/withScope'
 import {
   Outlet,
   createRootRoute,
@@ -83,6 +85,11 @@ function Shell() {
 
   const tenant = useTenant()
   const search = useScopeSearch()
+  // The active slice, provided to the tree so every link carries it. Kept in
+  // context rather than a module global: the hotkey handler below closes over
+  // this value, and a global written during render went stale in exactly that
+  // closure while still looking correct everywhere else.
+  const scopeQS = new URLSearchParams(scopeSearchToParams(search)).toString()
 
   const go = useCallback(
     (href: string) => {
@@ -149,7 +156,7 @@ function Shell() {
         )
         if (hit) {
           e.preventDefault()
-          go(hit.path(tenant))
+          go(withScope(hit.path(tenant), scopeQS))
         }
         return
       }
@@ -167,7 +174,7 @@ function Shell() {
       window.removeEventListener('keydown', onKey)
       window.clearTimeout(gTimer)
     }
-  }, [go, tenant])
+  }, [go, tenant, scopeQS])
 
   const crumbs = useMemo(
     () => buildCrumbs(location.pathname, tenant),
@@ -177,11 +184,13 @@ function Shell() {
   return (
     <ShellStatusContext.Provider value={status}>
       <PublishShellStatusContext.Provider value={publish}>
+        <ScopeQSProvider value={scopeQS}>
         <div className="app">
           <nav className="rail" aria-label="Sections">
             <span className="wordmark">Coriqo</span>
             {SECTIONS.map((s) => (
               <RailItem
+                scopeQS={scopeQS}
                 key={s.key}
                 section={s}
                 tenant={tenant}
@@ -191,6 +200,7 @@ function Shell() {
             ))}
             <div className="rail-spacer" />
             <RailItem
+                scopeQS={scopeQS}
               section={SETTINGS}
               tenant={tenant}
               active={activeKey === SETTINGS.key}
@@ -226,6 +236,7 @@ function Shell() {
           </div>
         </div>
         {sheetOpen ? <KeySheet onClose={() => setSheetOpen(false)} /> : null}
+        </ScopeQSProvider>
       </PublishShellStatusContext.Provider>
     </ShellStatusContext.Provider>
   )
@@ -236,13 +247,17 @@ function RailItem({
   tenant,
   active,
   onGo,
+  scopeQS,
 }: {
   section: Section
   tenant: string
   active: boolean
   onGo: (href: string) => void
+  scopeQS: string
 }) {
-  const href = section.path(tenant)
+  // Rail navigation preserves the slice too: pressing `g l` mid-investigation
+  // should not quietly widen the scope back to the tenant default.
+  const href = withScope(section.path(tenant), scopeQS)
   return (
     <a
       className={active ? 'rail-item active' : 'rail-item'}
