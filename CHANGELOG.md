@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Proxy enforcement now covers the OpenAI-compat bridge.** That handler returns
+  before the Anthropic path's enforcement point, so a tenant routing a model
+  through `BYOAI_OPENAI_COMPAT_MODELS` got no enforcement at all — silently,
+  while everything reported the agent as enforced. Both the buffered and
+  streaming branches are gated now, by the same enforcer.
+
 ### Changed
 - **`@governed_tool(capture_arguments=…)` now defaults to `False`.** A governed
   tool's arguments routinely carry account numbers, customer identifiers and

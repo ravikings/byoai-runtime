@@ -227,9 +227,9 @@ agent's own code calls without asking the model — a helper in its control flow
 an MCP client it drives itself, a subprocess — never appears in a response body
 and is invisible at this seam.
 
-It also covers the Anthropic `/v1/messages` path only. Traffic routed through
-the proxy's OpenAI-compat bridge goes through a separate handler this seam does
-not sit on yet: it is recorded, not gated.
+Traffic routed through the proxy's OpenAI-compat bridge is gated as well. That
+bridge translates the upstream response into Anthropic shape, so the same
+enforcer applies to it unchanged.
 
 Do not read proxy coverage as total coverage. It covers the tools the model
 chooses, which for a model-driven agent is most of them, and it covers them

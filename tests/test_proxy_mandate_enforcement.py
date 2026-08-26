@@ -222,3 +222,69 @@ def test_streamed_denial_withholds_the_block(client, enforcing):
     assert b'"type": "tool_use"' not in out
     assert MODEL_MESSAGE.encode() in out
     assert b'"stop_reason":"end_turn"' in out
+
+
+# -- the OpenAI-compat bridge is enforced too ---------------------------------
+#
+# This branch returns long before the Anthropic path's enforcement point, so it
+# used to be a silent bypass: enforcement on, traffic routed through a compat
+# model, no refusals and no warning. Worth a test of its own precisely because
+# the failure was invisible — nothing errored, the tool simply ran.
+
+
+def _openai_tool_call_response(tool: str) -> dict:
+    return {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "gpt-4o",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": tool, "arguments": '{"q": "x"}'},
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+    }
+
+
+def _route_compat(monkeypatch, payload: dict) -> None:
+    async def fake_forward(_client, _base, _key, _body):
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(acc_main, "OPENAI_COMPAT_BASE_URL", "http://upstream.invalid")
+    monkeypatch.setattr(acc_main, "OPENAI_COMPAT_API_KEY", "k")
+    monkeypatch.setattr(acc_main.openai_compat, "forward_to_openai_compatible", fake_forward)
+    monkeypatch.setattr(acc_main, "OPENAI_COMPAT_MODELS", {"gpt-4o"})
+
+
+def test_openai_compat_bridge_denies_an_out_of_mandate_tool(client, enforcing, monkeypatch):
+    _route_compat(monkeypatch, _openai_tool_call_response("wire_transfer"))
+    body = {"model": "gpt-4o", "max_tokens": 16, "messages": [{"role": "user", "content": "go"}]}
+    resp = client.post("/v1/messages", json=body)
+    assert resp.status_code == 200
+    blocks = resp.json()["content"]
+    assert not [b for b in blocks if b.get("type") == "tool_use"], (
+        "a denied tool_use reached the agent through the OpenAI-compat bridge"
+    )
+    assert any(MODEL_MESSAGE in json.dumps(b) for b in blocks)
+
+
+def test_openai_compat_bridge_passes_an_in_mandate_tool_through(client, enforcing, monkeypatch):
+    _route_compat(monkeypatch, _openai_tool_call_response("search"))
+    body = {"model": "gpt-4o", "max_tokens": 16, "messages": [{"role": "user", "content": "go"}]}
+    resp = client.post("/v1/messages", json=body)
+    assert resp.status_code == 200
+    tools = [b for b in resp.json()["content"] if b.get("type") == "tool_use"]
+    assert [t["name"] for t in tools] == ["search"]
