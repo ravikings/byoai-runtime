@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
-from byoai.recorder.redact import PayloadMode, apply_payload_mode
+from byoai.recorder.redact import PayloadMode, apply_payload_mode, redact_free_text
 
 SALT = "salt-abc123"
 
@@ -77,6 +77,65 @@ def test_redacted_mode_salted_hashes_low_entropy_bool():
     out = apply_payload_mode(payload, PayloadMode.REDACTED, session_salt=SALT)
     expected = f"[REDACTED:hash:{hashlib.sha256(f'{SALT}:True'.encode()).hexdigest()[:16]}]"
     assert out["active"] == expected
+
+
+# ---------------------------------------------------------- redact_free_text
+
+
+def test_redact_free_text_leaves_plain_prose_unchanged():
+    text = "Application app_5510 for Priya Kestrel has been approved."
+    assert redact_free_text(text) == text
+
+
+def test_redact_free_text_masks_embedded_email():
+    text = "Contact the applicant at priya.kestrel@example.com for follow-up."
+    out = redact_free_text(text)
+    assert "priya.kestrel@example.com" not in out
+    assert "[REDACTED:email]" in out
+    # Only the matched span is replaced, not the whole string.
+    assert out.startswith("Contact the applicant at ")
+    assert out.endswith(" for follow-up.")
+
+
+def test_redact_free_text_masks_embedded_ssn():
+    text = "SSN on file: 123-45-6789, confirmed against the document."
+    out = redact_free_text(text)
+    assert "123-45-6789" not in out
+    assert "[REDACTED:ssn]" in out
+
+
+def test_redact_free_text_masks_embedded_luhn_valid_credit_card():
+    text = "Card ending in 4242 was charged: 4111111111111111 declined."
+    out = redact_free_text(text)
+    assert "4111111111111111" not in out
+    assert "[REDACTED:credit_card]" in out
+
+
+def test_redact_free_text_does_not_flag_luhn_invalid_digit_run():
+    text = "Reference number 1234567890123456 was logged."
+    out = redact_free_text(text)
+    assert "1234567890123456" in out
+    assert "[REDACTED:credit_card]" not in out
+
+
+def test_redact_free_text_masks_embedded_api_key():
+    text = "Rotate the leaked key sk-abcdefghijklmnopqrstuvwxyz012345 immediately."
+    out = redact_free_text(text)
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" not in out
+    assert "[REDACTED:api_key]" in out
+
+
+def test_redact_free_text_masks_multiple_spans_in_one_string():
+    text = "Reach user@example.com or check SSN 123-45-6789 before releasing funds."
+    out = redact_free_text(text)
+    assert out.count("[REDACTED:") == 2
+    assert "user@example.com" not in out
+    assert "123-45-6789" not in out
+    assert "before releasing funds." in out
+
+
+def test_redact_free_text_empty_string_is_unchanged():
+    assert redact_free_text("") == ""
 
 
 def test_redacted_mode_salted_hashes_low_entropy_int():

@@ -34,6 +34,7 @@ from byoai.recorder.coriqo_agents import (
 )
 from byoai.recorder.keys import load_or_create_device_key
 from byoai.recorder.ledger import Ledger
+from byoai.recorder.redact import PayloadMode
 from byoai.recorder.schema import EventKind
 
 from .conftest import make_event
@@ -446,6 +447,66 @@ def test_publish_session_sends_one_batch_with_ledger_hashes(ledger):
 
     # Only the last step carries the run's decision text.
     assert [t["output"] for t in traces] == [None, "cleared"]
+
+
+def test_publish_session_redacts_pii_in_final_output_by_default(ledger):
+    """`payload_mode` defaults to `redacted`, matching the recorder's own
+    default — a decision's readable text is bound by the same policy as the
+    tool payloads that produced it, not shipped raw regardless of mode."""
+    _seal_run(ledger, "run_1", ["get_transaction", "flag_decision"])
+    seen: dict = {}
+
+    with _client(_batch_handler(seen)) as client:
+        publish_session(
+            client,
+            coriqo_agent_id=_CORIQO_AGENT,
+            ledger=ledger,
+            session_id="run_1",
+            final_output="Approved for user@example.com, SSN 123-45-6789 on file.",
+        )
+
+    outputs = [t["output"] for t in seen["batches"][0] if t["output"] is not None]
+    assert len(outputs) == 1
+    assert "user@example.com" not in outputs[0]
+    assert "123-45-6789" not in outputs[0]
+    assert "[REDACTED:email]" in outputs[0]
+    assert "[REDACTED:ssn]" in outputs[0]
+
+
+def test_publish_session_ships_final_output_unchanged_under_full_mode(ledger):
+    _seal_run(ledger, "run_1", ["get_transaction", "flag_decision"])
+    seen: dict = {}
+    text = "Approved for user@example.com, SSN 123-45-6789 on file."
+
+    with _client(_batch_handler(seen)) as client:
+        publish_session(
+            client,
+            coriqo_agent_id=_CORIQO_AGENT,
+            ledger=ledger,
+            session_id="run_1",
+            final_output=text,
+            payload_mode=PayloadMode.FULL,
+        )
+
+    outputs = [t["output"] for t in seen["batches"][0] if t["output"] is not None]
+    assert outputs == [text]
+
+
+def test_publish_session_drops_final_output_under_hash_only_mode(ledger):
+    _seal_run(ledger, "run_1", ["get_transaction", "flag_decision"])
+    seen: dict = {}
+
+    with _client(_batch_handler(seen)) as client:
+        publish_session(
+            client,
+            coriqo_agent_id=_CORIQO_AGENT,
+            ledger=ledger,
+            session_id="run_1",
+            final_output="Approved for user@example.com.",
+            payload_mode=PayloadMode.HASH_ONLY,
+        )
+
+    assert all(t["output"] is None for t in seen["batches"][0])
 
 
 def test_each_trace_cites_its_sealed_ledger_row_as_an_external_anchor(ledger):

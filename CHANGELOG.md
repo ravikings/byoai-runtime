@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`publish_session`'s `final_output` now honors `payload_mode` instead of
+  always shipping raw.** Every other field `coriqo_agents.py` sends to Coriqo
+  — tool call args/results, ledger inputs — was already digest-only, gated by
+  `BYOAI_RECORDER_PAYLOAD_MODE`. The run's final decision text was the one
+  exception: it shipped as literal, unredacted prose regardless of mode, so
+  an agent whose output restated data from a tool result (a name pulled off a
+  document, an amount from a transaction) sent it to Coriqo in the clear even
+  under `redacted`/`hash-only`. `publish_session` takes a new `payload_mode`
+  parameter (default `redacted`, matching the recorder's own default) and now
+  passes `final_output` through the new `redact.redact_free_text` under
+  `redacted` (masks known secret/PII substrings — email, SSN, credit card,
+  API/AWS key — wherever they appear in the sentence; text with no fixed
+  shape, like a name, still isn't caught, see that function's docstring) or
+  drops it under `hash-only`. Callers should pass their `Recorder`'s
+  `payload_mode` through explicitly (see `examples/agent_showcase`).
 - **Proxy enforcement now covers the OpenAI-compat bridge.** That handler returns
   before the Anthropic path's enforcement point, so a tenant routing a model
   through `BYOAI_OPENAI_COMPAT_MODELS` got no enforcement at all — silently,

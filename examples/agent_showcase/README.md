@@ -195,7 +195,15 @@ Two things make this evidence rather than telemetry:
   `BYOAI_RECORDER_PAYLOAD_MODE` is set to. So both stores commit to the same
   bytes: a hash from a Coriqo trace resolves to the sealed row it came from,
   and `coriqo-verify` still checks the ledger offline. Neither store has to be
-  trusted alone. No raw payloads are sent.
+  trusted alone. No raw tool payloads are sent.
+- The one exception is the run's final decision text (a step's `output`),
+  which ships as readable prose on purpose — that's the point of a decision
+  trace. Under the default `redacted` mode it's still passed through
+  `redact_free_text` first, masking known secret/PII shapes (email, SSN,
+  credit card, API key) wherever they appear in the sentence; anything
+  without a fixed shape (a name, an address) is not caught, since there's no
+  pattern to match it against. `hash-only` drops the field entirely instead;
+  `full` ships it untouched.
 
 Coriqo checks every recorded call against the agent's `allowed_tools`. Running
 the `b5-misfire-demo` agent shows both halves agreeing — its out-of-scope

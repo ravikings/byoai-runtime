@@ -139,6 +139,7 @@ def publish_run(
             session_id=run_id,
             goal=goal,
             final_output=final_text,
+            payload_mode=recorder.payload_mode,
             inputs_extra={"showcase_agent": showcase_agent_id},
         )
     except CoriqoAgentsError as exc:

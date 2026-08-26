@@ -53,6 +53,9 @@ Typical wiring::
                 coriqo_agent_id=agent_ids["my-app:my-agent"],
                 ledger=recorder.ledger,
                 session_id=run_id,
+                payload_mode=recorder.payload_mode,  # thread the recorder's
+                                                      # own mode through so
+                                                      # final_output follows it
             )
 """
 
@@ -70,6 +73,7 @@ import httpx
 from byoai.errors import ByoAIError
 
 from .ledger import Ledger
+from .redact import PayloadMode, redact_free_text
 from .schema import EventKind
 
 __all__ = [
@@ -754,6 +758,7 @@ def publish_session(
     goal: str | None = None,
     use_case: str | None = None,
     final_output: str | None = None,
+    payload_mode: PayloadMode = PayloadMode.REDACTED,
     inputs_extra: Mapping[str, Any] | None = None,
     parent_trajectory_id: str | None = None,
     ground_in_ledger: bool = True,
@@ -764,6 +769,20 @@ def publish_session(
     nothing to publish. ``final_output`` is attached to the last step, which is
     where a run's decision text belongs; earlier steps carry their results by
     hash only.
+
+    ``final_output`` is free text — usually the model's own words — and is the
+    one field this function ships as readable prose rather than a digest, so
+    it is the one place ``payload_mode`` still has to be applied by hand: pass
+    the same mode the local :class:`~byoai.recorder.integration.Recorder` is
+    using (``recorder.payload_mode``) so a decision's readable text is bound
+    by the same policy as the tool payloads that produced it, instead of
+    always shipping raw regardless of what the device is configured to
+    redact. ``full`` ships it unchanged, ``redacted`` (the default, matching
+    the recorder's own default) masks known secret/PII substrings via
+    :func:`~byoai.recorder.redact.redact_free_text` — see that function's
+    docstring for what it does and does not catch — and ``hash-only`` drops
+    it entirely, consistent with that mode shipping no payload bytes
+    anywhere else.
 
     Steps go up in batches of :data:`MAX_TRACE_BATCH`, so an ordinary run costs
     one request. Each batch is atomic on Coriqo's side: one invalid trace
@@ -792,6 +811,13 @@ def publish_session(
     steps = read_tool_steps(ledger, session_id)
     if not steps:
         return None
+
+    if final_output is not None:
+        if payload_mode is PayloadMode.HASH_ONLY:
+            final_output = None
+        elif payload_mode is PayloadMode.REDACTED:
+            final_output = redact_free_text(final_output)
+        # PayloadMode.FULL ships final_output unchanged.
 
     trajectory = client.open_trajectory(
         coriqo_agent_id,

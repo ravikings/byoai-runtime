@@ -694,11 +694,16 @@ if credentials is not None:
             ),
         })
         # ...once a run identified by `session_id` has finished...
+        recorder = get_recorder()
         publish_session(
             client,
             coriqo_agent_id=agent_ids["my-agent"],
-            ledger=get_recorder().ledger,
+            ledger=recorder.ledger,
             session_id=session_id,
+            final_output=final_text,
+            payload_mode=recorder.payload_mode,  # keep final_output under the
+                                                  # same policy as everything
+                                                  # else the recorder ships
         )
 ```
 
@@ -726,15 +731,28 @@ changed `mandate`/`allowed_tools` — amend those through Coriqo's mandate
 endpoint, so the change is versioned rather than silently rewriting what earlier
 decisions were judged against.
 
-`publish_session` sends digests and step metadata, never raw payloads. Each
-step's `args_hash`/`result_hash` are the ledger's own `payload_hash` values,
-which commit to the raw payload whatever `BYOAI_RECORDER_PAYLOAD_MODE` is set
-to, and each trace cites its ledger row's `entry_hash` as an external grounding
-anchor (`{"type": "external", "id": …, "system": "byoai-recorder"}`), which
-Coriqo holds outside its integrity scoring. Both stores therefore commit to the
-same bytes: a hash off a Coriqo trace resolves to the sealed row behind it, and
-`coriqo-verify` still checks the ledger offline, so neither store has to be
-trusted on its own. Pass `ground_in_ledger=False` to leave the anchors off.
+`publish_session` sends digests and step metadata, never raw tool payloads.
+Each step's `args_hash`/`result_hash` are the ledger's own `payload_hash`
+values, which commit to the raw payload whatever `BYOAI_RECORDER_PAYLOAD_MODE`
+is set to, and each trace cites its ledger row's `entry_hash` as an external
+grounding anchor (`{"type": "external", "id": …, "system": "byoai-recorder"}`),
+which Coriqo holds outside its integrity scoring. Both stores therefore commit
+to the same bytes: a hash off a Coriqo trace resolves to the sealed row behind
+it, and `coriqo-verify` still checks the ledger offline, so neither store has
+to be trusted on its own. Pass `ground_in_ledger=False` to leave the anchors
+off.
+
+The one field that isn't digest-only is `final_output` — a run's decision
+text, attached to the last step, ships as readable prose on purpose. Its
+handling follows `publish_session`'s own `payload_mode` argument (default
+`redacted`, independent of the recorder instance's `payload_mode` unless you
+pass it explicitly — see the example above): `redacted` masks known
+secret/PII substrings (email, SSN, credit card, API/AWS key) wherever they
+appear in the text via `redact.redact_free_text`, `hash-only` drops the field
+entirely, and `full` ships it unchanged. Free-form PII with no fixed shape —
+a name, a street address — is not caught by any of these; there is no pattern
+to match it against, so treat `redacted` as narrowing what can leak, not as a
+guarantee the text is clean.
 
 Steps go up through Coriqo's batch endpoint, so an ordinary run costs one
 request; runs longer than `MAX_TRACE_BATCH` (200) steps are split. A batch is
