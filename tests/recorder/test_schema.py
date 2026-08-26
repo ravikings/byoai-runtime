@@ -95,6 +95,7 @@ class TestEventKind:
             "key_rotated",
             "stream_aborted",
             "parse_failure",
+            "mandate_verdict",
         }
 
 

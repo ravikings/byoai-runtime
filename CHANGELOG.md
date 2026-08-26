@@ -23,6 +23,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.arguments` explicitly when logging for an operator.
 
 ### Added
+- **Verdict recording and batched shipping (`byoai.recorder.verdicts`).** Every
+  gate decision — `allowed`, `flagged` and `blocked` alike — is now appended to
+  the local hash-chained ledger as a `mandate_verdict` event and queued for
+  Coriqo, instead of reaching the integrator's process logs and nothing else.
+  Allows are recorded because the denominator is what makes the denial count
+  mean anything. The ledger is the authoritative record and shipping is strictly
+  downstream of it: a denial is written whether or not Coriqo is reachable, and
+  `record()` never raises into a tool call. `MandateGate.decide()` is unchanged
+  and still performs no I/O — recording happens at `@governed_tool`'s
+  enforcement seam, after the verdict exists.
+  A latched repeat is not N identical rows: the first denial records
+  `out_of_scope`, the next attempt `repeat_denied` with `attempts: 2`, and the
+  one that trips the halt threshold `run_halted` with `halted: true`, with the
+  run and the principal alongside them in the local event.
+  `VerdictShipper` drains a durable `VerdictOutbox` into
+  `POST /api/v1/agent-runtime/agents/{agent_id}/verdicts/batch` in batches of at
+  most 200, device-signed; Coriqo seals one governance event per batch. A batch
+  is claimed under a persisted `batch_key` before the request goes out, so a
+  resend is the same batch. Tool arguments are never part of any of it — the
+  record keeps `arguments_captured`, a count, and never a key or a value.
+- **`AsyncCoriqoAgentsClient.record_verdict_batch` is retryable**, unlike every
+  other write in the client, which stays non-retryable. The objection to
+  retrying a write — a resent publish duplicating a governance record — does not
+  apply here: `batch_key` is device-chosen and unique per device server-side, a
+  repeat replays the stored result with `duplicate: true` and seals nothing, and
+  concurrent duplicates race a unique index where the loser gets a `409` asking
+  it to retry. `409` therefore joins the retry set for that one call. `422` does
+  not: an over-cap batch, a `flagged`/`blocked` verdict with no reason, or a
+  verdict naming a mandate version belonging to another agent are statements
+  about the batch, so the shipper parks it (keeping the rows, marked `rejected`)
+  rather than looping. The cap and the missing-reason case are caught before the
+  request is built.
+- **Mandate drift is surfaced to the operator.** Coriqo anchors a batch on the
+  agent's current mandate version and reports `anchor_mandate_version_id` and
+  `stale_mandate_version_count`; `VerdictShipResult` carries both and the shipper
+  logs a `WARNING` naming the drift, so a host whose snapshot has aged learns it
+  from the response rather than by reading the chain later.
+- **`EventKind.MANDATE_VERDICT`**, the ledger event kind the above writes.
 - **Denial latch (`byoai.recorder.denial_latch`).** A denial used to stop one
   call and nothing else, so an agent that ignored the refusal could attempt the
   same out-of-mandate tool for as long as its loop ran, and nothing counted it.

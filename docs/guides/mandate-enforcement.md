@@ -294,11 +294,60 @@ permits nothing and survives every intersection, so anything ∩ `[]` is `[]`. T
 runtime branches on `is None`; if you write your own, do the same, because a
 falsy check turns "permitted nothing" into "permitted everything".
 
+## Recording what the gate decided
+
+Enforcement without a record is a claim. Bind a `VerdictRecorder` and every gate
+decision — `allowed`, `flagged` and `blocked` alike — is appended to the local
+hash-chained ledger and queued for Coriqo:
+
+```python
+from byoai.recorder.ledger import Ledger
+from byoai.recorder.verdicts import (
+    VerdictOutbox, VerdictRecorder, VerdictShipper, set_verdict_recorder,
+)
+
+ledger = Ledger("~/.byoai/recorder/ledger.db", device_id)
+outbox = VerdictOutbox("~/.byoai/recorder/verdicts.db")
+set_verdict_recorder(VerdictRecorder(ledger=ledger, outbox=outbox))
+
+await VerdictShipper(client, outbox).drain()   # batches of up to 200
+```
+
+Four things about it are worth stating plainly.
+
+**Allows are recorded too.** The denominator is what makes the numerator mean
+anything: "4,120 tool calls, 9 outside the mandate" is a sentence a second-line
+reviewer can act on, and "9 denials" is not.
+
+**The record does not depend on Coriqo.** The ledger write happens first and
+shipping is downstream of it, so a denial during an outage is written down like
+any other. A failed batch keeps its `batch_key` and is resent as the same batch,
+so retrying cannot produce a second governance record; a repeat replays the
+stored result instead.
+
+**Recording is not on the decide path.** `decide()` still reads memory and
+returns, with no I/O of any kind — the recorder runs at `@governed_tool`'s
+enforcement seam, after the verdict exists. Recording never raises into a tool
+call either.
+
+**A repeat reads as a repeat.** The first denial records `out_of_scope`, the
+next attempt `repeat_denied` with `attempts: 2`, the one that trips the
+threshold `run_halted` with `halted: true`. So *the agent went at a control it
+had already been refused, three times, then the run stopped* is legible off the
+record rather than being three rows that look the same.
+
+If Coriqo's answer reports `stale_mandate_version_count`, this host's snapshot
+has drifted from the version the batch was anchored on. The verdicts are still
+recorded — the drift is the finding, not a reason to reject them — and the
+shipper logs it so you learn from the reply rather than from the chain.
+
 ## Not built yet
 
 One thing you may expect is still missing, and it is better to know now than to
 discover it in a demo:
 
-- **Verdicts are logged, not sealed.** They do not reach the local ledger or
-  Coriqo yet, so a denial — including a latched repeat and a halt, with its
-  attempt count — is visible in your process logs and nowhere else.
+- **Tool arguments are not part of the record.** `capture_arguments=True` binds
+  them onto the `ProposedAction`, but the verdict record keeps only how many
+  were captured and never a key or a value, locally or on the wire, because
+  nothing redacts them yet. Until it does, the record says which tool was
+  attempted, not with what.

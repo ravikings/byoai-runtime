@@ -546,6 +546,26 @@ own mandate with the delegator's effective scope, pinned to the delegator's
 never a route to a tool the parent was refused. Both are documented in
 **[CONFIGURATION.md](CONFIGURATION.md#the-denial-latch--repeats-and-the-halt-byoairecorderdenial_latch)**.
 
+Every verdict — allowed, flagged and blocked alike — is written to the local
+hash-chained ledger and shipped to Coriqo in batches of up to 200, sealed as one
+governance event per batch.
+
+```python
+from byoai.recorder.verdicts import VerdictOutbox, VerdictRecorder, VerdictShipper
+from byoai.recorder.verdicts import set_verdict_recorder
+
+outbox = VerdictOutbox("~/.byoai/recorder/verdicts.db")
+set_verdict_recorder(VerdictRecorder(ledger=ledger, outbox=outbox))
+await VerdictShipper(client, outbox).drain()
+```
+
+The ledger is the record and Coriqo being unreachable does not change that;
+shipping is downstream of the write, and `decide()` stays free of I/O. A latched
+repeat and a halt are distinguishable from a first denial — `repeat_denied` and
+`run_halted` rather than three identical rows — and captured tool arguments are
+counted, never recorded or shipped, because nothing redacts them yet.
+**[CONFIGURATION.md](CONFIGURATION.md#recording-verdicts-byoairecorderverdicts)**.
+
 Set `BYOAI_RETENTION_DAYS=0` to keep every row.
 
 Dedup itself no longer uses this state. It compares occurrences inside a single

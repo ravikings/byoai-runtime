@@ -830,11 +830,21 @@ environment to enforce.
 
 | Retried | Not retried |
 | --- | --- |
-| `fetch_mandate`, `get_agent`, `list_agents`, `list_trajectories` | `record_trace`, `record_traces`, `record_signed_trace`, `record_verdict`, `open_trajectory`, `complete_trajectory`, `authorize`, `register_agent` |
+| `fetch_mandate`, `get_agent`, `list_agents`, `list_trajectories`, `record_verdict_batch` | `record_trace`, `record_traces`, `record_signed_trace`, `record_verdict`, `open_trajectory`, `complete_trajectory`, `authorize`, `register_agent` |
 
-A resent trace or verdict is a second decision in the record, and Coriqo has no
-idempotency key to collapse it back onto the first — so those are sent once and
-the failure is the caller's to handle. The single exception is opt-in:
+A resent trace or single verdict is a second decision in the record, and Coriqo
+has no idempotency key to collapse it back onto the first — so those are sent
+once and the failure is the caller's to handle.
+
+`record_verdict_batch` is the exception that needs no opt-in, because the
+objection does not apply to it. Its `batch_key` is device-chosen and unique per
+device server-side: a repeat replays the stored result with `duplicate: true`
+and seals nothing, and two concurrent copies race a unique index where the loser
+gets a `409` asking it to retry. So `409` joins the retry set for that call only,
+and a resend cannot produce a second governance record. `422` stays out of it —
+an over-cap batch, a reasonless `blocked`, or a verdict naming another agent's
+mandate version are statements about the batch, not about the network. The other
+exception is opt-in:
 `RetryPolicy(retry_writes=True)` makes `register_agent` retryable *only* when
 the registration carries an `external_id`, which is Coriqo's own idempotency
 key (a repeat returns the existing agent instead of creating a second copy).
@@ -861,7 +871,7 @@ capped by `max_retry_after` so a mistaken header can't park a refresh loop.
 
 **Enforcement endpoints are device-signed.** Calls under
 `/api/v1/agent-runtime` (`fetch_mandate`, `record_verdict`,
-`record_signed_trace`) authenticate with the enrolled device key and never send
+`record_verdict_batch`, `record_signed_trace`) authenticate with the enrolled device key and never send
 `X-API-Key` — Coriqo rejects a service-account key on that path on purpose,
 because the credential that fetches an agent's permitted scope must not be one
 the agent can use to widen it. A static-key identity raises
@@ -1112,6 +1122,87 @@ so a process that runs for months does not accumulate a bucket per run.
 
 **Latch state is per-process and in memory.** A run that spans two processes, or
 a host that restarts mid-run, starts counting from zero. Nothing persists it yet.
+
+#### Recording verdicts (`byoai.recorder.verdicts`)
+
+A verdict that only ever reached your process logs is not evidence. This module
+writes every gate decision — `allowed`, `flagged` and `blocked` alike — into the
+same hash-chained local ledger the recorder already keeps, and ships them to
+Coriqo in batches.
+
+```python
+from byoai.recorder.ledger import Ledger
+from byoai.recorder.verdicts import (
+    VerdictOutbox, VerdictRecorder, VerdictShipper, set_verdict_recorder,
+)
+
+ledger = Ledger("~/.byoai/recorder/ledger.db", device_id)
+outbox = VerdictOutbox("~/.byoai/recorder/verdicts.db")
+set_verdict_recorder(VerdictRecorder(ledger=ledger, outbox=outbox))
+
+shipper = VerdictShipper(async_client, outbox)
+await shipper.drain()          # or call ship_once() from your own loop
+```
+
+With no recorder bound, nothing is recorded and nothing breaks — same shape as
+an unenrolled host getting a no-op gate.
+
+**Allows are recorded too**, and that is the point of the denominator. "4,120
+tool calls, 9 of them outside the mandate" is a sentence a risk committee can
+use; "9 denials" is not.
+
+**Recording is not on the decide path.** `MandateGate.decide()` still reads
+memory and returns, with no I/O of any kind. The recorder is called from
+`@governed_tool`'s enforcement seam, after the verdict exists — an agent's
+availability must not become a function of whether a ledger write succeeded, and
+`record()` never raises into a tool call either: a write it cannot make is logged
+at `ERROR` and the call proceeds (or is refused) exactly as it would have.
+
+**The ledger is authoritative; shipping is downstream of it.** A denial is
+written whether or not Coriqo is reachable. Batches are claimed under a
+`batch_key` that is persisted *before* the request goes out, so a resend after a
+crash, a timeout or a `409` is the same batch rather than a second one, and
+nothing leaves the queue until Coriqo has answered about it.
+
+**A repeat is not another first denial.** The reason code carries the
+distinction on the wire — `out_of_scope`, then `repeat_denied`, then
+`run_halted` — and the local ledger event carries `attempts`, `halted`, `run_id`
+and `principal` alongside it. So "the agent went at a control it had already
+been refused, three times, and then the run halted" reads straight off the
+record instead of being three identical rows.
+
+**Stale mandate versions are recorded, not rejected.** Coriqo anchors a batch on
+the agent's current version and reports `anchor_mandate_version_id` and
+`stale_mandate_version_count` back; `VerdictShipResult` carries both and the
+shipper logs a `WARNING` naming the drift, so a host whose snapshot has aged
+learns it from the reply rather than by reading the chain weeks later.
+
+**A `422` parks the batch rather than looping on it.** The rows stay in the
+outbox marked `rejected` with the server's reason, and they are still in the
+ledger — dropping a verdict is the one thing this module exists to prevent.
+
+**The write is inline.** Both the ledger append and the outbox insert happen on
+the calling thread, for every governed call, and inside an async tool that is on
+the event loop. A failed write cannot fail a call, but a slow or locked sqlite
+file will slow one — the recorder protects correctness, not latency.
+
+**Tool arguments are never recorded or shipped.** `@governed_tool(capture_arguments=True)`
+binds a call's arguments onto the `ProposedAction`, and a governed tool's
+arguments routinely hold account numbers and credentials that nothing redacts
+yet. The record keeps `arguments_captured`, a count, and never a key or a value —
+not locally, and not on the wire.
+
+| Field | Meaning |
+| --- | --- |
+| `MAX_VERDICT_BATCH` | `200` — Coriqo 422s an over-cap batch, so the cap is enforced before the request is built |
+| `VerdictShipResult.duplicate` | Coriqo replayed a stored result and sealed nothing new |
+| `VerdictShipResult.stale_mandate_version_count` | verdicts in the batch decided against a version that is no longer current |
+| `VerdictShipResult.rejected` | the batch was refused with a `422` and parked |
+
+Verdict events also ride the ordinary ledger-ingest path like every other event,
+since that ships the whole chain contiguously. The batch endpoint is the second,
+differently-shaped delivery: Coriqo seals **one** governance event per batch,
+not one per verdict, because per-verdict sealing serialises on a row lock.
 
 #### Delegated scope attenuation (`byoai.recorder.delegation`)
 
