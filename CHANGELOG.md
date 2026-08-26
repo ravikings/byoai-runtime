@@ -23,6 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.arguments` explicitly when logging for an operator.
 
 ### Added
+- **Mandate enforcement at the proxy (`byoai.recorder.proxy_gate`).** Every
+  `tool_use` block in a model response is now decided by the same `MandateGate`
+  `@governed_tool` uses, before the agent sees it — enabled with
+  `BYOAI_PROXY_ENFORCEMENT=1` and `BYOAI_MANDATE_AGENT_ID`. A denied block is
+  withheld and replaced by a synthesized `tool_result` carrying only the fixed
+  `MODEL_MESSAGE`, so the agent's loop handles it as an ordinary tool failure
+  and never learns which tool it asked for; if nothing survived, `stop_reason`
+  becomes `end_turn`. Streaming holds back only the frames of an unfinished
+  `tool_use` block, never the response. Denials route through the same denial
+  latch, so a repeat at the proxy counts toward the same halt threshold as one
+  through the decorator, and every verdict is recorded through the same
+  recorder. This exists because the buyer frequently does not own the agent's
+  source, which is all `@governed_tool` can reach — and it covers only tools
+  the model requests through the intercepted API, so the two seams are meant to
+  run together.
+- **`Reason.AGENT_UNRESOLVED`.** A proxy request whose agent cannot be resolved
+  has no mandate to decide against, and is now decided by posture — `fail_closed`
+  withholds, `fail_open` allows and flags — rather than silently allowing. Never
+  latched: a misconfiguration should not halt a run.
 - **Verdict recording and batched shipping (`byoai.recorder.verdicts`).** Every
   gate decision — `allowed`, `flagged` and `blocked` alike — is now appended to
   the local hash-chained ledger as a `mandate_verdict` event and queued for

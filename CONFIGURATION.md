@@ -1043,6 +1043,77 @@ With no gate bound at all — or a gate from `mandate_gate()` on a host with no
 Coriqo identity — the decorator runs the function and logs one line. Adopting
 it is never the thing that breaks a build.
 
+#### Enforcing at the proxy (`byoai.recorder.proxy_gate`)
+
+`@governed_tool` needs you to decorate your own tool functions, and that is a
+source change to code you may not own — a vendored agent, a framework's
+built-in tools, a binary someone else ships. The proxy already sits at
+`ANTHROPIC_BASE_URL` and already parses `tool_use` blocks out of model
+responses, so it can refuse one without touching the agent at all.
+
+Same gate, same latch, same verdict recorder. There is no second policy path:
+two implementations of one enforcement rule drift, and then one of them is
+wrong.
+
+```bash
+BYOAI_PROXY_ENFORCEMENT=1
+BYOAI_MANDATE_AGENT_ID=agt_7f3c      # or a comma-separated list
+```
+
+On a denial the `tool_use` block is **withheld** — it never reaches the agent,
+so there is nothing for the agent's dispatcher to execute — and a synthesized
+`tool_result` block goes out in its place carrying the same fixed
+`MODEL_MESSAGE` a decorator denial carries, `is_error: true`, and nothing else.
+No tool name, no reason, no mandate version, no suggested alternative. At this
+seam that text lands directly in the model's next context window, so a denial
+that explained itself would be a working hint sheet for routing around the
+control.
+
+If every `tool_use` in a response was denied, `stop_reason` is rewritten from
+`tool_use` to `end_turn`. A message that says it is waiting on a tool but
+contains no tool call is a shape no agent loop expects, and the common
+`while stop_reason == "tool_use"` spins on it with nothing to dispatch.
+
+**Streaming.** Nothing is buffered except the frames of a `tool_use` block that
+has not finished yet, plus at most one partially-received SSE frame. Text
+frames — the tokens a human is watching appear — go out in the same pass they
+arrived. The decision lands on `content_block_stop`, which is both the earliest
+moment the arguments are complete enough to decide on and the last moment
+before the agent could act. A stream cut mid-`tool_use` drops the held block
+rather than releasing it: forwarding a tool call the gate never got to see is
+the one outcome this seam exists to prevent.
+
+**Which agent is this request?** The registry is operator-owned. Gates are
+registered at startup from `BYOAI_MANDATE_AGENT_ID`, or in code with
+`register_proxy_gate(gate)`; a request cannot introduce an identity that was
+not already configured. `X-BYOAI-Agent-Id` selects *among registered gates*
+when one proxy fronts several agents — it is a selector, never a credential,
+because the agent is the untrusted party at this seam and a header that could
+name any mandate would let it pick its own scope.
+
+A request whose agent cannot be resolved — an unregistered id in the header, or
+no header when several gates are registered — is decided by
+`BYOAI_MANDATE_POSTURE`: `fail_closed` withholds the block, `fail_open` allows
+it and flags it. Either way a verdict with `reason: agent_unresolved` is
+recorded and a `WARNING` is logged. It is never latched, because a startup
+ordering problem is not a scope decision and should not halt a run.
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `BYOAI_PROXY_ENFORCEMENT` | `0` | `1` turns proxy enforcement on |
+| `BYOAI_MANDATE_AGENT_ID` | *(unset)* | agent id, or comma-separated ids, whose gates the proxy registers at startup |
+| `BYOAI_PROXY_DENIAL_BLOCK` | `tool_result` | shape of the synthesized replacement block; `text` for clients whose SDK rejects a `tool_result` inside an assistant message |
+
+**What this does not cover.** Only tools the model *requests through the
+intercepted provider API*. A tool the agent's own code calls directly — a
+helper it invokes without asking the model, an MCP client it drives itself —
+never appears in a response body and is invisible here. That is what
+`@governed_tool` is for. The two seams compose; neither alone is total.
+
+It also covers the Anthropic `/v1/messages` path only. The OpenAI-compat bridge
+(`OPENAI_COMPAT_MODELS`) is translated in a separate handler that this seam does
+not sit on yet, so traffic routed through it is recorded but not gated.
+
 #### The denial latch — repeats and the halt (`byoai.recorder.denial_latch`)
 
 A denial stops one call. On its own that leaves an agent free to attempt the
