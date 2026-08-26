@@ -12,6 +12,32 @@ ByoAI Runtime is an infrastructure-agnostic AI agent engine and workflow executi
 
 ---
 
+## 🖥️ Console (web UI) — in development
+
+`web/` holds the ByoAI Console: a read-only operator UI over the agent
+recorder's shipped evidence. It answers the question a single ledger file
+structurally cannot — *which of my devices have reported, and what is
+missing* — across a whole fleet.
+
+**Status: front end only.** The console currently runs against a mock API
+(MSW) that implements the contract in `web/src/api/schemas.ts`. The
+ingest-side read model it will talk to does not exist yet, so nothing here is
+wired to a live deployment.
+
+```bash
+cd web
+npm install
+npm run dev      # http://localhost:5173/console/
+```
+
+`npm run dev` proxies `/v1` to a running context-cache proxy
+(`BYOAI_PROXY_URL`, default `http://127.0.0.1:8787`), so no CORS
+configuration is needed on the Python side. See
+[CONFIGURATION.md](./CONFIGURATION.md#console-web-ui) for the environment
+variables.
+
+---
+
 ## ⚡ Why ByoAI Runtime?
 
 Most AI frameworks force engineering teams to adapt their database schemas, re-embed millions of vectors, and rewrite state management logic. **ByoAI Runtime adapts to your existing stack instead.**

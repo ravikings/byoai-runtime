@@ -1,0 +1,112 @@
+/* ByoAI Console — design tokens.
+   Palette and type lifted verbatim from Coriqo's shipped CSS custom
+   properties (the :root block in examples/agent_showcase/ui/styles.css).
+   This file is the single source of truth for the console; do not
+   introduce a colour that is not defined here. */
+
+:root {
+  /* ---- Coriqo brand palette (verbatim) ---- */
+  --navy: #0a1834;
+  --navy-2: #0f1f42;
+  --navy-3: #16294f;
+  --navy-line: #23386a;
+  --navy-line-2: #1a2c54;
+
+  --ink: #0a1834;
+  --ink-soft: #4a5876;
+
+  --ice: #eef3fb;
+  --ice-soft: #aebfdd;
+  --ice-dim: #7589b3;
+
+  --paper: #f7f8fb;
+  --paper-2: #eef1f7;
+  --field: #ffffff;
+
+  --line: #d8dee9;
+  --line-soft: #e6eaf3;
+
+  --azure: #3d7eff;
+  --azure-soft: #6a9bff;
+  --azure-glow: rgba(61, 126, 255, .16);
+
+  --gold: #c9a86a;
+
+  /* ---- State. These three carry ALL state meaning. Never use a colour
+     outside this trio to signal state, and never use colour alone. ---- */
+  --validated: #4ad6a0;   /* intact / verified / allowed */
+  --pending: #e0b15a;     /* degraded / unchecked / stale / flagged */
+  --off-scope: #a3382d;   /* broken / denied / tampered */
+  --off-scope-soft: #e07066;
+
+  /* Tinted backgrounds for the state trio (derived, not new hues). */
+  --validated-bg: #eaf7f1;
+  --pending-bg: #fdf3e3;
+  --off-scope-bg: #fbeeeb;
+  --validated-ink: #1f7a3f;
+  --pending-ink: #9a6a10;
+
+  /* Translucent edges + halos for the state trio. Derived from the three
+     hues above — these exist so no frame ever needs to hand-write an rgba()
+     of a brand colour, which is how palettes drift. */
+  --validated-line: rgba(74, 214, 160, .45);
+  --pending-line: rgba(224, 177, 90, .45);
+  --off-scope-line: rgba(163, 56, 45, .38);
+  --validated-halo: rgba(74, 214, 160, .18);
+  --pending-halo: rgba(224, 177, 90, .20);
+  --off-scope-halo: rgba(163, 56, 45, .18);
+  --unknown-halo: rgba(174, 191, 221, .22);
+
+  /* ---- Type ---- */
+  --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  --font-display: 'Newsreader', Georgia, serif;
+
+  /* Type scale. Deliberately short — a console needs four sizes, not nine. */
+  --t-micro: 0.65rem;   /* tags */
+  --t-mono: 0.72rem;    /* machine strings, section labels */
+  --t-body: 0.82rem;    /* default UI text */
+  --t-lead: 0.92rem;    /* card titles, emphasis */
+  --t-head: 1.3rem;     /* page title */
+  --t-verdict: 1.6rem;  /* the one big number/state per screen */
+
+  /* ---- Space. 4px base. ---- */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+
+  --radius: 9px;
+  --radius-sm: 5px;
+  --radius-pill: 999px;
+
+  /* ---- Elevation. One hairline, one lift. Nothing else. ---- */
+  --hairline: 1px solid var(--line);
+  --hairline-soft: 1px solid var(--line-soft);
+  --lift: 0 4px 14px rgba(10, 24, 52, 0.06);
+
+  --rail-w: 200px;
+  --rail-w-collapsed: 56px;
+
+  color-scheme: light;
+}
+
+/* Dark mode is a token swap by design (spec §7). Structure only — the
+   console ships light first; these values are provisional. */
+:root[data-theme="dark"] {
+  --ink: #eef3fb;
+  --ink-soft: #aebfdd;
+  --paper: #0a1834;
+  --paper-2: #0f1f42;
+  --field: #16294f;
+  --line: #23386a;
+  --line-soft: #1a2c54;
+  --validated-bg: rgba(74, 214, 160, .12);
+  --pending-bg: rgba(224, 177, 90, .12);
+  --off-scope-bg: rgba(163, 56, 45, .16);
+  --validated-ink: var(--validated);
+  --pending-ink: var(--pending);
+  color-scheme: dark;
+}
