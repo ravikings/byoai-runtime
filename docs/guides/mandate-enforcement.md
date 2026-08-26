@@ -22,6 +22,23 @@ The static `BYOAI_CORIQO_API_KEY` credential still works for publishing records,
 cannot enforce. If you try, you get `EnforcementIdentityUnavailableError` naming the
 enrolment command rather than a request that fails later for an unclear reason.
 
+## Two places to enforce it
+
+There are two seams, and which one you need depends on whether you own the agent's
+source.
+
+| | Seam A — `@governed_tool` | Seam B — the proxy |
+|---|---|---|
+| What it needs from you | a decorator on your tool functions | `BYOAI_PROXY_ENFORCEMENT=1`, no code change |
+| Where it stops the call | before the function body runs | before the `tool_use` block reaches the agent |
+| What it covers | every call through that function, however it was triggered | every tool the model requests through the intercepted API |
+| What it misses | a tool you did not decorate | a tool the agent calls directly in its own code |
+
+They use the same `MandateGate`, the same denial latch and the same verdict
+recorder, so a run is counted once no matter which seam refused it. Running both
+is the intended configuration: neither is total on its own, and the gaps are not
+the same gaps.
+
 ## Decorating a tool
 
 ```python
@@ -101,6 +118,122 @@ if verdict.allowed:
 `Allow`, `Flag` and `Deny` all carry `reason`, `mandate_version_id` and `snapshot_age_s`.
 `Flag` subclasses `Allow`, so `verdict.allowed` and `isinstance(verdict, Allow)` agree: a
 flagged call still runs, and only the record differs.
+
+## Enforcing at the proxy
+
+The buyer often does not own the agent. It is a vendored binary, a framework
+whose tools are defined inside the framework, a team's own service nobody wants
+to fork. Seam A cannot reach any of that, and telling a bank "decorate your tool
+functions" is telling them to change code they do not control.
+
+The proxy already sits at `ANTHROPIC_BASE_URL` and already reads `tool_use`
+blocks out of model responses. Sitting there means it can refuse one.
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8787
+export BYOAI_PROXY_ENFORCEMENT=1
+export BYOAI_MANDATE_AGENT_ID=agt_7f3c
+byoai-cache start
+```
+
+That is the whole integration. The agent is unmodified.
+
+### What the agent sees
+
+The denied `tool_use` block is withheld. It does not reach the agent, so the
+agent's dispatcher has nothing to execute — the enforcement does not depend on
+the agent cooperating. In its place goes a synthesized `tool_result`:
+
+```json
+{"type": "tool_result", "tool_use_id": "toolu_…", "is_error": true,
+ "content": [{"type": "text", "text": "This action is not permitted."}]}
+```
+
+That sentence is fixed and it is all there is. Not the tool name, not the
+mandate, not "try `search` instead". The rule is the same one Seam A follows,
+and it matters more here: at the proxy the text lands directly in the model's
+next context window, with no framework in between to strip it.
+
+If every tool call in the response was denied, `stop_reason` is rewritten from
+`tool_use` to `end_turn`, because a message that claims to be waiting on a tool
+while containing no tool call is a shape agent loops spin on.
+
+Some SDKs will not parse a `tool_result` block inside an assistant message —
+it is not a shape the provider emits. A strict client raises instead of
+continuing, which stops the tool but as a crash rather than as a refusal. Set
+`BYOAI_PROXY_DENIAL_BLOCK=text` and the replacement is a plain text block
+carrying the same fixed sentence, which every client parses.
+
+### What a retrying loop does
+
+Denial arrives as a tool failure and plenty of loops retry tool failures. Be
+clear about what actually happens:
+
+- The tool does not run. Not on the first attempt and not on any retry — the
+  block the dispatcher would have executed was never delivered.
+- A loop that retries sends another turn, the model asks for the same tool
+  again, and the second attempt is refused **from the latch**, without
+  re-running the scope check.
+- The third attempt halts the run. Every tool is refused after that, including
+  ones that were in scope all along.
+
+So a retry loop costs at most two extra round trips before the run is over. What
+it does *not* do is stop the loop politely — the runtime has no way to reach into
+an agent it did not modify and end its turn. Bounding it is what the latch is
+for, and if you want the loop to exit cleanly rather than be starved, that is
+Seam A: `MandateRunHaltedError` is a real exception in the agent's own process
+and a supervisor can catch it.
+
+### Streaming
+
+Nothing waits for the end of the response. Text frames go out in the same pass
+they arrive; the only bytes held back are the frames of a `tool_use` block that
+has not finished yet, plus at most one partial SSE frame. The decision lands on
+`content_block_stop` — the earliest point the arguments are complete and the
+last point before the agent could act on them.
+
+A stream cut mid-`tool_use` drops the held block instead of releasing it. A
+half-announced tool call the gate never got to see is exactly the thing this
+seam exists to stop.
+
+### Which agent, and why it is not a header
+
+Get this wrong and you either enforce one agent's mandate on another, or believe
+you are enforcing and enforce nothing.
+
+Gates are registered at startup from configuration the *operator* controls —
+`BYOAI_MANDATE_AGENT_ID`, or `register_proxy_gate(gate)` in code. A request
+cannot introduce an agent identity that was not already configured. When one
+proxy fronts several agents, `X-BYOAI-Agent-Id` picks among the registered ones;
+it is a selector, not a credential. The agent is the thing being governed here,
+and a header that could name any mandate would let it choose its own scope with
+one line of code.
+
+A request whose agent cannot be resolved — an unregistered id, or no id when
+several gates are registered — is decided by posture. `fail_closed` withholds
+the block; `fail_open` allows it and flags it. Both record a verdict with
+`reason: agent_unresolved` and log a warning; neither silently allows. It is
+never latched, because a misconfiguration is not a scope decision and should not
+halt a run.
+
+The latch bucket is the **session**, not the request. A model refused a tool and
+asking again next turn arrives as a fresh HTTP call, and a per-request bucket
+would make every repeat look like a first attempt forever.
+
+### What the proxy cannot see
+
+Only tools the model requests through the intercepted provider API. A tool the
+agent's own code calls without asking the model — a helper in its control flow,
+an MCP client it drives itself, a subprocess — never appears in a response body
+and is invisible at this seam.
+
+It also covers the Anthropic `/v1/messages` path only. Traffic routed through
+the proxy's OpenAI-compat bridge goes through a separate handler this seam does
+not sit on yet: it is recorded, not gated.
+
+Do not read proxy coverage as total coverage. It covers the tools the model
+chooses, which for a model-driven agent is most of them, and it covers them
+without touching the agent's source. The rest is `@governed_tool`.
 
 ## Denials do not come back as tool errors
 

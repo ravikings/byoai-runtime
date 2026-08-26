@@ -530,6 +530,19 @@ mandate) or per-tool via `gate=`, and with no gate bound the decorator just runs
 the function — see
 **[CONFIGURATION.md](CONFIGURATION.md#governed_tool--enforcing-at-the-call-site-byoairecordergoverned_tool)**.
 
+`@governed_tool` asks you to decorate your own tool functions, which is a source
+change to code you may not own. The proxy is the second seam and needs nothing
+from the agent: `BYOAI_PROXY_ENFORCEMENT=1` plus `BYOAI_MANDATE_AGENT_ID` and
+every `tool_use` block in a model response is decided by the same gate before
+the agent sees it. A denied block is withheld and replaced by a synthesized
+`tool_result` carrying the same fixed sentence, so the agent's loop handles it
+as an ordinary tool failure and never learns which tool it asked for. Streaming
+holds back only the frames of the unfinished `tool_use` block; text frames are
+never delayed. This covers tools the model requests through the intercepted API
+and nothing else — a tool the agent calls directly in its own code is what the
+decorator is for — see
+**[CONFIGURATION.md](CONFIGURATION.md#enforcing-at-the-proxy-byoairecorderproxy_gate)**.
+
 A denial stops one call, which is not enough on its own: an agent that ignores
 the refusal can go at the same tool until its loop stops. The denial latch counts
 those attempts per run and per tool, refuses every repeat straight from memory

@@ -14,6 +14,14 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..recorder.integration import get_recorder
+from ..recorder.proxy_gate import (
+    SseEnforcer,
+    enforce_response_body,
+    proxy_enforcement_enabled,
+    resolve_enforcer,
+    start_proxy_enforcement,
+    stop_proxy_enforcement,
+)
 from ..recorder.schema import new_span_id, new_trace_id
 from ..recorder.ledger import LedgerWriteError
 from ..session_hash import RedisHashStore
@@ -191,7 +199,9 @@ async def lifespan(_app: FastAPI):
             f"{pruned['retention_days']}d"
             + (" (vacuumed)" if pruned.get("vacuumed") else "")
         )
+    enforcement_gates = await start_proxy_enforcement()
     yield
+    await stop_proxy_enforcement(enforcement_gates)
     await http_client.aclose()
     await r.close()
 
@@ -787,6 +797,15 @@ async def proxy_claude_messages(request: Request):
     log_session_id = derive_session_id(request, body)
     trace_id, span_id, parent_span_id, continues_from = derive_trace_context(request)
 
+    # Seam B. The latch bucket is the session, not the request: a model that
+    # is refused a tool and asks again next turn arrives as a fresh HTTP call,
+    # and a per-request bucket would make every repeat look like a first try.
+    enforcer = (
+        resolve_enforcer(request.headers, run_id=log_session_id)
+        if proxy_enforcement_enabled()
+        else None
+    )
+
     recorder = get_recorder()
     if recorder is not None:
         try:
@@ -842,9 +861,18 @@ async def proxy_claude_messages(request: Request):
                 if recorder is not None
                 else None
             )
+            sse_enforcer = SseEnforcer(enforcer) if enforcer is not None else None
             try:
                 async for chunk in res.aiter_bytes():
-                    yield chunk
+                    if sse_enforcer is None:
+                        yield chunk
+                    else:
+                        # Only the frames of an in-flight tool_use block (and
+                        # at most one partial frame) are held back; text
+                        # frames go out in the same pass they arrived.
+                        gated = sse_enforcer.feed(chunk)
+                        if gated:
+                            yield gated
                     if stream_extractor is not None:
                         try:
                             recorder.feed_stream_chunk(stream_extractor, chunk)
@@ -877,6 +905,10 @@ async def proxy_claude_messages(request: Request):
                                 usage_seen.update(
                                     {k: v for k, v in msg_usage.items() if v is not None}
                                 )
+                if sse_enforcer is not None:
+                    tail = sse_enforcer.close()
+                    if tail:
+                        yield tail
             except (
                 httpx.ReadTimeout,
                 httpx.ConnectTimeout,
@@ -968,6 +1000,10 @@ async def proxy_claude_messages(request: Request):
                     )
                 )
                 if recorder is not None:
+                    # Recorded before enforcement, and from the upstream body:
+                    # the record is what the model actually asked for, denied
+                    # blocks included. The verdict alongside it says what the
+                    # agent was allowed to see.
                     recorder.record_response_body(
                         resp_json,
                         session_id=log_session_id,
@@ -976,6 +1012,15 @@ async def proxy_claude_messages(request: Request):
                         parent_span_id=parent_span_id,
                         continues_from=continues_from,
                     )
+                if enforcer is not None:
+                    gated, changed = enforce_response_body(resp_json, enforcer)
+                    if changed:
+                        return Response(
+                            content=json.dumps(gated),
+                            status_code=res.status_code,
+                            headers=clean_response_headers(dict(res.headers)),
+                            media_type=JSON_MEDIA_TYPE,
+                        )
             except (json.JSONDecodeError, AttributeError):
                 pass
             except LedgerWriteError as e:

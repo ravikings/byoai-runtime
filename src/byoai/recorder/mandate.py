@@ -154,6 +154,9 @@ class Reason:
     #: delegated — the intersection, not the child's standing mandate.
     DELEGATED_OUT_OF_SCOPE = "delegated_out_of_scope"
     DELEGATED_OUT_OF_SCOPE_OBSERVED = "delegated_out_of_scope_observed"
+    #: The proxy could not tell which agent a request belongs to, so it has no
+    #: mandate to decide against. Config, not scope — never latched.
+    AGENT_UNRESOLVED = "agent_unresolved"
 
 
 class DelegationPolicy:
