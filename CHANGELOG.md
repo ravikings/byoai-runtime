@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Enforced budgets (AD-11).** Three new mandate fields —
+  `max_run_cost_usd`, `max_calls_per_minute`, `max_run_steps` — checked
+  entirely locally in `decide()`, no I/O, alongside suspension. A breach is
+  an ordinary `Deny` (reasons `budget_cost_exceeded`/
+  `budget_call_rate_exceeded`/`budget_step_limit_exceeded`), sealed through
+  the same verdict-reporting call every other denial already uses — no new
+  endpoint. `max_calls_per_minute` is a sliding 60s window;
+  `max_run_steps` counts distinct `step_index` values per `trajectory_id`;
+  `max_run_cost_usd` is checked against a running per-trajectory total
+  updated via the new `MandateGate.record_actual_cost()` (since `decide()`
+  runs before a call and can't know that call's own cost). All three deny
+  under both postures and regardless of `mandate_enforcement`, same as
+  suspension and approval-required tools.
+
 - **Approval-required tools (AD-10).** A third mandate tier between allowed
   and denied: `MandateSnapshot.approval_required_tools` marks a tool as
   needing a human decision before it may run. `MandateGate.decide()` returns

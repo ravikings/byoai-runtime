@@ -71,7 +71,7 @@ import logging
 import os
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -118,6 +118,18 @@ MIN_REFRESH_INTERVAL_S = 1.0
 #: set that otherwise grows for the lifetime of the process — see
 #: MandateGate._mark_approval_reported.
 _MAX_REPORTED_APPROVAL_REQUESTS = 10_000
+
+#: AD-11: the rolling window max_calls_per_minute is measured over. Fixed at
+#: 60s rather than derived from the name being configurable, since the wire
+#: field itself is called max_calls_per_minute.
+_CALL_RATE_WINDOW_S = 60.0
+
+#: AD-11: hard cap on how many distinct trajectories this gate tracks
+#: step/cost state for. A trajectory is not otherwise ever "finished" from
+#: the gate's point of view, so without a cap a host running many short
+#: trajectories over a long process lifetime would leak one dict entry per
+#: trajectory forever.
+_MAX_TRACKED_TRAJECTORIES = 10_000
 
 #: The only thing a denial ever says where a model can read it. Fixed, and
 #: deliberately uninformative: anything richer is a hint sheet for routing
@@ -174,6 +186,11 @@ class Reason:
     APPROVAL_GRANTED = "approval_granted"
     #: AD-10: a human denied this exact request_id.
     APPROVAL_REFUSED = "approval_refused"
+    #: AD-11: enforced budgets — checked locally, same tier as scope/
+    #: suspension, not a failure to evaluate.
+    BUDGET_COST_EXCEEDED = "budget_cost_exceeded"
+    BUDGET_CALL_RATE_EXCEEDED = "budget_call_rate_exceeded"
+    BUDGET_STEP_LIMIT_EXCEEDED = "budget_step_limit_exceeded"
 
 
 class DelegationPolicy:
@@ -425,6 +442,11 @@ class MandateSnapshot:
     #: recently — how a RequireApproval verdict turns into Allow/Deny on a
     #: LATER decide() for the identical call, without any live round trip.
     resolved_approvals: Mapping[str, str] = field(default_factory=dict)
+    #: AD-11: enforced budgets — `None` on any of these three means
+    #: unrestricted on that dimension, same convention as `allowed_tools`.
+    max_run_cost_usd: float | None = None
+    max_calls_per_minute: int | None = None
+    max_run_steps: int | None = None
     mandate_version_id: str | None = None
     status: str | None = None
     mandate_enforcement: str = Enforcement.ENFORCE
@@ -470,6 +492,9 @@ class MandateSnapshot:
             allowed_tools=tools,
             approval_required_tools=approval_tools,
             resolved_approvals=resolved,
+            max_run_cost_usd=_opt_float(payload.get("max_run_cost_usd")),
+            max_calls_per_minute=_opt_int(payload.get("max_calls_per_minute")),
+            max_run_steps=_opt_int(payload.get("max_run_steps")),
             mandate_version_id=_opt_str(payload.get("mandate_version_id")),
             status=_opt_str(payload.get("status")),
             mandate_enforcement=(
@@ -561,6 +586,13 @@ def _opt_int(value: Any) -> int | None:
         return None
 
 
+def _opt_float(value: Any) -> float | None:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 # -- where snapshots come from -----------------------------------------------
 
 #: A refresh: given the ETag of the snapshot in hand (or ``None``), return
@@ -637,6 +669,13 @@ class MandateGate:
         self._on_suspend_observed = on_suspend_observed
         self._report_approval_request = report_approval_request
         self._reported_approval_requests: "OrderedDict[str, None]" = OrderedDict()
+        # AD-11: enforced budgets — local bookkeeping only, no I/O. A sliding
+        # window of call timestamps for the rate ceiling; per-trajectory step
+        # counts and accumulated cost for the other two. All under self._lock,
+        # same as _snapshot, since decide() must stay safe to call off-thread.
+        self._call_timestamps: deque[float] = deque()
+        self._trajectory_steps: "OrderedDict[str, set[int]]" = OrderedDict()
+        self._trajectory_costs: "OrderedDict[str, float]" = OrderedDict()
         self._agent_id = agent_id
         self._clock = clock
         self._sleep = sleep or asyncio.sleep
@@ -836,6 +875,9 @@ class MandateGate:
                 "step_index": action.step_index,
             }
             if decision == "approved":
+                budget_verdict = self._check_budgets(action, snapshot, age, now)
+                if budget_verdict is not None:
+                    return budget_verdict
                 return Allow(
                     reason=Reason.APPROVAL_GRANTED,
                     detail=f"{action.tool!r} was approved by a human for this specific call",
@@ -855,6 +897,15 @@ class MandateGate:
             )
 
         if snapshot.permits(action.tool):
+            # AD-11: budgets are checked here, immediately before the call is
+            # actually permitted to proceed — NOT earlier in this method.
+            # Checking (and recording consumption) before the scope/approval
+            # gates above would burn rate-window slots and step counts on
+            # calls that were going to be denied or parked anyway, starving
+            # the trajectory's legitimate calls of budget they never used.
+            budget_verdict = self._check_budgets(action, snapshot, age, now)
+            if budget_verdict is not None:
+                return budget_verdict
             return Allow(
                 reason=Reason.UNRESTRICTED if snapshot.unrestricted else Reason.IN_SCOPE,
                 mandate_version_id=snapshot.mandate_version_id,
@@ -878,6 +929,11 @@ class MandateGate:
             "step_index": action.step_index,
         }
         if snapshot.observing:
+            # Still permitted to run (Flag < Allow) — same budget gate as
+            # the in-scope Allow path above, for the same reason.
+            budget_verdict = self._check_budgets(action, snapshot, age, now)
+            if budget_verdict is not None:
+                return budget_verdict
             return Flag(
                 reason=Reason.OUT_OF_SCOPE_OBSERVED,
                 detail=f"{action.tool!r} is outside the mandate; enforcement is observe",
@@ -941,6 +997,107 @@ class MandateGate:
         self._reported_approval_requests[request_id] = None
         if len(self._reported_approval_requests) > _MAX_REPORTED_APPROVAL_REQUESTS:
             self._reported_approval_requests.popitem(last=False)
+
+    def _check_budgets(
+        self, action: ProposedAction, snapshot: "MandateSnapshot", age: float, now: float,
+    ) -> "Verdict | None":
+        """AD-11: call-rate, step, and cost ceilings — `None` if none apply,
+        a terminal `Deny` if one is breached. Called from `decide()` ONLY at
+        the points where the call is otherwise about to be permitted (the
+        in-scope Allow, the observed-out-of-scope Flag, and the approval-
+        granted Allow) — never earlier. Checking (and recording consumption)
+        before the suspend/staleness/approval/scope gates run would burn
+        rate-window slots and step counts on calls that were going to be
+        denied or parked for an unrelated reason anyway, starving the
+        trajectory's legitimate calls of budget they never actually used.
+
+        All local bookkeeping, no I/O — the same guarantee the rest of
+        `decide()` makes. Every branch below both checks and records in one
+        pass, so a caller never has to call anything extra for these three
+        (unlike AD-10's approval report, which is genuinely a second,
+        explicit, I/O-bound step)."""
+        common = {
+            "mandate_version_id": snapshot.mandate_version_id,
+            "snapshot_age_s": age,
+            "tool": action.tool,
+            "posture": snapshot.enforcement_posture,
+            "enforcement": snapshot.mandate_enforcement,
+            "trajectory_id": action.trajectory_id,
+            "step_index": action.step_index,
+        }
+
+        with self._lock:
+            if snapshot.max_calls_per_minute is not None:
+                window_start = now - _CALL_RATE_WINDOW_S
+                while self._call_timestamps and self._call_timestamps[0] < window_start:
+                    self._call_timestamps.popleft()
+                if len(self._call_timestamps) >= snapshot.max_calls_per_minute:
+                    return Deny(
+                        reason=Reason.BUDGET_CALL_RATE_EXCEEDED,
+                        detail=(
+                            f"{len(self._call_timestamps)} calls in the last "
+                            f"{_CALL_RATE_WINDOW_S:.0f}s, at the {snapshot.max_calls_per_minute}/min ceiling"
+                        ),
+                        **common,
+                    )
+
+            trajectory_id = action.trajectory_id
+            if trajectory_id is not None:
+                if snapshot.max_run_steps is not None and action.step_index is not None:
+                    steps = self._trajectory_steps.get(trajectory_id)
+                    would_be_new_step = steps is None or action.step_index not in steps
+                    seen_count = len(steps) if steps is not None else 0
+                    if would_be_new_step and seen_count >= snapshot.max_run_steps:
+                        return Deny(
+                            reason=Reason.BUDGET_STEP_LIMIT_EXCEEDED,
+                            detail=f"trajectory {trajectory_id!r} is at its {snapshot.max_run_steps}-step ceiling",
+                            **common,
+                        )
+
+                if snapshot.max_run_cost_usd is not None:
+                    spent = self._trajectory_costs.get(trajectory_id, 0.0)
+                    if spent >= snapshot.max_run_cost_usd:
+                        return Deny(
+                            reason=Reason.BUDGET_COST_EXCEEDED,
+                            detail=(
+                                f"trajectory {trajectory_id!r} has spent ${spent:.6f} against a "
+                                f"${snapshot.max_run_cost_usd:.6f} ceiling"
+                            ),
+                            **common,
+                        )
+
+            # Allowed to proceed against every configured budget — record the
+            # attempt now, under the same lock, so a concurrent decide() for
+            # the same trajectory/window sees it.
+            self._call_timestamps.append(now)
+            if trajectory_id is not None and action.step_index is not None:
+                self._mark_trajectory_seen(trajectory_id)
+                self._trajectory_steps.setdefault(trajectory_id, set()).add(action.step_index)
+
+        return None
+
+    def record_actual_cost(self, trajectory_id: str, cost_usd: float) -> None:
+        """AD-11: add `cost_usd` to `trajectory_id`'s running total, checked
+        by `_check_budgets` on the NEXT call in that trajectory. Call this
+        once the real cost of a completed call is known — `decide()` runs
+        before the call, so it cannot know the cost of the call it is
+        deciding, only what earlier calls in the same trajectory already
+        spent. Local bookkeeping only, no I/O; safe to call from any thread
+        under the same lock `decide()` uses."""
+        with self._lock:
+            self._mark_trajectory_seen(trajectory_id)
+            self._trajectory_costs[trajectory_id] = self._trajectory_costs.get(trajectory_id, 0.0) + cost_usd
+
+    def _mark_trajectory_seen(self, trajectory_id: str) -> None:
+        """Bounded FIFO over the trajectory dicts — see _MAX_TRACKED_TRAJECTORIES.
+        Must be called under self._lock."""
+        for tracker in (self._trajectory_steps, self._trajectory_costs):
+            if trajectory_id in tracker:
+                tracker.move_to_end(trajectory_id)
+        if len(self._trajectory_steps) >= _MAX_TRACKED_TRAJECTORIES and trajectory_id not in self._trajectory_steps:
+            self._trajectory_steps.popitem(last=False)
+        if len(self._trajectory_costs) >= _MAX_TRACKED_TRAJECTORIES and trajectory_id not in self._trajectory_costs:
+            self._trajectory_costs.popitem(last=False)
 
     def _unevaluable(
         self,
