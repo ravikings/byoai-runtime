@@ -19,10 +19,25 @@ recorder's shipped evidence. It answers the question a single ledger file
 structurally cannot — *which of my devices have reported, and what is
 missing* — across a whole fleet.
 
-**Status: front end only.** The console currently runs against a mock API
-(MSW) that implements the contract in `web/src/api/schemas.ts`. The
-ingest-side read model it will talk to does not exist yet, so nothing here is
-wired to a live deployment.
+**Status: reads real evidence; nothing ships into it yet.** The console calls
+`/v1/console/*`, a read-only surface over `byoai.ingest` mounted into the
+proxy, so what you see is what devices actually shipped. Point it at a store
+with `BYOAI_INGEST_DB` (default `~/.byoai/ingest.db`).
+
+What is still missing is the other direction: there is no `/v1/ingest/batch`
+endpoint, so a recorder cannot yet ship into this store — it has to be
+populated by `byoai.ingest.IngestStore` directly. And no verify walk runs on
+this side, so every device reads as `unverified` rather than `intact`:
+absence of a failed check is not a pass.
+
+Some fields are reported as unknown rather than zero, on purpose. Backlog,
+pending checkpoints and oldest-unshipped describe what a device is still
+holding; the ingest side sees what arrived and cannot see what is queued, and
+a device that stopped shipping looks identical to one with nothing left to
+send. Zero there would claim "nothing outstanding" from data nobody has.
+
+The front end runs against an MSW mock only in `npm run dev`; the built
+console served by the proxy always talks to the real API.
 
 ### Reaching it after a pip install
 
@@ -143,7 +158,7 @@ ByoAI Runtime executes as an unopinionated, process-level orchestrator sitting a
 pip install --pre byoai-runtime
 ```
 
-`--pre` is required while the package is in pre-release (`0.1.0a6`).
+`--pre` is required while the package is in pre-release (`0.1.0a7`).
 
 ### 2. Hello world
 

@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a7] - 2026-08-26
+
+### Added
+- **The console is served by the package.** `pip install byoai-runtime` then
+  `byoai-cache console` serves the operator UI at
+  `http://localhost:8787/console/` — one process, one port, no Node toolchain
+  at the user's end. Built assets ship inside the wheel; a source checkout
+  without a front-end build gets a 503 naming the build command rather than a
+  404 or a blank page.
+- **`/v1/console/*`** — a read-only HTTP surface over `byoai.ingest`, mounted
+  into the proxy app behind the same auth gate as the rest of the API. The
+  console now reads real shipped evidence instead of fixtures.
+
+### Fixed
+- **The build no longer ships a console with no assets.** `build.yml` ran
+  `python -m build` with no front-end step while `console_static/` is
+  gitignored, so a released wheel would have installed cleanly and then 503'd
+  the moment anyone opened the console. The release build now compiles the
+  front end and fails outright if the assets are absent — an asset-less wheel
+  that installs fine is worse than a build that stops.
+- **`web/src/lib/` was never committed.** A bare `lib/` pattern inherited from
+  the Python gitignore template silently matched it, so three source modules
+  were skipped by `git add -A` without a word and the front end could not be
+  built from a clean clone.
+- **`byoai-cache status`/`console` report where the proxy actually is.** Both
+  printed a URL derived from the current invocation's flags, so
+  `start --port 9000` followed by a bare `console` handed you `:8787`.
+- **The ingest rate chart stopped losing its last minute.** An entry received
+  exactly at the window end fell one past the final bucket; since the window
+  ends at *now*, this hit most requests and produced a false dip in the one
+  chart used to spot a stalled recorder.
+
+### Changed
+- Device-side facts the ingest side cannot see — backlog, pending
+  checkpoints, oldest unshipped — are reported as `null` rather than `0`, and
+  the console renders them as unknown. Zero would have claimed "nothing
+  outstanding" from data nobody has.
+
 ## [0.1.0a6] - 2026-08-26
 
 ### Added

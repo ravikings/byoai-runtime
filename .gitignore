@@ -15,6 +15,12 @@ downloads/
 eggs/
 .eggs/
 lib/
+# ...but not the console's own source. The bare `lib/` above comes from the
+# Python packaging template (it means build artefacts), and it silently
+# swallowed web/src/lib/ — three real source files were committed by `git add
+# -A` without a word, leaving a main branch whose front end could not build.
+!web/src/lib/
+!web/src/lib/**
 lib64/
 parts/
 sdist/

@@ -16,6 +16,21 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+      # The console's built assets are gitignored — they are produced here, not
+      # committed. Without this step `python -m build` packages a wheel with no
+      # console_static/, so every `pip install` gets a UI that 503s telling the
+      # user to run a build they should never have had to run.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm run build --prefix web
+      - name: Fail if the console assets are missing
+        # A silently asset-less wheel is worse than a failed build: it installs
+        # fine and only breaks when someone opens the console.
+        run: test -f src/byoai/console_static/index.html
       - run: pip install build twine
       - run: python -m build
       # Catches metadata problems (bad readme rendering, missing fields)
