@@ -495,12 +495,23 @@ class MandateGate:
         min_refresh_interval_s: float = MIN_REFRESH_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        on_suspend_observed: Callable[["MandateSnapshot"], None] | None = None,
     ) -> None:
         """``default_posture`` and ``default_max_staleness_s`` apply only until
         the first snapshot lands; after that the tenant's own values, which
         arrive on every snapshot, win. ``clock`` is monotonic and injectable so
-        tests can age a snapshot past its budget without sleeping."""
+        tests can age a snapshot past its budget without sleeping.
+
+        ``on_suspend_observed`` (AD-9) fires once, synchronously, the moment
+        ``apply_snapshot`` sees the agent transition from not-suspended into
+        suspended — never on a snapshot that was already suspended, so a
+        repeated fetch of the same suspended state doesn't re-fire it. The
+        callback itself owns any I/O (e.g. scheduling a background task to
+        POST the ack) — MandateGate stays synchronous and does not manage an
+        event loop. A callback that raises is logged and swallowed; it must
+        never break the fetch that triggered it."""
         self._source = source
+        self._on_suspend_observed = on_suspend_observed
         self._agent_id = agent_id
         self._clock = clock
         self._sleep = sleep or asyncio.sleep
@@ -579,9 +590,23 @@ class MandateGate:
         if payload.get("enforcement_posture") is None:
             snapshot = replace(snapshot, enforcement_posture=self._default_posture)
         with self._lock:
+            previous = self._snapshot
             self._snapshot = snapshot
             self._etag = etag
             self._last_refresh_error = None
+
+        # AD-9: fire only on the transition into suspended, not on every
+        # fetch of an already-suspended snapshot — the ack is a one-time
+        # "I saw this and stopped" report, not a heartbeat.
+        if snapshot.suspended and not (previous is not None and previous.suspended) and self._on_suspend_observed:
+            try:
+                self._on_suspend_observed(snapshot)
+            except Exception:
+                log.exception(
+                    "on_suspend_observed callback failed for agent %s; the suspend itself "
+                    "still applies locally, only the ack to Coriqo may be missing",
+                    self._agent_id,
+                )
         return snapshot
 
     # -- the decide path: no I/O, no awaits, no surprises -------------------
@@ -887,8 +912,34 @@ def mandate_gate(
 
         client = AsyncCoriqoAgentsClient(identity)
 
+    def _on_suspend_observed(snapshot: "MandateSnapshot") -> None:
+        # Best-effort per §9.3: schedule and forget. If there's no running
+        # loop (apply_snapshot called outside the async refresh path — e.g.
+        # a test seeding a snapshot directly) there is nothing to schedule
+        # onto, so log and move on rather than raising out of apply_snapshot.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning(
+                "no running event loop to post the suspend ack for agent %s; "
+                "the local suspend still applies, only Coriqo's confirmation may be missing",
+                coriqo_agent_id,
+            )
+            return
+
+        async def _ack() -> None:
+            try:
+                await client.ack_suspend(
+                    coriqo_agent_id, mandate_version_id=snapshot.mandate_version_id,
+                )
+            except Exception:
+                log.exception("failed to post suspend ack for agent %s", coriqo_agent_id)
+
+        loop.create_task(_ack())
+
     return MandateGate(
         coriqo_mandate_source(client, coriqo_agent_id),
         agent_id=coriqo_agent_id,
+        on_suspend_observed=_on_suspend_observed,
         **kwargs,
     )

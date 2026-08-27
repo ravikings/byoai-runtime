@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Suspend acknowledgement (AD-9).** `MandateGate` now fires an
+  `on_suspend_observed` callback the moment a fetched snapshot transitions an
+  agent from not-suspended into `suspended` — once per suspend cycle, not on
+  every repeat fetch of an already-suspended snapshot. `mandate_gate()` wires
+  this to a new `AsyncCoriqoAgentsClient.ack_suspend()` call, posted as a
+  best-effort background task so it never blocks `decide()` or the refresh
+  loop: Coriqo now shows a specific host as "confirmed stopped" rather than
+  only a control-plane "suspended" flag with no evidence any host applied it.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added
