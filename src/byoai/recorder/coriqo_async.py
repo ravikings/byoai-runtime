@@ -796,6 +796,39 @@ class AsyncCoriqoAgentsClient:
             signed=True,
         )
 
+    async def request_tool_approval(
+        self,
+        coriqo_agent_id: str,
+        *,
+        request_id: str,
+        tool: str,
+        trajectory_id: str | None,
+        step_index: int | None,
+        mandate_version_id: str,
+    ) -> dict[str, Any]:
+        """AD-10: report a tool call the local gate classified as
+        approval-required and did not execute. Idempotent on `request_id` —
+        Coriqo returns the existing row on a retry rather than minting a new
+        pending request. Best-effort by design, same posture as ack_suspend:
+        callers (mandate.py's MandateGate.report_approval_request) fire this
+        from a background task and swallow any error, since posting the
+        report must never block decide() or the refresh loop. A failed
+        report just means the request doesn't appear in Coriqo's queue yet;
+        the local denial already applies regardless.
+        """
+        return await self._request(
+            "POST",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/approval-requests",
+            json_body={
+                "request_id": request_id,
+                "tool": tool,
+                "trajectory_id": trajectory_id,
+                "step_index": step_index,
+                "mandate_version_id": mandate_version_id,
+            },
+            signed=True,
+        )
+
     async def record_verdict_batch(
         self,
         coriqo_agent_id: str,

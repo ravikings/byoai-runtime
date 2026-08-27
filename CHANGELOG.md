@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Approval-required tools (AD-10).** A third mandate tier between allowed
+  and denied: `MandateSnapshot.approval_required_tools` marks a tool as
+  needing a human decision before it may run. `MandateGate.decide()` returns
+  a new `RequireApproval` verdict — never a live network wait, per the
+  local-only decide() contract — computed 100% from cached state, with a
+  `request_id` deterministic on `(tool, trajectory_id, step_index)` so a
+  retried identical call resolves to the same pending request. Callers
+  explicitly invoke the new `MandateGate.report_approval_request()` after
+  seeing a `RequireApproval` (decide() itself stays pure — no I/O), which
+  posts to a new `AsyncCoriqoAgentsClient.request_tool_approval()` as a
+  best-effort background task. Once a human resolves it in Coriqo, the
+  outcome — approve or deny that exact request — arrives in
+  `resolved_approvals` on the host's next scheduled mandate-snapshot fetch,
+  the same "resume on refresh" shape AD-9's suspend handling already uses,
+  rather than any new push channel or blocking wait.
+
 - **Suspend acknowledgement (AD-9).** `MandateGate` now fires an
   `on_suspend_observed` callback the moment a fetched snapshot transitions an
   agent from not-suspended into `suspended` — once per suspend cycle, not on
