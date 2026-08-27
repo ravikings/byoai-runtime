@@ -353,6 +353,99 @@ def test_report_approval_request_swallows_a_raising_callback():
     gate.report_approval_request(verdict)  # must not raise
 
 
+# -- AD-11: enforced budgets -------------------------------------------------
+
+def test_call_rate_ceiling_denies_once_the_window_is_full():
+    clock = FakeClock()
+    gate = gate_with(clock=clock, max_calls_per_minute=2)
+    assert isinstance(gate.decide("search"), Allow)
+    assert isinstance(gate.decide("search"), Allow)
+    verdict = gate.decide("search")
+    assert isinstance(verdict, Deny)
+    assert verdict.reason == Reason.BUDGET_CALL_RATE_EXCEEDED
+
+
+def test_call_rate_ceiling_recovers_once_the_window_slides_past():
+    clock = FakeClock()
+    gate = gate_with(clock=clock, max_calls_per_minute=1)
+    assert isinstance(gate.decide("search"), Allow)
+    assert isinstance(gate.decide("search"), Deny)
+    clock.advance(61)
+    assert isinstance(gate.decide("search"), Allow)
+
+
+def test_step_ceiling_denies_a_new_step_past_the_limit():
+    gate = gate_with(max_run_steps=2)
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t1", step_index=0)), Allow)
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t1", step_index=1)), Allow)
+    verdict = gate.decide(ProposedAction(tool="search", trajectory_id="t1", step_index=2))
+    assert isinstance(verdict, Deny)
+    assert verdict.reason == Reason.BUDGET_STEP_LIMIT_EXCEEDED
+
+
+def test_step_ceiling_does_not_count_a_repeated_step_index_twice():
+    gate = gate_with(max_run_steps=1)
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t1", step_index=0)), Allow)
+    # Same step retried — must not be treated as a second distinct step.
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t1", step_index=0)), Allow)
+
+
+def test_step_ceiling_is_tracked_per_trajectory_not_globally():
+    gate = gate_with(max_run_steps=1)
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t1", step_index=0)), Allow)
+    # A different trajectory has its own budget.
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t2", step_index=0)), Allow)
+
+
+def test_cost_ceiling_denies_once_spent_meets_the_limit():
+    gate = gate_with(max_run_cost_usd=10.0)
+    gate.decide(ProposedAction(tool="search", trajectory_id="t1"))
+    gate.record_actual_cost("t1", 10.0)
+    verdict = gate.decide(ProposedAction(tool="search", trajectory_id="t1"))
+    assert isinstance(verdict, Deny)
+    assert verdict.reason == Reason.BUDGET_COST_EXCEEDED
+
+
+def test_cost_ceiling_allows_while_under_the_limit():
+    gate = gate_with(max_run_cost_usd=10.0)
+    gate.record_actual_cost("t1", 5.0)
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t1")), Allow)
+
+
+def test_no_budgets_configured_never_denies_on_their_account():
+    gate = gate_with()
+    for _ in range(500):
+        assert isinstance(gate.decide("search"), Allow)
+
+
+def test_suspension_still_wins_over_a_budget_breach():
+    gate = gate_with(status="suspended", max_calls_per_minute=1)
+    gate.decide("search")
+    verdict = gate.decide("search")
+    assert isinstance(verdict, Deny)
+    assert verdict.reason == Reason.AGENT_SUSPENDED
+
+
+def test_a_denied_out_of_scope_call_does_not_consume_call_rate_budget():
+    # Regression: budget checks used to run (and record) before the scope
+    # check, so retrying a disallowed tool burned rate-window slots the
+    # trajectory's real, in-scope calls needed.
+    gate = gate_with(allowed_tools=["search"], max_calls_per_minute=1)
+    for _ in range(5):
+        assert isinstance(gate.decide("not_allowed_tool"), Deny)
+    # The rate ceiling must still be untouched — a single in-scope call fits.
+    assert isinstance(gate.decide("search"), Allow)
+
+
+def test_a_pending_approval_call_does_not_consume_step_budget():
+    gate = gate_with(approval_required_tools=["send_payment"], max_run_steps=1)
+    for step in range(5):
+        verdict = gate.decide(ProposedAction(tool="send_payment", trajectory_id="t1", step_index=step))
+        assert isinstance(verdict, RequireApproval)
+    # The step ceiling must still be untouched — a single in-scope step fits.
+    assert isinstance(gate.decide(ProposedAction(tool="search", trajectory_id="t1", step_index=99)), Allow)
+
+
 def test_no_snapshot_flags_under_fail_open():
     gate = MandateGate(
         _source_returning(snapshot_payload()), default_posture=Posture.FAIL_OPEN

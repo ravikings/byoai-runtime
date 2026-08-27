@@ -1073,6 +1073,33 @@ in `resolved_approvals` on the gate's next scheduled snapshot fetch, same as
 every other mandate change. The identical call (same `request_id`) then
 gets `Allow` or `Deny` instead of `RequireApproval` on its next `decide()`.
 
+**Enforced budgets: cost, call-rate, and step ceilings.** Three more mandate
+fields — `max_run_cost_usd`, `max_calls_per_minute`, `max_run_steps` — are
+checked entirely locally, no I/O, right alongside suspension: a breach
+returns `Deny` with reason `budget_cost_exceeded` / `budget_call_rate_exceeded`
+/ `budget_step_limit_exceeded`. Unlike approval-required tools, there is no
+separate report call — a budget-breach `Deny` is an ordinary verdict, sealed
+through whatever verdict-reporting call you already make.
+
+```python
+verdict = gate.decide(ProposedAction(tool="send_payment", trajectory_id="run-1"))
+...                                          # execute the call if allowed
+gate.record_actual_cost("run-1", 0.014)      # tell the gate what it actually cost
+```
+
+`max_calls_per_minute` is a sliding 60s window over every `decide()` call
+that reaches this check (i.e. not suspended). `max_run_steps` counts
+DISTINCT `step_index` values per `trajectory_id` — retrying the same step
+doesn't count twice, but a call with no `trajectory_id`/`step_index` can't be
+step-limited at all (nothing to key the ceiling on). `max_run_cost_usd` is
+checked against a running total per `trajectory_id` — `decide()` runs
+BEFORE a call, so it can't know that call's own cost, only what earlier
+calls in the same trajectory already spent; call `record_actual_cost()`
+once the real cost is known (e.g. from the model API's own usage response)
+so the NEXT `decide()` in that trajectory sees it. All three ceilings deny
+under both postures, same as suspension and approval-required tools — a
+declared limit is not something a rollout mode should silently waive.
+
 **A denial is not a tool error.** If a denial reaches the model as an ordinary
 failure — worse, one naming the tool and the scope — the model will rephrase,
 try an adjacent tool, and route around the control. So `Deny.model_message` is
