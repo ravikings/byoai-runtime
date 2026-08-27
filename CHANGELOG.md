@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a6] - 2026-08-26
+
+### Added
+- **Ingest read model (`byoai.ingest`).** `recorder/shipper.py` posted signed
+  batches outward and nothing read them back, so there was no way to ask which
+  enrolled devices had reported and what was missing. `IngestStore` is that
+  side: a tenant-scoped store of accepted evidence plus the enrolment records
+  needed to notice evidence that never arrived. Tenancy is derived from the
+  enrolment that bound a device, never read off the request — batches carry no
+  tenant identifier at all. Enrolment is a first-class table because it is the
+  only thing that distinguishes a device that went quiet from one that never
+  existed. Dedupe is scoped per device (a global `entry_hash` index let one
+  device suppress another's evidence), liveness separates evidence from
+  contact (an empty or replayed batch is contact, not proof of life), and both
+  write paths share one guard so they cannot drift apart again.
+- **Console front end (`web/`), not shipped in the wheel.** A Vite/React
+  operator UI over the recorder's evidence, currently running against a mock
+  API. `packages = ["src/byoai"]` keeps it out of the distribution; it is
+  source-only until the HTTP layer between it and `byoai.ingest` exists.
+
+### Changed
+- **CI now runs on tags only.** Lint, type-check, docs build and the test
+  matrix no longer run on every push or pull request to `main`; they run when
+  a `v*` tag is pushed, or on demand via `workflow_dispatch`. This keeps CI
+  spend proportional to releases, at the cost of nothing validating `main`
+  between them.
+
 ### Fixed
 - **`publish_session`'s `final_output` now honors `payload_mode` instead of
   always shipping raw.** Every other field `coriqo_agents.py` sends to Coriqo

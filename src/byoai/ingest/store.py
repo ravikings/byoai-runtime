@@ -336,6 +336,14 @@ class IngestStore:
             prev_head = None if head_row is None else head_row["last_seq_received"]
             with self._atomic(device_id):
                 for entry in entries:
+                    # The element itself is untrusted wire data. Without this a
+                    # bare string or null in the entries array raised
+                    # AttributeError from .get() — an unclassified crash past
+                    # every typed refusal this module promises.
+                    if not isinstance(entry, dict):
+                        raise MalformedEntry(
+                            f"each entry must be an object, got {type(entry).__name__}"
+                        )
                     seq = _require_seq(entry.get("seq"))
                     entry_hash = entry.get("entry_hash")
                     if not isinstance(entry_hash, str) or entry_hash == "":
@@ -440,6 +448,10 @@ class IngestStore:
             # coverage denominator can be moved through the quieter one.
             with self._atomic(device_id):
                 for cp in checkpoints:
+                    if not isinstance(cp, dict):
+                        raise MalformedEntry(
+                            f"each checkpoint must be an object, got {type(cp).__name__}"
+                        )
                     seq_start = _require_seq(cp.get("seq_start"))
                     seq_end = _require_seq(cp.get("seq_end"))
                     if seq_end < seq_start:

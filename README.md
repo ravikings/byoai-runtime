@@ -38,6 +38,35 @@ variables.
 
 ---
 
+## 📥 Ingest read model (`byoai.ingest`) — in development
+
+The recorder ships signed batches outward. `byoai.ingest.IngestStore` is the
+side that reads them back: a tenant-scoped store of accepted evidence, plus the
+enrolment records needed to notice evidence that **never arrived**.
+
+```python
+from byoai.ingest import IngestStore, Enrolment
+
+store = IngestStore("ingest.db")
+store.record_enrolment(Enrolment(device_id, "acme", public_key_b64, enrolled_at))
+store.accept_batch(device_id, entries)      # dedupes; refuses unknown devices
+report = store.coverage("acme")             # what this tenant cannot account for
+```
+
+**Status: no HTTP layer yet.** The store assumes its caller has already
+authenticated the device and verified the batch signature — it holds evidence,
+it does not decide whether to trust it. Authentication, signature verification
+and enrolment authorization belong to the service that will sit above it.
+
+`coverage()` is the point of the package. It returns `never_seen` (enrolled,
+never shipped), `contact_without_evidence` (talking, but producing nothing),
+`reporting`, `devices_without_checkpoint`, `seq_gaps`, and a `blind_spot`
+naming the limit of its own claim — all computed against enrolments, not
+against whoever happened to ship. See
+[CONFIGURATION.md](./CONFIGURATION.md#ingest-read-model).
+
+---
+
 ## ⚡ Why ByoAI Runtime?
 
 Most AI frameworks force engineering teams to adapt their database schemas, re-embed millions of vectors, and rewrite state management logic. **ByoAI Runtime adapts to your existing stack instead.**
@@ -81,7 +110,7 @@ ByoAI Runtime executes as an unopinionated, process-level orchestrator sitting a
 pip install --pre byoai-runtime
 ```
 
-`--pre` is required while the package is in pre-release (`0.1.0a1`).
+`--pre` is required while the package is in pre-release (`0.1.0a6`).
 
 ### 2. Hello world
 

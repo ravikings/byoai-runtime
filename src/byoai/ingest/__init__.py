@@ -11,6 +11,31 @@ is why enrolment is a first-class table here rather than a side effect of the
 first batch.
 """
 
-from .store import AcceptResult, Enrolment, IngestStore
+from .store import (
+    AcceptResult,
+    CheckpointConflict,
+    DeviceRevoked,
+    Enrolment,
+    EnrolmentRefused,
+    EntryHashCollision,
+    IngestStore,
+    MalformedEntry,
+    SeqConflict,
+    UnknownDeviceError,
+)
 
-__all__ = ["IngestStore", "Enrolment", "AcceptResult"]
+# The refusals are part of the contract, not an implementation detail: a caller
+# maps DeviceRevoked to one response and MalformedEntry to another, and should
+# not have to reach into a private submodule to do it.
+__all__ = [
+    "AcceptResult",
+    "CheckpointConflict",
+    "DeviceRevoked",
+    "Enrolment",
+    "EnrolmentRefused",
+    "EntryHashCollision",
+    "IngestStore",
+    "MalformedEntry",
+    "SeqConflict",
+    "UnknownDeviceError",
+]

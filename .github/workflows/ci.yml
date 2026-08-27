@@ -1,10 +1,17 @@
 name: CI
 
+# Tag-only, to keep CI spend proportional to releases rather than to commits.
+#
+# The trade this makes: nothing validates a push or a pull request any more, so
+# main can carry a lint error, a type error or a failing test until the next tag
+# exposes it — and at that point the failure blocks a release instead of a
+# merge. `workflow_dispatch` is kept so the full suite can still be run by hand
+# from the Actions tab before tagging, which is the cheapest way to avoid
+# discovering a break at release time.
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

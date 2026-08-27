@@ -85,6 +85,29 @@ zod schemas that will validate real ones, so a contract drift surfaces as a
 visible error rather than a silently empty screen.
 
 
+## Ingest read model
+
+`byoai.ingest.IngestStore(path)` — a SQLite store of evidence shipped by
+recorder devices. No environment variables; the database path is the only
+configuration.
+
+| Call | Does |
+|---|---|
+| `record_enrolment(Enrolment)` | Binds a device to a tenant. The **only** place tenancy is set — batches carry no tenant identifier, so it is never read off a request. Refuses a `device_id` not derived from its public key, and refuses re-enrolling a device into a different tenant. |
+| `accept_batch(device_id, entries)` | Persists an authenticated batch. Dedupes per device (redelivery is at-least-once by design), refuses unknown or revoked devices, and rejects malformed wire data with `MalformedEntry` rather than coercing it. |
+| `accept_checkpoints(device_id, checkpoints)` | Same guards. A checkpoint records contact but is deliberately **not** counted as evidence of liveness. |
+| `devices(tenant_slug)` | One row per enrolled device with its observed state. |
+| `coverage(tenant_slug)` | The silence report: `never_seen`, `contact_without_evidence`, `reporting`, `devices_without_checkpoint`, `seq_gaps`, and a `blind_spot` naming the limit of the claim. |
+
+Typed refusals — `UnknownDeviceError`, `DeviceRevoked`, `EnrolmentRefused`,
+`MalformedEntry`, `SeqConflict`, `CheckpointConflict`, `EntryHashCollision` —
+are importable from `byoai.ingest` itself, so a caller can map each to its own
+response rather than treating every failure alike.
+
+**Not a trust boundary on its own.** The store assumes the caller authenticated
+the device and verified the batch signature. It also takes a tenant slug on
+trust, so enrolment authorization must be enforced above it.
+
 ## Providers
 
 One shared HTTP plumbing layer (`byoai/providers/base.py`):
