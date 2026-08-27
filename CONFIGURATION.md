@@ -66,6 +66,7 @@ the recorder's shipped evidence; it never writes to a ledger.
 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
+| `BYOAI_CONSOLE` | proxy (shell) | `1` | Set to `0` to stop the proxy serving `/console/` at all (a headless deployment that wants only the API). |
 | `BYOAI_PROXY_URL` | dev server (shell) | `http://127.0.0.1:8787` | Origin the Vite dev server proxies `/v1` to. Set this when the context-cache proxy runs on another host or port. |
 | `VITE_API_BASE` | build/runtime | `/v1/console` | Base path the console calls. Change only if the console API is mounted somewhere other than the proxy's `/v1/console`. |
 | `VITE_BYOAI_TENANT` | build time | `acme-prod` | Tenant the console lands on when a URL names none (`/` and `/console` redirect to `/console/{tenant}/fleet`). Baked in at build time, so a deployment serving one tenant should set it rather than rely on the placeholder default. |
@@ -75,9 +76,16 @@ Commands, run from `web/`:
 | Command | Does |
 |---|---|
 | `npm run dev` | Dev server on `http://localhost:5173/console/`, with the MSW mock API enabled. |
-| `npm run build` | Type-checks and builds to `web/dist`, served under the `/console/` base path. |
+| `npm run build` | Type-checks and builds to `src/byoai/console_static/`, served by the proxy under the `/console/` base path and shipped inside the wheel. |
 | `npm run typecheck` | TypeScript only. |
 | `npm test` | Vitest — includes tests asserting the API contract in `web/src/api/schemas.ts` is enforced rather than coerced. |
+
+**Serving it in production.** The context-cache proxy serves the built console
+at `http://localhost:8787/console/`, including client-side routes on a hard
+refresh, behind the same `BYOAI_PROXY_TOKEN` gate as the API. A `pip install`
+gets the assets prebuilt in the wheel; a **source checkout does not — run
+`npm --prefix web run build` first**, or `/console/` returns `503` naming that
+command instead of a blank page.
 
 **Mock data.** With no ingest backend yet, `npm run dev` serves a deterministic
 40-device fixture fleet through MSW. Responses are validated against the same
@@ -548,6 +556,7 @@ alias for the same command):
 ```bash
 byoai-cache                # foreground
 byoai-cache start          # background (detached; survives closing the terminal)
+byoai-cache console        # background, and prints http://localhost:8787/console/
 byoai-cache status         # running (pid …) → http://localhost:8787
 byoai-cache stop
 ```

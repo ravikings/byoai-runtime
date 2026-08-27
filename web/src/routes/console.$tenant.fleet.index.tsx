@@ -343,12 +343,22 @@ function ingestDot(summary: Summary, tenant: string): HealthRollup {
   if (summary.ingest.last_batch_at === null) {
     return UNKNOWN('no batch has ever arrived in this scope', href.coverage(tenant))
   }
-  if (summary.ingest.backlog_entries > 0) {
+  const backlog = summary.ingest.backlog_entries
+  if (backlog === null) {
+    // Not a clean bill of health. The backlog is device-side and invisible
+    // from here, so the dot cannot claim ingest is caught up — it can only
+    // say that what arrived, arrived.
+    return UNKNOWN(
+      'backlog is device-side and not visible here — entries are arriving',
+      href.devices(tenant),
+    )
+  }
+  if (backlog > 0) {
     return {
       state: 'warn',
       state_label: 'degraded',
-      worst: `${n(summary.ingest.backlog_entries)} entries unsynced on ${n(
-        summary.ingest.backlog_devices,
+      worst: `${n(backlog)} entries unsynced on ${n(
+        summary.ingest.backlog_devices ?? 0,
       )} device${summary.ingest.backlog_devices === 1 ? '' : 's'}`,
       href: href.devices(tenant),
     }

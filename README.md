@@ -24,6 +24,39 @@ missing* — across a whole fleet.
 ingest-side read model it will talk to does not exist yet, so nothing here is
 wired to a live deployment.
 
+### Reaching it after a pip install
+
+The built console ships inside the wheel, so there is no Node toolchain to
+install at your end:
+
+```bash
+pip install --pre "byoai-runtime[agent-context-cache]"
+byoai-cache console      # starts the proxy in the background, prints the URL
+#   → http://localhost:8787/console/
+```
+
+`console` is `start` plus the console URL — same single process, and
+`byoai-cache stop` stops it. Any of `byoai-cache`, `byoai-cache start` or
+`byoai-cache serve` serves `/console/` just as well. The console sits behind
+the same `BYOAI_PROXY_TOKEN` gate as the rest of the API: when the API needs
+the token, so does the UI. Set `BYOAI_CONSOLE=0` to leave it off entirely.
+
+### From a source checkout
+
+A git checkout does **not** contain the built console — `dist` output is never
+committed. Build it once before `/console/` will serve anything:
+
+```bash
+npm --prefix web install && npm --prefix web run build
+```
+
+That writes into `src/byoai/console_static/`, which the proxy serves directly
+and which the wheel picks up. Until you run it, `/console/` answers `503` with
+that command in the body rather than a bare 404 — a missing build is a setup
+state, not an error.
+
+### Front-end development
+
 ```bash
 cd web
 npm install
@@ -362,6 +395,7 @@ Prefer to keep it running without holding a terminal open? Start it detached:
 
 ```bash
 byoai-cache start      # background; survives closing the terminal
+byoai-cache console    # same, and prints http://localhost:8787/console/
 byoai-cache status     # running (pid …) → http://localhost:8787
 byoai-cache stop
 ```
