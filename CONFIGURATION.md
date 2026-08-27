@@ -995,7 +995,7 @@ function of that service's, which is not something a bank will ship. The gate
 refreshes on a background interval and decides in memory.
 
 ```python
-from byoai.recorder.mandate import Allow, Deny, mandate_gate
+from byoai.recorder.mandate import Allow, Deny, RequireApproval, mandate_gate
 
 gate = mandate_gate(coriqo_agent_id)        # identity resolved from this host
 async with gate:                            # first fetch, then a refresh loop
@@ -1024,6 +1024,7 @@ observing agent can still run under a fail-closed posture.
 | snapshot stale past `max_staleness_s` | allow + flag | **deny** |
 | agent suspended | **deny** | **deny** |
 | no snapshot ever fetched | allow + flag | **deny** |
+| tool in `approval_required_tools`, no decision yet | **require approval** | **require approval** |
 
 Suspension denies under both postures — it is a decision Coriqo made and this
 runtime read, not a failure to evaluate. And what trips the fail-closed branch
@@ -1035,6 +1036,42 @@ it is older than the budget the tenant set.
 unrestricted; `[]` means nothing is permitted. Both are valid on the wire and
 they are opposite instructions, so the snapshot keeps them apart (`None` vs
 `()`) and never uses a falsy test to tell them apart.
+
+**A third tier: approval-required tools.** A tool named in the mandate's
+`approval_required_tools` is neither allowed nor denied outright — a call to
+it gets `RequireApproval` (a fourth verdict, not a subclass of `Allow` or
+`Deny`) instead. This is denied FOR NOW, locally, with no network wait —
+`decide()` keeps its "no I/O, ever" guarantee. It denies under BOTH postures
+and regardless of `mandate_enforcement`, the same way suspension does: it is
+a control a tenant named explicitly (payments, regulatory filings), not
+something an `observe`-mode rollout should silently wave through.
+
+```python
+verdict = gate.decide("send_payment")
+if isinstance(verdict, RequireApproval):
+    gate.report_approval_request(verdict)   # tells Coriqo about it — best-effort,
+    ...                                      # schedules a background task, never blocks
+```
+
+`report_approval_request()` is a separate, explicit call — `decide()` itself
+never reports anything, staying pure. Call it once per verdict; it dedupes on
+`verdict.request_id` for the gate's lifetime, so a tight retry loop doesn't
+spam Coriqo, and a failed report (no running event loop, mid-flight network
+error) is NOT counted as reported, so a genuine retry of the same call tries
+again.
+
+`request_id` is computed deterministically from `(tool, trajectory_id,
+step_index, arguments)` — a retried identical call reports/resolves to the
+same pending request rather than minting a new one every attempt. Include
+`trajectory_id`/`step_index` (or distinguishing `arguments`) on
+`ProposedAction` for any approval-gated tool; without at least one of them,
+two genuinely different calls to the same tool are indistinguishable and
+would collide onto one request.
+
+Once a human decides in Coriqo, the outcome is NOT pushed live — it arrives
+in `resolved_approvals` on the gate's next scheduled snapshot fetch, same as
+every other mandate change. The identical call (same `request_id`) then
+gets `Allow` or `Deny` instead of `RequireApproval` on its next `decide()`.
 
 **A denial is not a tool error.** If a denial reaches the model as an ordinary
 failure — worse, one naming the tool and the scope — the model will rephrase,

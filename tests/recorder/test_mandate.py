@@ -29,6 +29,8 @@ from byoai.recorder.mandate import (
     Posture,
     ProposedAction,
     Reason,
+    RequireApproval,
+    approval_request_id,
     mandate_gate,
 )
 
@@ -216,6 +218,139 @@ def test_a_raising_on_suspend_observed_callback_does_not_break_apply_snapshot():
     snapshot = gate.apply_snapshot(snapshot_payload(status="suspended"))
     assert snapshot.suspended is True
     assert gate.snapshot.suspended is True
+
+
+# -- AD-10: approval-required tools -----------------------------------------
+
+def test_approval_required_tool_is_denied_for_now_not_a_scope_violation():
+    gate = gate_with(approval_required_tools=["send_payment"])
+    verdict = gate.decide("send_payment")
+    assert isinstance(verdict, RequireApproval)
+    assert verdict.allowed is False
+    assert verdict.reason == Reason.APPROVAL_REQUIRED
+    assert verdict.request_id == approval_request_id("send_payment", None, None)
+
+
+def test_approval_required_verdict_carries_the_fixed_model_message():
+    gate = gate_with(approval_required_tools=["send_payment"])
+    verdict = gate.decide("send_payment")
+    assert verdict.model_message == MODEL_MESSAGE
+
+
+def test_a_retried_identical_call_computes_the_same_request_id():
+    gate = gate_with(approval_required_tools=["send_payment"])
+    a = gate.decide(ProposedAction(tool="send_payment", trajectory_id="t1", step_index=0))
+    b = gate.decide(ProposedAction(tool="send_payment", trajectory_id="t1", step_index=0))
+    assert a.request_id == b.request_id
+
+
+def test_a_different_call_to_the_same_tool_gets_a_different_request_id():
+    gate = gate_with(approval_required_tools=["send_payment"])
+    a = gate.decide(ProposedAction(tool="send_payment", trajectory_id="t1", step_index=0))
+    b = gate.decide(ProposedAction(tool="send_payment", trajectory_id="t1", step_index=1))
+    assert a.request_id != b.request_id
+
+
+def test_calls_with_no_trajectory_tracking_still_distinguish_by_arguments():
+    # trajectory_id/step_index are both optional — without folding arguments
+    # into the id, two unrelated calls with neither set would collide and an
+    # approval for one would silently approve the other.
+    gate = gate_with(approval_required_tools=["send_payment"])
+    a = gate.decide(ProposedAction(tool="send_payment", arguments={"amount": 100}))
+    b = gate.decide(ProposedAction(tool="send_payment", arguments={"amount": 200}))
+    assert a.request_id != b.request_id
+
+
+def test_calls_with_no_trajectory_and_no_arguments_still_dedupe_a_retry():
+    gate = gate_with(approval_required_tools=["send_payment"])
+    a = gate.decide(ProposedAction(tool="send_payment"))
+    b = gate.decide(ProposedAction(tool="send_payment"))
+    assert a.request_id == b.request_id
+
+
+def test_an_approved_request_id_allows_that_exact_call():
+    request_id = approval_request_id("send_payment", None, None)
+    gate = gate_with(
+        approval_required_tools=["send_payment"],
+        resolved_approvals={request_id: "approved"},
+    )
+    verdict = gate.decide("send_payment")
+    assert isinstance(verdict, Allow)
+    assert verdict.reason == Reason.APPROVAL_GRANTED
+
+
+def test_a_denied_request_id_denies_that_exact_call():
+    request_id = approval_request_id("send_payment", None, None)
+    gate = gate_with(
+        approval_required_tools=["send_payment"],
+        resolved_approvals={request_id: "denied"},
+    )
+    verdict = gate.decide("send_payment")
+    assert isinstance(verdict, Deny)
+    assert verdict.reason == Reason.APPROVAL_REFUSED
+
+
+def test_approval_required_is_checked_before_allowed_tools_scope():
+    # A tool in BOTH lists is unusual (Coriqo's own job to keep them
+    # disjoint), but the gate must still resolve deterministically —
+    # approval-required wins, since it's the stricter of the two answers.
+    gate = gate_with(allowed_tools=["send_payment"], approval_required_tools=["send_payment"])
+    assert isinstance(gate.decide("send_payment"), RequireApproval)
+
+
+def test_suspension_still_wins_over_approval_required():
+    gate = gate_with(status="suspended", approval_required_tools=["send_payment"])
+    verdict = gate.decide("send_payment")
+    assert isinstance(verdict, Deny)
+    assert verdict.reason == Reason.AGENT_SUSPENDED
+
+
+def test_report_approval_request_invokes_the_callback_once_per_request_id():
+    async def never_called(_etag):  # pragma: no cover
+        raise AssertionError
+
+    seen = []
+    gate = MandateGate(
+        never_called, agent_id=_AGENT, report_approval_request=lambda v: seen.append(v.request_id)
+    )
+    gate.apply_snapshot(snapshot_payload(approval_required_tools=["send_payment"]))
+    verdict = gate.decide("send_payment")
+    gate.report_approval_request(verdict)
+    gate.report_approval_request(verdict)  # a retry must not double-report
+    assert seen == [verdict.request_id]
+
+
+def test_a_failed_report_is_not_marked_reported_so_a_retry_can_succeed():
+    async def never_called(_etag):  # pragma: no cover
+        raise AssertionError
+
+    calls = []
+
+    def flaky(v):
+        calls.append(v.request_id)
+        if len(calls) == 1:
+            raise RuntimeError("transient network failure")
+
+    gate = MandateGate(never_called, agent_id=_AGENT, report_approval_request=flaky)
+    gate.apply_snapshot(snapshot_payload(approval_required_tools=["send_payment"]))
+    verdict = gate.decide("send_payment")
+
+    gate.report_approval_request(verdict)  # fails, must not be marked reported
+    gate.report_approval_request(verdict)  # the host's own retry — must actually try again
+    assert calls == [verdict.request_id, verdict.request_id]
+
+
+def test_report_approval_request_swallows_a_raising_callback():
+    async def never_called(_etag):  # pragma: no cover
+        raise AssertionError
+
+    def boom(_verdict):
+        raise RuntimeError("network is down")
+
+    gate = MandateGate(never_called, agent_id=_AGENT, report_approval_request=boom)
+    gate.apply_snapshot(snapshot_payload(approval_required_tools=["send_payment"]))
+    verdict = gate.decide("send_payment")
+    gate.report_approval_request(verdict)  # must not raise
 
 
 def test_no_snapshot_flags_under_fail_open():
