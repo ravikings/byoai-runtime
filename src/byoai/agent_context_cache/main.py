@@ -1332,6 +1332,13 @@ async def proxy_catch_all(request: Request, path: str):
 # developer has one predictable place for the proxy's state, pid, and logs.
 _BYOAI_HOME = os.path.join(os.path.expanduser("~"), ".byoai")
 _PID_FILE = os.path.join(_BYOAI_HOME, "proxy.pid")
+# The bind the running proxy actually used. Without this, `status` and
+# `console` printed a URL derived from the CURRENT invocation's flags — so
+# `byoai-cache start --port 9000` followed by a bare `byoai-cache console`
+# handed you http://localhost:8787/console/, which is nothing. The command
+# whose whole job is giving you the URL must read where the proxy is, not
+# where this invocation would have put one.
+_BIND_FILE = os.path.join(_BYOAI_HOME, "proxy.bind")
 _LOG_FILE = os.path.join(_BYOAI_HOME, "proxy.log")
 
 
@@ -1389,7 +1396,39 @@ def _running_pid() -> int | None:
         os.remove(_PID_FILE)
     except FileNotFoundError:
         pass
+    # Outside the try: sharing one block meant an already-missing pidfile
+    # jumped past this and left proxy.bind on disk, so a later status read a
+    # bind for an address nothing was listening on — the exact staleness this
+    # call exists to prevent. _forget_bind swallows its own OSError.
+    _forget_bind()
     return None
+
+
+def _forget_bind() -> None:
+    """Drop the recorded bind. A stopped proxy must not leave a file behind
+    asserting an address nothing is listening on."""
+    try:
+        os.remove(_BIND_FILE)
+    except OSError:
+        pass
+
+
+def _running_bind(args) -> tuple[str, int]:
+    """Where the running proxy is, falling back to what this invocation implies.
+
+    The fallback matters when the bind file is missing — an older background
+    proxy started before this file existed, or one started by hand. Reporting
+    the flag-derived guess is still better than reporting nothing, but the
+    recorded value wins whenever it exists.
+    """
+    try:
+        with open(_BIND_FILE) as f:
+            host, _, port = f.read().strip().rpartition(":")
+        if host and port:
+            return host, int(port)
+    except (OSError, ValueError):
+        pass
+    return _resolve_host_port(args)
 
 
 def _cmd_start(args) -> int:
@@ -1398,7 +1437,7 @@ def _cmd_start(args) -> int:
 
     existing = _running_pid()
     if existing is not None:
-        host, port = _resolve_host_port(args)
+        host, port = _running_bind(args)
         print(f"already running (pid {existing}) → {_display_url(host, port)}")
         return 0
 
@@ -1417,6 +1456,13 @@ def _cmd_start(args) -> int:
         stderr=logf,
         start_new_session=True,
     )
+    # Bind first, pid second. The pid file is what every other command tests
+    # for liveness, so writing it last makes "a pid exists" imply "a bind
+    # exists". The other order left a window where a concurrent status saw a
+    # live pid, found no bind, and fell back to its own flags — printing the
+    # wrong URL, which is the bug this file records the bind to prevent.
+    with open(_BIND_FILE, "w") as f:
+        f.write(f"{host}:{port}")
     with open(_PID_FILE, "w") as f:
         f.write(str(proc.pid))
     print(f"proxy running (pid {proc.pid}) → {_display_url(host, port)}")
@@ -1433,7 +1479,7 @@ def _cmd_console(args) -> int:
     rc = _cmd_start(args)
     if rc != 0:
         return rc
-    host, port = _resolve_host_port(args)
+    host, port = _running_bind(args)
     print(f"console: {console_assets.console_url(_display_url(host, port))}")
     if not console_assets.assets_available():
         # Say it here rather than letting the user discover a 503 in the
@@ -1449,6 +1495,12 @@ def _cmd_stop(args) -> int:
 
     pid = _running_pid()
     if pid is None:
+        # Nothing to signal, but a bind file may still be sitting here from a
+        # proxy that died without cleaning up. Clearing it is the point of
+        # this branch: leaving it lets a later `status` resolve an address
+        # nothing is listening on, moments after this command said "not
+        # running".
+        _forget_bind()
         print("not running")
         return 0
     os.kill(pid, signal.SIGTERM)
@@ -1463,6 +1515,11 @@ def _cmd_stop(args) -> int:
         os.remove(_PID_FILE)
     except FileNotFoundError:
         pass
+    # Outside the try: sharing one block meant an already-missing pidfile
+    # jumped past this and left proxy.bind on disk, so a later status read a
+    # bind for an address nothing was listening on — the exact staleness this
+    # call exists to prevent. _forget_bind swallows its own OSError.
+    _forget_bind()
     print("stopped")
     return 0
 
@@ -1472,7 +1529,7 @@ def _cmd_status(args) -> int:
     if pid is None:
         print("stopped")
         return 1
-    host, port = _resolve_host_port(args)
+    host, port = _running_bind(args)
     print(f"running (pid {pid}) → {_display_url(host, port)}")
     return 0
 
