@@ -697,6 +697,13 @@ class IngestStore:
             if when is None:
                 continue
             idx = int((when - base).total_seconds() // 60)
+            # An entry landing exactly at `end` lands one past the last bucket.
+            # Dropping it made the final minute under-report — a false dip in
+            # the one chart the fleet screen uses to spot a stalled recorder,
+            # and `to` defaults to now, so the newest batch hits this every
+            # time. Fold the boundary into the last bucket it belongs to.
+            if idx == minutes:
+                idx = minutes - 1
             if 0 <= idx < minutes:
                 buckets[idx] += 1
         return buckets
