@@ -37,6 +37,12 @@ export function CoveragePanel({ summary, tenant, devices, devicesProblem }: Prop
   const missing = coverage.enrolled - coverage.reporting
   const partial = missing > 0
   const silent = devices === undefined ? [] : orderSilent(devices)
+  // Counted apart, because they are different findings and the page header
+  // already reports them apart. Calling all of them "silent" made the panel
+  // claim three devices had gone quiet when one had and two had never been
+  // heard from at all — the same merge the fleet header was fixed for.
+  const goneQuiet = silent.filter((d) => d.liveness === 'silent').length
+  const neverSeen = silent.filter((d) => d.liveness === 'never_seen').length
 
   return (
     <section className="panel">
@@ -72,7 +78,7 @@ export function CoveragePanel({ summary, tenant, devices, devicesProblem }: Prop
       </p>
 
       <h3 className="label" style={{ marginTop: 'var(--s3)' }}>
-        Silent devices{' '}
+        Unaccounted devices{' '}
         {/* Count the rows actually rendered, but ONLY when there are rows to
             count. With the device query down the list is empty for lack of
             data, not for lack of silence — printing "0" there asserted the
@@ -83,6 +89,9 @@ export function CoveragePanel({ summary, tenant, devices, devicesProblem }: Prop
             <a className="link-count" href={href.coverage(tenant)}>
               {n(silent.length)} →
             </a>
+            <span className="mono muted" style={{ marginLeft: 'var(--s2)' }}>
+              {n(goneQuiet)} gone quiet · {n(neverSeen)} never seen
+            </span>
             {silent.length !== missing ? (
               <span className="tag warn" style={{ marginLeft: 'var(--s2)' }}>
                 summary says {n(missing)} — the two queries disagree

@@ -192,3 +192,4 @@ node_modules/
 web/dist/
 web/.tanstack/
 *.tsbuildinfo
+src/byoai/console_static/

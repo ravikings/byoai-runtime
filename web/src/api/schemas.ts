@@ -110,11 +110,19 @@ export const FleetSummary = z.object({
   }),
   ingest: z.object({
     entries_received: z.number().int(),
-    backlog_entries: z.number().int(),
-    backlog_devices: z.number().int(),
+    /**
+     * Backlog is a DEVICE-side fact and the ingest side cannot see it.
+     * These describe what a device is still holding and has not sent; a
+     * device that stopped shipping looks identical to one with nothing left
+     * to ship. Nullable because `0` would state "nothing outstanding" on the
+     * strength of data nobody has — which is the failure this console exists
+     * to prevent. The UI renders unknown, not zero.
+     */
+    backlog_entries: z.number().int().nullable(),
+    backlog_devices: z.number().int().nullable(),
     oldest_unshipped_at: z.string().nullable(),
     last_batch_at: z.string().nullable(),
-    checkpoints_pending: z.number().int(),
+    checkpoints_pending: z.number().int().nullable(),
     /** entries/min buckets, oldest first. A flat run is an incident. */
     rate_series: z.array(z.number()),
     rate_flat_for_minutes: z.number().nullable(),

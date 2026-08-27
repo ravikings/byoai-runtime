@@ -20,6 +20,14 @@ export default defineConfig({
       '/v1': { target: process.env.BYOAI_PROXY_URL ?? 'http://127.0.0.1:8787', changeOrigin: true },
     },
   },
-  build: { outDir: 'dist', sourcemap: true },
+  // Build straight into the Python package: hatchling ships whatever is in
+  // src/byoai/console_static/ inside the wheel, so `npm run build` is the only
+  // step between a source checkout and a working /console. The directory is
+  // git-ignored — build output is never committed.
+  build: {
+    outDir: path.resolve(__dirname, '../src/byoai/console_static'),
+    emptyOutDir: true,
+    sourcemap: true,
+  },
   test: { environment: 'jsdom', globals: true },
 })

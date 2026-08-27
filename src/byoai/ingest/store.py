@@ -133,6 +133,26 @@ CREATE TABLE IF NOT EXISTS device_state (
 """
 
 
+def _dt_of(value: Any) -> Any:
+    """Coerce an ISO string or datetime to a datetime; None stays None."""
+    from datetime import datetime as _datetime
+
+    if value is None or isinstance(value, _datetime):
+        return value
+    try:
+        return _datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _iso_of(value: Any) -> str:
+    from datetime import datetime as _datetime
+
+    if isinstance(value, _datetime):
+        return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return str(value)
+
+
 def _optional_str(name: str, value: object) -> str | None:
     """A nullable wire string, validated rather than trusted.
 
@@ -652,6 +672,120 @@ class IngestStore:
                 (tenant_slug,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def entries_per_minute(self, tenant_slug: str, start: Any, end: Any) -> list[int]:
+        """Entries received per minute across the window, oldest first.
+
+        Keyed on ``received_at`` — this side's own clock — not ``ts_device``,
+        which is an untrusted host stamp. A device with a skewed clock would
+        otherwise be able to shape this line.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT e.received_at
+                     FROM entries e
+                     JOIN enrolments en ON en.device_id = e.device_id
+                     JOIN tenants t ON t.tenant_id = en.tenant_id
+                    WHERE t.slug = ? AND e.received_at >= ? AND e.received_at <= ?""",
+                (tenant_slug, _iso_of(start), _iso_of(end)),
+            ).fetchall()
+        minutes = max(1, int((_dt_of(end) - _dt_of(start)).total_seconds() // 60))
+        buckets = [0] * minutes
+        base = _dt_of(start)
+        for row in rows:
+            when = _dt_of(row["received_at"])
+            if when is None:
+                continue
+            idx = int((when - base).total_seconds() // 60)
+            if 0 <= idx < minutes:
+                buckets[idx] += 1
+        return buckets
+
+    def flat_for_minutes(self, tenant_slug: str, as_of: Any) -> float | None:
+        """Minutes since the last entry arrived, when nothing has.
+
+        Null while entries are still landing. This is the ingest side's
+        strongest liveness signal precisely because it needs no cooperation
+        from the device: silence is measured here.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT MAX(e.received_at) AS last
+                     FROM entries e
+                     JOIN enrolments en ON en.device_id = e.device_id
+                     JOIN tenants t ON t.tenant_id = en.tenant_id
+                    WHERE t.slug = ?""",
+                (tenant_slug,),
+            ).fetchone()
+        last = _dt_of(row["last"]) if row and row["last"] else None
+        if last is None:
+            return None
+        elapsed = (_dt_of(as_of) - last).total_seconds() / 60
+        return elapsed if elapsed >= 1 else None
+
+    def denial_summary(self, tenant_slug: str, start: Any, end: Any) -> dict[str, Any]:
+        """Mandate outcomes over the window, read from sealed verdict events.
+
+        Under a redacting payload mode the verdict fields may be absent; those
+        events are counted as decisions but contribute no reason breakdown,
+        rather than being dropped or guessed at.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT e.kind, e.event_json
+                     FROM entries e
+                     JOIN enrolments en ON en.device_id = e.device_id
+                     JOIN tenants t ON t.tenant_id = en.tenant_id
+                    WHERE t.slug = ? AND e.received_at >= ? AND e.received_at <= ?
+                      AND e.kind IN ('mandate_verdict', 'tool_use')""",
+                (tenant_slug, _iso_of(start), _iso_of(end)),
+            ).fetchall()
+        denied = flagged = tool_use_total = 0
+        decisions = undifferentiated = 0
+        refused: dict[tuple[str, str], int] = {}
+        for row in rows:
+            if row["kind"] == "tool_use":
+                tool_use_total += 1
+                continue
+            payload = json.loads(row["event_json"]).get("payload") or {}
+            verdict = payload.get("verdict")
+            decisions += 1
+            if verdict == "denied":
+                denied += 1
+            elif verdict == "flagged":
+                flagged += 1
+            elif verdict is None:
+                # Redacted. The docstring promised these count as decisions;
+                # dropping them silently undercounted the very rate this
+                # summary exists to report, and the gap grew with how much a
+                # deployment redacts.
+                undifferentiated += 1
+            if verdict in {"denied", "flagged"}:
+                key = (
+                    str(payload.get("tool") or "unknown"),
+                    str(payload.get("reason") or "unknown"),
+                )
+                refused[key] = refused.get(key, 0) + 1
+        top = sorted(refused.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        per_1k = (denied / tool_use_total * 1000) if tool_use_total else 0.0
+        return {
+            "denied_per_1k": round(per_1k, 1),
+            # No prior window is computed yet, and inventing one would put an
+            # arrow on a trend nobody measured.
+            "previous_per_1k": None,
+            "denied": denied,
+            "flagged": flagged,
+            "decisions": decisions,
+            # Verdicts sealed under a redacting payload mode: counted, but with
+            # no outcome to attribute. Stated rather than folded into either
+            # side, because a rate computed over an unknown denominator slice
+            # is not the rate it appears to be.
+            "undifferentiated": undifferentiated,
+            "tool_use_total": tool_use_total,
+            "top_refused": [
+                {"tool": t, "reason": r, "count": n} for (t, r), n in top
+            ],
+        }
 
     def coverage(self, tenant_slug: str) -> dict[str, Any]:
         """The silence report: what this tenant cannot account for.

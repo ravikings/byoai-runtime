@@ -79,6 +79,11 @@ path = "src/byoai/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/byoai"]
+# The built console (web/ -> src/byoai/console_static/) is git-ignored, and
+# hatchling honours VCS ignores by default, so it needs listing as a build
+# artifact to make it into the wheel. Absent (no front-end build), this is a
+# no-op and the wheel still builds.
+artifacts = ["src/byoai/console_static/**"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

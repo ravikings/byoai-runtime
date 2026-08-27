@@ -10,10 +10,11 @@ from contextlib import asynccontextmanager
 import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..recorder.integration import get_recorder
+from ..recorder.ledger import LedgerWriteError
 from ..recorder.proxy_gate import (
     SseEnforcer,
     enforce_response_body,
@@ -23,10 +24,10 @@ from ..recorder.proxy_gate import (
     stop_proxy_enforcement,
 )
 from ..recorder.schema import new_span_id, new_trace_id
-from ..recorder.ledger import LedgerWriteError
 from ..session_hash import RedisHashStore
 from ..stages import PromptCacheInjection, SessionDedup
 from ..stages import _count_cache_control_markers as _stage_count_cache_control_markers
+from . import console as console_assets
 from . import db, openai_compat
 
 # Configuration
@@ -1206,6 +1207,82 @@ async def toggle_config():
     }
 
 
+# --------------------------------------------------------------------------
+# Console SPA
+# --------------------------------------------------------------------------
+# Registered before the /v1 catch-all purely for readability — /console/* and
+# /v1/* can't collide — but it does have to sit after "/" so the root JSON
+# landing response is untouched. The console is deliberately NOT in
+# _AUTH_EXEMPT_PATHS: when BYOAI_PROXY_TOKEN is set, the UI is unreachable for
+# exactly the same requests the API is unreachable for.
+
+
+# The data the console reads. Mounted here rather than in its own service so
+# one `pip install` and one port serve both the API and the UI over it.
+#
+# The store is opened lazily and read-only: a deployment with no ingest
+# database yet gets an empty fleet, which is the truthful answer, rather than
+# a failure to start.
+_INGEST_DB = os.environ.get(
+    "BYOAI_INGEST_DB", os.path.join(os.path.expanduser("~"), ".byoai", "ingest.db")
+)
+try:
+    from byoai.console import build_console_router
+    from byoai.ingest import IngestStore
+
+    app.include_router(build_console_router(IngestStore(_INGEST_DB)))
+except Exception as exc:  # pragma: no cover - defensive
+    # The proxy's own job does not depend on the console API, so a failure to
+    # open the ingest store must not stop token caching from serving. Say so
+    # loudly rather than leaving a silently absent route — an earlier version
+    # printed to a `sys` that is not imported at module scope, which turned a
+    # diagnostic into a second, quieter failure.
+    import sys as _sys
+    import traceback as _tb
+
+    print(f"[byoai] console API unavailable ({_INGEST_DB}): {exc!r}", file=_sys.stderr)
+    _tb.print_exc(file=_sys.stderr)
+
+
+@app.api_route("/console", methods=["GET", "HEAD"])
+async def console_root_redirect():
+    # The built assets use base "/console/", so relative URLs only resolve from
+    # the trailing-slash form. Redirect rather than serve index.html here.
+    return RedirectResponse(url="/console/", status_code=307)
+
+
+@app.api_route("/console/{path:path}", methods=["GET", "HEAD"])
+async def console_spa(path: str):
+    """Serve the built console, falling back to index.html for client routes.
+
+    Anything that isn't a real file is answered with index.html so a hard
+    refresh on a deep route like /console/acme/fleet/coverage still boots the
+    SPA, which then resolves the route itself.
+    """
+    if console_assets.env_flag_disabled():
+        return Response(
+            content="The ByoAI console is disabled (BYOAI_CONSOLE=0).\n",
+            status_code=404,
+            media_type="text/plain; charset=utf-8",
+        )
+    if not console_assets.assets_available():
+        # 503, not 404: the route exists and the deployment is simply missing a
+        # build step. Say which command produces it instead of implying the URL
+        # is wrong.
+        return Response(
+            content=console_assets.MISSING_BUILD_MESSAGE,
+            status_code=503,
+            media_type="text/plain; charset=utf-8",
+        )
+    asset = console_assets.resolve_asset(path)
+    if asset is not None:
+        return FileResponse(asset, headers=console_assets.cache_headers(path))
+    return FileResponse(
+        console_assets.INDEX_FILE,
+        headers=console_assets.cache_headers("index.html"),
+    )
+
+
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_catch_all(request: Request, path: str):
     """
@@ -1348,6 +1425,24 @@ def _cmd_start(args) -> int:
     return 0
 
 
+def _cmd_console(args) -> int:
+    """Thin wrapper over ``start``: same background proxy, plus the console URL.
+
+    The console is served by the proxy itself, so there is no second process to
+    manage — ``byoai-cache stop`` stops this too."""
+    rc = _cmd_start(args)
+    if rc != 0:
+        return rc
+    host, port = _resolve_host_port(args)
+    print(f"console: {console_assets.console_url(_display_url(host, port))}")
+    if not console_assets.assets_available():
+        # Say it here rather than letting the user discover a 503 in the
+        # browser — this is the command whose entire job is the console.
+        print("warning: the console has not been built; /console/ will explain how.")
+        print(f"  build it with: {console_assets.BUILD_COMMAND}")
+    return rc
+
+
 def _cmd_stop(args) -> int:
     import signal
     import time
@@ -1446,6 +1541,7 @@ def cli(argv: list[str] | None = None) -> int:
         ("start", "start in the background (detached; survives closing the terminal)"),
         ("stop", "stop the background proxy"),
         ("status", "show whether the background proxy is running"),
+        ("console", "start in the background and print the console URL"),
     ):
         sub.add_parser(name, parents=[common], help=help_text)
 
@@ -1475,6 +1571,8 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "start":
         return _cmd_start(args)
+    if args.command == "console":
+        return _cmd_console(args)
     if args.command == "stop":
         return _cmd_stop(args)
     if args.command == "status":

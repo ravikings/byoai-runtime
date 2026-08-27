@@ -37,11 +37,25 @@ export function IngestPanel({ summary, tenant }: { summary: FleetSummary; tenant
 
         <span className="mono muted">backlog</span>
         <span className="num">
-          <b>{n(ingest.backlog_entries)}</b>{' '}
-          <span className="mono muted">unsynced,</span>{' '}
-          <a className="ref" href={href.devices(tenant)}>
-            {n(ingest.backlog_devices)} device{ingest.backlog_devices === 1 ? '' : 's'} →
-          </a>
+          {/* Backlog lives on the device, not here. The ingest side sees what
+              arrived; it cannot see what a device is still holding, and a
+              device that stopped shipping looks exactly like one with nothing
+              left to send. Rendering 0 would report "nothing outstanding"
+              from data nobody has. */}
+          {ingest.backlog_entries === null ? (
+            <span className="tag unknown">
+              unknown — the backlog is only visible on the device
+            </span>
+          ) : (
+            <>
+              <b>{n(ingest.backlog_entries)}</b>{' '}
+              <span className="mono muted">unsynced,</span>{' '}
+              <a className="ref" href={href.devices(tenant)}>
+                {n(ingest.backlog_devices ?? 0)} device
+                {ingest.backlog_devices === 1 ? '' : 's'} →
+              </a>
+            </>
+          )}
         </span>
 
         <span className="mono muted">oldest unshipped</span>
@@ -86,10 +100,16 @@ export function IngestPanel({ summary, tenant }: { summary: FleetSummary; tenant
 
         <span className="mono muted">checkpoints pending</span>
         <span className="num">
-          <b>{n(ingest.checkpoints_pending)}</b>{' '}
-          <a className="ref" href={href.coverage(tenant)}>
-            checkpoint gaps →
-          </a>
+          {ingest.checkpoints_pending === null ? (
+            <span className="tag unknown">unknown — device-side</span>
+          ) : (
+            <>
+              <b>{n(ingest.checkpoints_pending)}</b>{' '}
+              <a className="ref" href={href.coverage(tenant)}>
+                checkpoint gaps →
+              </a>
+            </>
+          )}
         </span>
       </div>
 
