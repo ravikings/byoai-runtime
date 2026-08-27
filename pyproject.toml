@@ -34,7 +34,18 @@ dependencies = [
 
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.100", "sse-starlette>=1.6"]
-agent-context-cache = ["fastapi>=0.100", "uvicorn>=0.30", "redis>=5.0"]
+# `cryptography` is not optional here despite living in the `recorder` extra:
+# main.py imports ..recorder.proxy_gate at module scope for out-of-mandate
+# denial, so the CLI cannot start without it. Installing this extra alone
+# produced a `byoai-cache` that raised ModuleNotFoundError on every
+# invocation — broken since the proxy gate landed, and never caught because
+# nothing installed the built wheel and ran it.
+agent-context-cache = [
+    "fastapi>=0.100",
+    "uvicorn>=0.30",
+    "redis>=5.0",
+    "cryptography>=42",
+]
 robyn = ["robyn>=0.60"]
 mcp = ["mcp>=1.0"]
 flask = ["flask>=3.0"]

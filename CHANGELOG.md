@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   console now reads real shipped evidence instead of fixtures.
 
 ### Fixed
+- **`pip install "byoai-runtime[agent-context-cache]"` produced a CLI that
+  could not start.** `main.py` imports `..recorder.proxy_gate` at module scope
+  for out-of-mandate denial, and that reaches `cryptography`, which lived only
+  in the `recorder` extra — so `byoai-cache` raised `ModuleNotFoundError` on
+  every invocation. Broken since the proxy gate landed and never caught,
+  because nothing ever installed the built wheel and ran it. Found by doing
+  exactly that while cutting this release.
 - **The build no longer ships a console with no assets.** `build.yml` ran
   `python -m build` with no front-end step while `console_static/` is
   gitignored, so a released wheel would have installed cleanly and then 503'd
