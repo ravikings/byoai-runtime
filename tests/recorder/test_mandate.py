@@ -154,6 +154,70 @@ def test_suspension_denies_even_while_only_observing(posture: str):
     assert isinstance(gate.decide("search"), Deny)
 
 
+# -- AD-9: on_suspend_observed fires once, on the transition ----------------
+
+def test_on_suspend_observed_fires_on_the_transition_into_suspended():
+    seen = []
+
+    async def never_called(_etag):  # pragma: no cover
+        raise AssertionError("apply_snapshot is called directly in this test")
+
+    gate = MandateGate(
+        never_called, agent_id=_AGENT, on_suspend_observed=lambda snap: seen.append(snap)
+    )
+    gate.apply_snapshot(snapshot_payload(status="approved"))
+    assert seen == []  # not suspended yet — no callback
+
+    gate.apply_snapshot(snapshot_payload(status="suspended"))
+    assert len(seen) == 1
+    assert seen[0].mandate_version_id == "mv_1"
+
+
+def test_on_suspend_observed_does_not_refire_on_a_repeat_suspended_fetch():
+    seen = []
+
+    async def never_called(_etag):  # pragma: no cover
+        raise AssertionError
+
+    gate = MandateGate(
+        never_called, agent_id=_AGENT, on_suspend_observed=lambda snap: seen.append(snap)
+    )
+    gate.apply_snapshot(snapshot_payload(status="suspended"))
+    gate.apply_snapshot(snapshot_payload(status="suspended"))
+    gate.apply_snapshot(snapshot_payload(status="suspended"))
+    assert len(seen) == 1  # one transition, not one per fetch
+
+
+def test_on_suspend_observed_refires_after_a_resume_and_re_suspend():
+    seen = []
+
+    async def never_called(_etag):  # pragma: no cover
+        raise AssertionError
+
+    gate = MandateGate(
+        never_called, agent_id=_AGENT, on_suspend_observed=lambda snap: seen.append(snap)
+    )
+    gate.apply_snapshot(snapshot_payload(status="suspended"))
+    gate.apply_snapshot(snapshot_payload(status="approved"))
+    gate.apply_snapshot(snapshot_payload(status="suspended"))
+    assert len(seen) == 2  # two distinct suspend cycles
+
+
+def test_a_raising_on_suspend_observed_callback_does_not_break_apply_snapshot():
+    def boom(_snap):
+        raise RuntimeError("network is down")
+
+    async def never_called(_etag):  # pragma: no cover
+        raise AssertionError
+
+    gate = MandateGate(never_called, agent_id=_AGENT, on_suspend_observed=boom)
+    # Must not raise — a failed ack callback is not allowed to break the
+    # fetch that installed the (already-applied) suspended snapshot.
+    snapshot = gate.apply_snapshot(snapshot_payload(status="suspended"))
+    assert snapshot.suspended is True
+    assert gate.snapshot.suspended is True
+
+
 def test_no_snapshot_flags_under_fail_open():
     gate = MandateGate(
         _source_returning(snapshot_payload()), default_posture=Posture.FAIL_OPEN

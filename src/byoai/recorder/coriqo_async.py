@@ -770,6 +770,32 @@ class AsyncCoriqoAgentsClient:
             signed=True,
         )
 
+    async def ack_suspend(
+        self,
+        coriqo_agent_id: str,
+        *,
+        mandate_version_id: str,
+        observed_at: str | None = None,
+    ) -> dict[str, Any]:
+        """AD-9: report that this host saw the agent's CURRENT suspend and
+        stopped acting on it. Best-effort by design — callers (mandate.py's
+        MandateGate) fire this from a background task and swallow any error,
+        since posting the ack must never block the decide() path or the
+        refresh loop. A failed ack just means Coriqo's UI shows this host as
+        still-pending until a later attempt succeeds or a human checks the
+        host directly; it never changes what the host itself does, which
+        already denied the moment it saw `status == "suspended"`.
+        """
+        return await self._request(
+            "POST",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/suspend-ack",
+            json_body={
+                "mandate_version_id": mandate_version_id,
+                "observed_at": observed_at,
+            },
+            signed=True,
+        )
+
     async def record_verdict_batch(
         self,
         coriqo_agent_id: str,
