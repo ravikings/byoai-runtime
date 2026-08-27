@@ -20,7 +20,7 @@ jobs:
       # committed. Without this step `python -m build` packages a wheel with no
       # console_static/, so every `pip install` gets a UI that 503s telling the
       # user to run a build they should never have had to run.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: "npm"
