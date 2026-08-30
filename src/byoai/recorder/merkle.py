@@ -78,9 +78,15 @@ class MerkleTree:
     """A binary Merkle tree over pre-hashed leaves.
 
     Odd node counts at any level are handled by promoting the lone leftover
-    node unchanged to the next level (RFC 6962 style) rather than duplicating
-    it — duplication lets an attacker pad a tree with copies of the last leaf
-    to forge inclusion proofs for a leaf that only appears once.
+    node unchanged to the next level rather than duplicating it — duplication
+    lets an attacker pad a tree with copies of the last leaf to forge inclusion
+    proofs for a leaf that only appears once (the CVE-2012-2459 class).
+
+    Level-wise promotion is not merely "RFC 6962 style": it produces exactly
+    the tree RFC 6962 §2.1 defines by splitting at the largest power of two
+    below n. test_promotion_is_exactly_the_rfc6962_tree pins that equivalence
+    against the RFC's own recursive definition, because the claim is only worth
+    making if something checks it.
     """
 
     def __init__(self, leaf_hashes: list[bytes]) -> None:

@@ -142,3 +142,57 @@ def test_proof_step_sides_are_consistent_with_verification() -> None:
     )
     if len(proof.steps) > 1:
         assert not verify_inclusion(scrambled)
+
+
+def _rfc6962_mth(leaf_hashes: list[bytes]) -> bytes:
+    """RFC 6962 §2.1 Merkle Tree Hash, written recursively from the RFC text.
+
+    An independent second implementation on purpose: comparing MerkleTree
+    against vectors MerkleTree generated would only prove it agrees with
+    itself.
+    """
+    n = len(leaf_hashes)
+    if n == 1:
+        return leaf_hashes[0]
+    k = 1
+    while k * 2 < n:
+        k *= 2
+    return hashlib.sha256(
+        b"\x01" + _rfc6962_mth(leaf_hashes[:k]) + _rfc6962_mth(leaf_hashes[k:])
+    ).digest()
+
+
+@pytest.mark.parametrize("n", list(range(1, 130)) + [255, 256, 257, 1000, 2000])
+def test_promotion_is_exactly_the_rfc6962_tree(n: int) -> None:
+    """Promoting a lone odd node IS RFC 6962's power-of-two split, not an
+    approximation of it.
+
+    This also pins cross-repo agreement: Coriqo's checkpoint service builds
+    tree_version 2 the same way, so a root computed here and a root computed
+    there are the same root over the same leaves.
+    """
+    leaves = _leaves(n)
+    assert MerkleTree(leaves).root == _rfc6962_mth(leaves)
+
+
+def test_the_duplicating_construction_would_collide() -> None:
+    """Why promotion, stated as a test rather than a comment.
+
+    Duplicating the last node makes [a, b, c] and [a, b, c, c] share a root, so
+    the root stops identifying its leaf set. Promotion does not.
+    """
+    a, b, c = _leaves(3)
+
+    def dup_root(ls: list[bytes]) -> bytes:
+        cur = list(ls)
+        while len(cur) > 1:
+            cur = [
+                hashlib.sha256(
+                    b"\x01" + cur[i] + (cur[i + 1] if i + 1 < len(cur) else cur[i])
+                ).digest()
+                for i in range(0, len(cur), 2)
+            ]
+        return cur[0]
+
+    assert dup_root([a, b, c]) == dup_root([a, b, c, c])
+    assert MerkleTree([a, b, c]).root != MerkleTree([a, b, c, c]).root
