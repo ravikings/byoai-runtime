@@ -2,36 +2,55 @@
 recomputes and compares against, so a byte-for-byte port here is what makes
 ``POST .../capability-snapshot`` succeed instead of 422ing on every call.
 
-This is a **port**, not a copy: Coriqo's own implementation is in a separate
-repository this module's author never saw (see the module-level warning
-below). It leans on :mod:`byoai.recorder.canonical`, this repo's existing
-RFC 8785 (JCS) canonical-JSON implementation, because JCS already gives the
-two properties the spec calls out as tricky:
-
-* object keys sorted (JCS: by UTF-16 code unit — a strict superset of
-  bytewise ASCII sorting, which is all a tool ``name`` is expected to use);
-* ECMAScript ``Number::toString`` number formatting, which is exactly what
-  makes ``1.0`` and ``1`` serialize identically (:func:`serialize_number`
-  collapses a float with no fractional part to its integer digits).
-
-What this module adds on top of ``canonical.py`` is spec-specific shaping:
-picking exactly the three tool fields, sorting tools by name, and the
-envelope/system-prompt-hash conventions below.
+This is a **port**, not a copy, but as of the parity fix below it is a port
+of Coriqo's *actual* canonicalisation algorithm
+(``api/utils/capability_digest.py``), not of RFC 8785 (JCS). Both this
+module and Coriqo's are Python, so re-implementing Coriqo's own
+``json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`` +
+integral-float-to-int pre-pass here — rather than routing through this
+repo's shared JCS module — gives byte-identical output by construction
+(same language, same stdlib float/dict-sort behaviour), not just for the
+cases anyone thought to test.
 
 .. warning::
-    **Cross-repo parity is unverified beyond the fix below.** This was built
-    against the wire contract in the W-7 spec, without sight of Coriqo's
-    actual ``cap-digest-v1`` implementation or its fixture file. The tests in
-    ``tests/recorder/test_capability_digest.py`` only prove *internal*
-    consistency (order-independence, null/absent equivalence, int/float
-    equivalence) — they cannot byte-compare against a real Coriqo digest.
-    Treat every attestation as unverified until both sides have been run
-    against the same golden vectors in one place.
+    **Parity bug found and fixed 2026-08-30 (round 2)**, by an audit that
+    read both implementations side by side rather than trusting the golden
+    vectors already in each repo's own test suite (which only prove
+    self-consistency, not cross-repo agreement). This module previously
+    delegated to :mod:`byoai.recorder.canonical`, this repo's RFC 8785 (JCS)
+    canonicalizer — appropriate for its actual job (this repo's ledger
+    hashing) but NOT what Coriqo's ``cap-digest-v1`` spec actually is. Two
+    concrete divergences confirmed:
+
+    1. **Non-integral float formatting.** Coriqo emits Python's
+       ``repr()``/``json.dumps`` shortest-round-trip form (e.g. ``1e-07``,
+       two-digit zero-padded exponent). JCS's ``serialize_number`` instead
+       emits ECMAScript ``Number::toString`` form (e.g. ``1e-7``, no
+       padding, and a different fixed/exponential threshold — JCS switches
+       to exponential outside ``-6 < n <= 21``, Python's repr switches
+       outside roughly ``-4 <= decpt <= 16``). A tool ``input_schema`` with
+       a small-magnitude float (an epsilon/threshold parameter, a
+       genuinely plausible real value) would 422 every attestation.
+    2. **Dict key ordering for astral-plane characters.** JCS sorts by
+       UTF-16 code unit; Coriqo's ``json.dumps(sort_keys=True)`` sorts by
+       Python code point. These *agree* for BMP-only keys but diverge when
+       one sibling key is in U+E000–U+FFFF and another is above U+FFFF (an
+       astral character's leading surrogate, 0xD800, sorts before 0xE000 in
+       UTF-16-code-unit order but above it in code-point order). Rare in
+       practice (an ASCII tool/field name never hits this), but real.
+
+    Both are structural consequences of reusing a *different, correctly
+    implemented* canonicalisation spec (JCS) for a job that is actually
+    "match this other Python program's `json.dumps` output" — no amount of
+    JCS correctness closes that gap, because JCS and Coriqo's ad hoc
+    ``json.dumps``-based scheme are two different, only-mostly-compatible
+    specs. Using Python's own json.dumps here, as this module now does,
+    removes the gap entirely rather than chasing individual divergences.
 
 .. warning::
-    **Parity bug found and fixed 2026-08-30**, once Coriqo's actual
-    ``api/utils/capability_digest.py::compute_capability_digest`` became
-    readable from a sibling checkout. The first version of this module hashed
+    **Parity bug found and fixed 2026-08-30 (round 1)**, once Coriqo's
+    actual ``api/utils/capability_digest.py::compute_capability_digest``
+    became readable from a sibling checkout. This module used to hash
     ``system_prompt is None`` the same as an empty string. Coriqo embeds a
     literal JSON ``null`` for ``system_prompt_sha256`` when the prompt is
     ``None`` (and reports ``system_prompt_chars=None``, not ``0``) — never a
@@ -47,13 +66,14 @@ envelope/system-prompt-hash conventions below.
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .canonical import canonicalize
-
 __all__ = [
     "DIGEST_SPEC",
+    "canonical_json_bytes",
     "canonicalize_tool",
     "canonicalize_tools",
     "compute_capability_digest",
@@ -65,23 +85,53 @@ __all__ = [
 #: recompute against.
 DIGEST_SPEC = "cap-digest-v1"
 
-#: The only three fields cap-digest-v1 hashes per tool. Anything else on a
-#: tool definition (e.g. a provider-specific ``cache_control`` block) is
-#: dropped before hashing — the spec says "drop any other fields" exactly so
-#: that provider-shape noise can't perturb the digest.
-_TOOL_FIELDS = ("name", "description", "input_schema")
+
+def _canon(value: Any) -> Any:
+    """Port of Coriqo's ``api/utils/capability_digest.py::_canon`` — recursively
+    normalise a JSON-compatible value, folding any integral-valued float
+    (``1.0``) into its ``int`` form (``1``) so the two serialize identically.
+    Dict key sorting itself is left to ``json.dumps(sort_keys=True)`` at the
+    serialize step, matching Coriqo exactly (both are Python, both get
+    code-point order — never UTF-16-code-unit/JCS order)."""
+    if isinstance(value, Mapping):
+        return {str(k): _canon(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canon(v) for v in value]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value == int(value):
+            return int(value)
+        return value
+    return value
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """Coriqo's exact canonical-JSON recipe: sorted keys, no insignificant
+    whitespace, UTF-8, non-ASCII left literal (not \\uXXXX-escaped), floats
+    via Python's own shortest-round-trip ``repr``/``json.dumps`` — never
+    JCS/ECMAScript formatting, which disagrees with Python's for
+    small-magnitude floats and for dict-key order among astral-plane
+    characters (see the module-level parity-bug warning)."""
+    canon = _canon(value)
+    text = json.dumps(canon, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return text.encode("utf-8")
 
 
 def canonicalize_tool(tool: Mapping[str, Any]) -> dict[str, Any]:
     """One tool, reduced to exactly ``{name, description, input_schema}``.
 
-    Absent ``description``/``input_schema`` becomes an explicit ``None``
-    (which :mod:`canonical` serializes as JSON ``null``) rather than being
-    left out of the dict — the spec requires omitted and explicit-null to
-    produce byte-identical output, and this is what makes that true: both
-    cases reach ``canonicalize()`` as the same three-key dict.
+    ``name`` is required (``tool["name"]``, raising if absent) — matching
+    Coriqo's ``canonicalise_tool`` exactly, which never treats a nameless
+    tool as valid input to canonicalise. ``description``/``input_schema``
+    default to ``None`` when absent so that "missing" and "explicit null"
+    always serialize identically.
     """
-    return {field: tool.get(field) for field in _TOOL_FIELDS}
+    return {
+        "name": tool["name"],
+        "description": tool.get("description"),
+        "input_schema": tool.get("input_schema"),
+    }
 
 
 def canonicalize_tools(tools: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -151,5 +201,5 @@ def compute_capability_digest(
         "system_prompt_sha256": prompt_hash,
         "model_id": model_id,
     }
-    digest_hex = hashlib.sha256(canonicalize(envelope)).hexdigest()
+    digest_hex = hashlib.sha256(canonical_json_bytes(envelope)).hexdigest()
     return digest_hex, prompt_hash
