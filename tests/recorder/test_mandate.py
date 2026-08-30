@@ -843,3 +843,103 @@ def test_the_posture_env_var_only_covers_the_pre_snapshot_window(monkeypatch):
 def test_an_unreadable_posture_env_var_falls_back_to_fail_open(monkeypatch):
     monkeypatch.setenv("BYOAI_MANDATE_POSTURE", "yes please")
     assert MandateGate(_source_returning(snapshot_payload())).posture == Posture.FAIL_OPEN
+
+
+# -- W-7: reassessment_required -----------------------------------------------
+
+
+def test_reassessment_required_denies_under_fail_closed():
+    gate = MandateGate(
+        _source_returning(
+            snapshot_payload(
+                enforcement_posture=Posture.FAIL_CLOSED, reassessment_required=True
+            )
+        )
+    )
+    asyncio.run(gate.refresh())
+    verdict = gate.decide("search")
+    assert isinstance(verdict, Deny)
+    assert verdict.reason == Reason.REASSESSMENT_REQUIRED
+
+
+def test_reassessment_required_only_flags_under_fail_open():
+    gate = MandateGate(
+        _source_returning(
+            snapshot_payload(
+                enforcement_posture=Posture.FAIL_OPEN, reassessment_required=True
+            )
+        )
+    )
+    asyncio.run(gate.refresh())
+    verdict = gate.decide("search")
+    assert isinstance(verdict, Flag)
+    assert verdict.allowed
+    assert verdict.reason == Reason.REASSESSMENT_REQUIRED
+
+
+def test_reassessment_required_absent_is_false_by_default():
+    gate = MandateGate(_source_returning(snapshot_payload()))
+    asyncio.run(gate.refresh())
+    assert gate.snapshot.reassessment_required is False
+    assert isinstance(gate.decide("search"), Allow)
+
+
+# -- W-7: capability attestation ----------------------------------------------
+
+
+def _tool(name: str) -> dict:
+    return {"name": name, "description": "d", "input_schema": {"type": "object"}}
+
+
+def test_attest_capabilities_sends_on_first_call():
+    reported: list[dict] = []
+    gate = MandateGate(
+        None, agent_id=_AGENT, report_capability_snapshot=reported.append
+    )
+    sent = gate.attest_capabilities([_tool("search")], model_id="m1")
+    assert sent is True
+    assert len(reported) == 1
+    assert reported[0]["model_id"] == "m1"
+
+
+def test_attest_capabilities_skips_when_digest_unchanged():
+    reported: list[dict] = []
+    gate = MandateGate(
+        None, agent_id=_AGENT, report_capability_snapshot=reported.append
+    )
+    assert gate.attest_capabilities([_tool("search")], model_id="m1") is True
+    assert gate.attest_capabilities([_tool("search")], model_id="m1") is False
+    assert len(reported) == 1
+
+
+def test_attest_capabilities_sends_again_when_digest_changes():
+    reported: list[dict] = []
+    gate = MandateGate(
+        None, agent_id=_AGENT, report_capability_snapshot=reported.append
+    )
+    assert gate.attest_capabilities([_tool("search")], model_id="m1") is True
+    assert gate.attest_capabilities([_tool("search"), _tool("write")], model_id="m1") is True
+    assert len(reported) == 2
+
+
+def test_attest_capabilities_force_bypasses_the_skip():
+    reported: list[dict] = []
+    gate = MandateGate(
+        None, agent_id=_AGENT, report_capability_snapshot=reported.append
+    )
+    assert gate.attest_capabilities([_tool("search")], model_id="m1") is True
+    assert gate.attest_capabilities([_tool("search")], model_id="m1", force=True) is True
+    assert len(reported) == 2
+
+
+def test_attest_capabilities_with_no_callback_is_a_safe_no_op():
+    gate = MandateGate(None, agent_id=_AGENT)
+    assert gate.attest_capabilities([_tool("search")], model_id="m1") is False
+
+
+def test_attest_capabilities_callback_failure_is_swallowed():
+    def _raise(_snapshot: dict) -> None:
+        raise RuntimeError("boom")
+
+    gate = MandateGate(None, agent_id=_AGENT, report_capability_snapshot=_raise)
+    assert gate.attest_capabilities([_tool("search")], model_id="m1") is False

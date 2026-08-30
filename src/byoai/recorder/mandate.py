@@ -181,6 +181,12 @@ class Reason:
     #: AD-10: the tool is on the mandate's approval_required_tools list and no
     #: decision has come back yet — denied for now, not a failure to evaluate.
     APPROVAL_REQUIRED = "approval_required"
+    #: W-7: the snapshot carries ``reassessment_required: true`` — Coriqo saw
+    #: this agent's loaded capabilities drift from what its mandate was last
+    #: reviewed against, and wants a human to look before more calls run.
+    #: Denied under fail_closed; only flagged (still allowed) under
+    #: fail_open/observe, same split as SNAPSHOT_STALE.
+    REASSESSMENT_REQUIRED = "reassessment_required"
     #: AD-10: a human approved this exact request_id — this ONE call proceeds;
     #: a later call to the same tool starts as approval_required again.
     APPROVAL_GRANTED = "approval_granted"
@@ -455,6 +461,12 @@ class MandateSnapshot:
     delegation_policy: str | None = None
     max_delegation_depth: int | None = None
     served_at: str | None = None
+    #: W-7: capability-attestation drift flag. Not present in every schema
+    #: version this runtime may talk to — a Coriqo that predates the
+    #: capability-versioning work simply never sends it, and this defaults to
+    #: False, the same "nothing to see here" reading as its absence. See
+    #: Reason.REASSESSMENT_REQUIRED and the TODO on MandateGate.decide().
+    reassessment_required: bool = False
     #: Monotonic reading from when this snapshot was received. Monotonic, not
     #: wall clock, so an NTP correction mid-run cannot make a snapshot look
     #: fresher (or older) than it is.
@@ -509,6 +521,7 @@ class MandateSnapshot:
             delegation_policy=_opt_str(payload.get("delegation_policy")),
             max_delegation_depth=_opt_int(payload.get("max_delegation_depth")),
             served_at=_opt_str(payload.get("served_at")),
+            reassessment_required=bool(payload.get("reassessment_required", False)),
             received_at=received_at,
             raw=dict(payload),
         )
@@ -643,6 +656,7 @@ class MandateGate:
         sleep: Callable[[float], Awaitable[None]] | None = None,
         on_suspend_observed: Callable[["MandateSnapshot"], None] | None = None,
         report_approval_request: Callable[["RequireApproval"], None] | None = None,
+        report_capability_snapshot: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """``default_posture`` and ``default_max_staleness_s`` apply only until
         the first snapshot lands; after that the tenant's own values, which
@@ -668,6 +682,15 @@ class MandateGate:
         self._source = source
         self._on_suspend_observed = on_suspend_observed
         self._report_approval_request = report_approval_request
+        self._report_capability_snapshot = report_capability_snapshot
+        # W-7: the digest last successfully sent (or attempted), so repeated
+        # calls to attest_capabilities() with an unchanged tool/prompt/model
+        # surface are a no-op — the etag-style skip the spec asks for. There
+        # is no server-side field to compare against yet (see
+        # capability_digest.py's cross-repo-parity warning), so this is
+        # purely local bookkeeping: it prevents re-attesting on every run
+        # start within one process, not across processes or restarts.
+        self._last_capability_digest: str | None = None
         self._reported_approval_requests: "OrderedDict[str, None]" = OrderedDict()
         # AD-11: enforced budgets — local bookkeeping only, no I/O. A sliding
         # window of call timestamps for the rate ceiling; per-trajectory step
@@ -828,6 +851,55 @@ class MandateGate:
                 trajectory_id=action.trajectory_id,
                 step_index=action.step_index,
                 detail=f"agent status is {snapshot.status!r}",
+            )
+
+        # W-7 TODO: this is deliberately coarse. `reassessment_required` is a
+        # single boolean on the snapshot, not a list of which tools drifted
+        # — Coriqo's schema for naming the specific drift-introduced tools
+        # was not visible when this was written (see capability_digest.py's
+        # cross-repo-parity warning). Once Coriqo's response can name them,
+        # narrow this to deny/flag only those tools rather than the whole
+        # snapshot; until then, "reassess before anything else runs" is the
+        # closest sound reading of a mandate flagged for reassessment under
+        # fail_closed, and "flag everything, block nothing" mirrors how
+        # SNAPSHOT_STALE is handled under fail_open/observe.
+        if snapshot.reassessment_required:
+            if snapshot.enforcement_posture == Posture.FAIL_CLOSED:
+                return Deny(
+                    reason=Reason.REASSESSMENT_REQUIRED,
+                    mandate_version_id=snapshot.mandate_version_id,
+                    snapshot_age_s=age,
+                    tool=action.tool,
+                    posture=snapshot.enforcement_posture,
+                    enforcement=snapshot.mandate_enforcement,
+                    trajectory_id=action.trajectory_id,
+                    step_index=action.step_index,
+                    detail=(
+                        "Coriqo flagged this agent's capabilities for "
+                        "reassessment (attested tools/prompt drifted from "
+                        "the last-reviewed mandate)"
+                    ),
+                )
+            # fail_open/observe: don't stop the agent, but every verdict from
+            # here on is worth an operator's attention, same shape as a Flag
+            # from a stale snapshot.
+            budget_verdict = self._check_budgets(action, snapshot, age, now)
+            if budget_verdict is not None:
+                return budget_verdict
+            return Flag(
+                reason=Reason.REASSESSMENT_REQUIRED,
+                mandate_version_id=snapshot.mandate_version_id,
+                snapshot_age_s=age,
+                tool=action.tool,
+                posture=snapshot.enforcement_posture,
+                enforcement=snapshot.mandate_enforcement,
+                trajectory_id=action.trajectory_id,
+                step_index=action.step_index,
+                detail=(
+                    "Coriqo flagged this agent's capabilities for "
+                    "reassessment; running under fail_open, so allowed and "
+                    "flagged rather than blocked"
+                ),
             )
 
         if snapshot.is_stale(now):
@@ -997,6 +1069,85 @@ class MandateGate:
         self._reported_approval_requests[request_id] = None
         if len(self._reported_approval_requests) > _MAX_REPORTED_APPROVAL_REQUESTS:
             self._reported_approval_requests.popitem(last=False)
+
+    def attest_capabilities(
+        self,
+        tools: Iterable[Mapping[str, Any]],
+        *,
+        system_prompt: str | None = None,
+        model_id: str | None = None,
+        runtime_version: str | None = None,
+        store_system_prompt: bool = False,
+        force: bool = False,
+    ) -> bool:
+        """W-7: report the tool/prompt/model surface this runtime actually
+        loaded for this agent, so Coriqo can compare it against what the
+        mandate was reviewed against.
+
+        Call this once at run start (with the tools/system prompt/model the
+        run is about to use), and again whenever the mandate snapshot
+        refreshes if the locally computed digest has changed — the caller
+        drives both call sites, the same explicit-second-step shape as
+        :meth:`report_approval_request`, since this method (like that one)
+        does its own I/O and must never run on :meth:`decide`'s path.
+
+        Returns ``True`` if a report was (attempted to be) sent, ``False`` if
+        skipped because the digest matches the last one this gate sent —
+        the etag-style skip the spec calls for. There is no
+        ``capability_digest`` field on the mandate snapshot to compare
+        against yet (Coriqo's side of that addition was not visible when
+        this was written), so the comparison is against this gate's own
+        last-sent digest instead: correct within one process's lifetime,
+        but it does mean a fresh process always attests once on its first
+        call, even if an identical process on the same host attested the
+        same surface five minutes ago. ``force=True`` bypasses the skip
+        entirely (e.g. for a caller that wants to guarantee a fresh
+        attestation regardless of local state).
+
+        Best-effort, same posture as the suspend ack and approval report:
+        the callback owns its own I/O (typically scheduling
+        ``AsyncCoriqoAgentsClient.attest_capability_snapshot`` as a
+        fire-and-forget task) and a failure here never raises — it only
+        means Coriqo's capability record for this agent may lag what is
+        actually running, not that anything local breaks.
+
+        ``store_system_prompt`` defaults to ``False``: the raw prompt text
+        is never sent unless the caller explicitly opts in. This runtime has
+        no visibility into a Coriqo-side ``store_system_prompt`` policy
+        field on the snapshot yet, so "never send it unless asked" is the
+        safe default until that field exists and can be read here instead.
+        """
+        from .capability_digest import compute_capability_digest
+
+        tools_list = list(tools)
+        digest, _prompt_hash = compute_capability_digest(
+            tools=tools_list, system_prompt=system_prompt, model_id=model_id,
+        )
+        if not force and digest == self._last_capability_digest:
+            return False
+        if self._report_capability_snapshot is None:
+            return False
+        try:
+            self._report_capability_snapshot(
+                {
+                    "tools": tools_list,
+                    "system_prompt": system_prompt,
+                    "model_id": model_id,
+                    "runtime_version": runtime_version,
+                    "store_system_prompt": store_system_prompt,
+                    "digest": digest,
+                }
+            )
+        except Exception:
+            log.exception(
+                "capability attestation callback failed for agent %s; "
+                "Coriqo's capability record for this agent may now lag "
+                "what is actually loaded",
+                self._agent_id,
+            )
+            return False
+        self._last_capability_digest = digest
+        return True
 
     def _check_budgets(
         self, action: ProposedAction, snapshot: "MandateSnapshot", age: float, now: float,
@@ -1351,10 +1502,43 @@ def mandate_gate(
 
         loop.create_task(_report())
 
+    def _report_capability_snapshot(snapshot: dict[str, Any]) -> None:
+        # Same best-effort/schedule-and-forget shape as the suspend ack and
+        # approval report above.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning(
+                "no running event loop to attest capabilities for agent %s; "
+                "Coriqo's capability record for this agent may lag what is "
+                "actually loaded",
+                coriqo_agent_id,
+            )
+            return
+
+        async def _attest() -> None:
+            try:
+                await client.attest_capability_snapshot(
+                    coriqo_agent_id,
+                    tools=snapshot["tools"],
+                    system_prompt=snapshot["system_prompt"],
+                    model_id=snapshot["model_id"],
+                    runtime_version=snapshot["runtime_version"],
+                    store_system_prompt=snapshot["store_system_prompt"],
+                )
+            except Exception:
+                log.exception(
+                    "failed to attest capability snapshot for agent %s",
+                    coriqo_agent_id,
+                )
+
+        loop.create_task(_attest())
+
     return MandateGate(
         coriqo_mandate_source(client, coriqo_agent_id),
         agent_id=coriqo_agent_id,
         on_suspend_observed=_on_suspend_observed,
         report_approval_request=_report_approval_request,
+        report_capability_snapshot=_report_capability_snapshot,
         **kwargs,
     )

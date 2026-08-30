@@ -475,6 +475,95 @@ async def test_signed_post_covers_the_exact_body_bytes(tmp_path):
     assert key.verify(key.public_key_b64, payload, signature)
 
 
+async def test_attest_capability_snapshot_sends_the_wire_contract(tmp_path):
+    """W-7: the request shape the spec's wire contract names, plus the
+    default (never send raw prompt text unless opted in)."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"status": "accepted"})
+
+    client = _device_client(handler, tmp_path)
+    tools = [{"name": "search", "description": "d", "input_schema": {"type": "object"}}]
+    try:
+        await client.attest_capability_snapshot(
+            _AGENT,
+            tools=tools,
+            system_prompt="you are a helpful assistant",
+            model_id="claude-x",
+            runtime_version="1.2.3",
+        )
+    finally:
+        await client.close()
+
+    request = seen[0]
+    assert request.url.path == f"{ENFORCEMENT_PREFIX}/agents/{_AGENT}/capability-snapshot"
+    body = json.loads(request.content)
+    assert body["tools"] == tools
+    # store_system_prompt defaults to False: the raw text never rides along.
+    assert body["system_prompt"] is None
+    assert body["system_prompt_sha256"] == hashlib.sha256(
+        b"you are a helpful assistant"
+    ).hexdigest()
+    assert body["model_id"] == "claude-x"
+    assert body["runtime_version"] == "1.2.3"
+    assert body["digest_spec"] == "cap-digest-v1"
+    assert len(body["digest"]) == 64
+    assert "X-Coriqo-Signature" in request.headers
+
+
+async def test_attest_capability_snapshot_sends_raw_prompt_only_when_opted_in(tmp_path):
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"status": "accepted"})
+
+    client = _device_client(handler, tmp_path)
+    try:
+        await client.attest_capability_snapshot(
+            _AGENT,
+            tools=[],
+            system_prompt="secret instructions",
+            store_system_prompt=True,
+        )
+    finally:
+        await client.close()
+
+    body = json.loads(seen[0].content)
+    assert body["system_prompt"] == "secret instructions"
+
+
+async def test_attest_capability_snapshot_digest_matches_local_port(tmp_path):
+    """The digest on the wire is exactly what the local cap-digest-v1 port
+    computes for the same inputs — the 422-avoidance property this endpoint
+    depends on."""
+    from byoai.recorder.capability_digest import compute_capability_digest
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"status": "accepted"})
+
+    tools = [{"name": "b"}, {"name": "a", "description": "d"}]
+    client = _device_client(handler, tmp_path)
+    try:
+        await client.attest_capability_snapshot(
+            _AGENT, tools=tools, system_prompt=None, model_id="m1",
+        )
+    finally:
+        await client.close()
+
+    expected_digest, expected_prompt_hash = compute_capability_digest(
+        tools=tools, system_prompt=None, model_id="m1",
+    )
+    body = json.loads(seen[0].content)
+    assert body["digest"] == expected_digest
+    assert body["system_prompt_sha256"] == expected_prompt_hash
+
+
 async def test_a_default_api_key_header_is_stripped_from_a_signed_request(tmp_path):
     """Coriqo 403s any enforcement request presenting a service-account key, so
     one sitting in a caller-supplied client's default headers must not ride
