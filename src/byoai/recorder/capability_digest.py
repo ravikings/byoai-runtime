@@ -19,22 +19,29 @@ picking exactly the three tool fields, sorting tools by name, and the
 envelope/system-prompt-hash conventions below.
 
 .. warning::
-    **Cross-repo parity is unverified.** This was built against the wire
-    contract in the W-7 spec, without sight of Coriqo's actual
-    ``cap-digest-v1`` implementation or its fixture file. The tests in
+    **Cross-repo parity is unverified beyond the fix below.** This was built
+    against the wire contract in the W-7 spec, without sight of Coriqo's
+    actual ``cap-digest-v1`` implementation or its fixture file. The tests in
     ``tests/recorder/test_capability_digest.py`` only prove *internal*
     consistency (order-independence, null/absent equivalence, int/float
     equivalence) — they cannot byte-compare against a real Coriqo digest.
     Treat every attestation as unverified until both sides have been run
     against the same golden vectors in one place.
 
-None-handling for ``system_prompt`` (this repo's choice, not dictated by the
-spec, which left it "TBD, check the convention"): hash the empty byte string,
-the same as an empty prompt. That makes "no prompt" and "empty-string prompt"
-hash identically, which is deliberate — neither carries any content for a
-downstream drift check to react to — and keeps the hash defined and stable
-(a fixed 64-hex-char output, never ``None``) instead of forcing every
-consumer to special-case a missing hash.
+.. warning::
+    **Parity bug found and fixed 2026-08-30**, once Coriqo's actual
+    ``api/utils/capability_digest.py::compute_capability_digest`` became
+    readable from a sibling checkout. The first version of this module hashed
+    ``system_prompt is None`` the same as an empty string. Coriqo embeds a
+    literal JSON ``null`` for ``system_prompt_sha256`` when the prompt is
+    ``None`` (and reports ``system_prompt_chars=None``, not ``0``) — never a
+    hash of the empty string. Since ``system_prompt_sha256`` is hashed
+    *inside* the envelope, that mismatch would have made every digest from a
+    promptless agent disagree with the server's recomputation, 422ing on
+    every attestation from an agent with no system prompt. This module now
+    mirrors Coriqo's convention exactly: ``system_prompt_sha256(None)``
+    returns ``None``, and the envelope embeds JSON ``null`` in that slot
+    rather than a hash of ``""``.
 """
 
 from __future__ import annotations
@@ -95,17 +102,19 @@ def canonicalize_tools(tools: Iterable[Mapping[str, Any]]) -> list[dict[str, Any
     return canonical
 
 
-def system_prompt_sha256(system_prompt: str | None) -> str:
-    """Hex sha256 of the UTF-8 bytes of ``system_prompt``.
+def system_prompt_sha256(system_prompt: str | None) -> str | None:
+    """Hex sha256 of the UTF-8 bytes of ``system_prompt``, or ``None``.
 
-    ``None`` hashes the same as ``""`` — see the module docstring's
-    None-handling note. This is this repo's own documented convention where
-    the spec left it open; it produces a stable, deterministic hash (and an
-    implied char count of 0) whether the agent has no system prompt at all or
-    an explicitly empty one, rather than requiring a sentinel hash value.
+    ``None`` in, ``None`` out — matching Coriqo's
+    ``compute_capability_digest`` exactly (see the module-level parity-bug
+    warning). A prompt of ``""`` still hashes to a real, non-``None`` digest;
+    only the true absence of a prompt propagates as ``None``, both in the
+    returned value and in the envelope this feeds (JSON ``null``, not a hash
+    of empty content).
     """
-    content = system_prompt or ""
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if system_prompt is None:
+        return None
+    return hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
 
 
 def compute_capability_digest(
@@ -113,8 +122,8 @@ def compute_capability_digest(
     tools: Iterable[Mapping[str, Any]],
     system_prompt: str | None,
     model_id: str | None,
-) -> tuple[str, str]:
-    """Returns ``(digest_hex, system_prompt_sha256_hex)``.
+) -> tuple[str, str | None]:
+    """Returns ``(digest_hex, system_prompt_sha256_hex_or_none)``.
 
     ``digest_hex`` is ``sha256_hex(canonical_json(envelope))`` where
     ``envelope`` is::
@@ -123,11 +132,13 @@ def compute_capability_digest(
          "model_id": ...}
 
     with ``tools`` already reduced/sorted by :func:`canonicalize_tools` and
-    ``system_prompt_sha256`` from :func:`system_prompt_sha256`. The literal
-    string ``"cap-digest-v1"`` is embedded inside the hashed payload, per
-    spec, rather than only sent alongside it as ``digest_spec`` — so a
-    request that flips ``digest_spec`` without also changing what got hashed
-    cannot produce a digest Coriqo would accept.
+    ``system_prompt_sha256`` from :func:`system_prompt_sha256` — which is
+    ``None`` (JSON ``null`` in the envelope) when ``system_prompt is None``,
+    matching Coriqo's own envelope construction exactly. The literal string
+    ``"cap-digest-v1"`` is embedded inside the hashed payload, per spec,
+    rather than only sent alongside it as ``digest_spec`` — so a request that
+    flips ``digest_spec`` without also changing what got hashed cannot
+    produce a digest Coriqo would accept.
 
     ``tools`` and ``system_prompt`` are the only inputs the spec says the
     digest covers; ``runtime_version`` deliberately does not enter the

@@ -85,8 +85,13 @@ def test_extra_fields_are_dropped() -> None:
     assert digest_plain == digest_extra
 
 
-def test_system_prompt_none_and_empty_string_hash_identically() -> None:
-    assert system_prompt_sha256(None) == system_prompt_sha256("")
+def test_system_prompt_none_is_none_not_empty_string_hash() -> None:
+    # Matches Coriqo's compute_capability_digest exactly: None in, None out
+    # (embedded as JSON null in the envelope) — a real, distinct state from
+    # an explicitly empty prompt, which still hashes to a real digest.
+    assert system_prompt_sha256(None) is None
+    assert system_prompt_sha256("") is not None
+    assert system_prompt_sha256("") != system_prompt_sha256(None)
 
 
 def test_system_prompt_sha256_is_stable_hex() -> None:
