@@ -72,6 +72,7 @@ import httpx
 from byoai.errors import ByoAIError, ProviderError
 
 from .canonical import canonicalize
+from .capability_digest import DIGEST_SPEC, compute_capability_digest
 from .coriqo_agents import (
     MAX_TRACE_BATCH,
     AgentRegistration,
@@ -918,6 +919,61 @@ class AsyncCoriqoAgentsClient:
                 token_count=token_count,
                 occurred_at=occurred_at,
             ),
+            signed=True,
+        )
+
+    async def attest_capability_snapshot(
+        self,
+        coriqo_agent_id: str,
+        *,
+        tools: Sequence[Mapping[str, Any]],
+        system_prompt: str | None = None,
+        model_id: str | None = None,
+        runtime_version: str | None = None,
+        store_system_prompt: bool = False,
+    ) -> dict[str, Any]:
+        """W-7: attest the actual tool/prompt/model surface this runtime
+        loaded for ``coriqo_agent_id``, so Coriqo can detect capability drift
+        against the mandate it approved — a tool silently added at the
+        runtime layer, not through the governed change path, is exactly the
+        kind of drift a mandate re-approval workflow can't see if nothing
+        ever reports what actually loaded.
+
+        The digest is computed locally with
+        :func:`byoai.recorder.capability_digest.compute_capability_digest`
+        (a port of Coriqo's ``cap-digest-v1``, unverified for byte-for-byte
+        cross-repo parity — see that module's docstring) and sent alongside
+        the raw inputs Coriqo needs to recompute and verify it; Coriqo 422s on
+        a mismatch, so a bug in the local port surfaces as a hard failure here
+        rather than a silently-wrong record.
+
+        ``store_system_prompt`` defaults to ``False`` — the raw
+        ``system_prompt`` field is omitted from the request whenever it is
+        false, and only ``system_prompt_sha256`` (always sent) reaches
+        Coriqo. This is the safe default in the absence of a visible
+        Coriqo-side opt-in flag on the mandate snapshot; see the module
+        that calls this (``mandate.py``) for where that follow-up belongs.
+
+        Device-signed, like the rest of this client's enforcement calls.
+        Never retried: a resent attestation is a second capability record,
+        and Coriqo's endpoint has no idempotency key for it.
+        """
+        digest, prompt_hash = compute_capability_digest(
+            tools=tools, system_prompt=system_prompt, model_id=model_id,
+        )
+        body: dict[str, Any] = {
+            "tools": [dict(tool) for tool in tools],
+            "system_prompt": system_prompt if store_system_prompt else None,
+            "system_prompt_sha256": prompt_hash,
+            "model_id": model_id,
+            "runtime_version": runtime_version,
+            "digest": digest,
+            "digest_spec": DIGEST_SPEC,
+        }
+        return await self._request(
+            "POST",
+            f"{ENFORCEMENT_PREFIX}/agents/{coriqo_agent_id}/capability-snapshot",
+            json_body=body,
             signed=True,
         )
 
