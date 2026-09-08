@@ -64,6 +64,15 @@ runs in the caller's own process, so it appears in no AWS log at all. Without
 this seam the request would exist nowhere. `coriqo-verify` reports it as an
 unpaired `tool_use`, which is correct — nothing executed it.
 
+Point the showcase at a Coriqo (below) and the whole thing lands there with no
+Bedrock-specific wiring: B6 registers with its `actionGroup::function` names as
+`allowed_tools`, the run publishes as a flagged trajectory with four decision
+traces, and Coriqo raises its own **major open finding** for the wire transfer.
+The one thing that does not travel is the `guardrail_intervention` event —
+Coriqo's agent API models tool steps, so AWS's guardrail firing stays in the
+ledger and in this timeline. Worth saying out loud in a demo rather than
+letting the Coriqo view imply it saw everything.
+
 **Misfire demo (B5).** `b5-misfire-demo` has the exact same declared tool
 schema as B1 Fraud Triage, but its fallback transcript calls
 `initiate_wire_transfer` — a tool that was never offered to the model,

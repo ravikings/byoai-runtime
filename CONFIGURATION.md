@@ -720,6 +720,39 @@ the proxy, which cannot be switched off from inside the agent, that flag
 belongs to the caller — and an empty ledger for an untraced agent looks
 identical to an agent that never ran.
 
+##### What a Bedrock run looks like in Coriqo
+
+Publishing needs nothing Bedrock-specific: `publish_session` reads the sealed
+tool steps and Coriqo's agent API does the rest. Verified against a local
+Coriqo (`acme_bank`, service account with `governance:approve` + `model:write`)
+with the showcase's B6:
+
+- The agent registers itself once, with `allowed_tools` set to the
+  `actionGroup::function` names — the same spelling the recorder seals, which
+  is what makes the mandate check work without a translation table.
+- The run becomes one trajectory (`status: flagged`, 4 steps, 1 flagged) and
+  one decision trace per sealed tool call, each citing its ledger row's
+  `entry_hash` as an external grounding anchor.
+- The `returnControl` wire transfer publishes with `result_hash: null` rather
+  than being dropped for want of a result, so Coriqo sees the call that
+  nothing executed.
+- Coriqo raises the mandate breach itself: a **major, open finding** reading
+  "acted outside its mandate. Used tool(s) outside the agent's mandate:
+  PaymentActions::initiate_wire_transfer", raised by "Coriqo · agent
+  oversight". The agent's Runs tab lists each Bedrock tool as in- or
+  not-in-mandate.
+- The run's decision text lands on the last step as readable prose, subject to
+  `payload_mode` like any other.
+
+**`guardrail_intervention` events stay local.** `publish_session` publishes
+tool steps, and a guardrail firing is not one — so an AWS guardrail
+intervention is sealed in the ledger and shown in the showcase timeline, but
+does not appear in Coriqo. `coriqo-verify` and the sealed ledger remain the
+record for it. Say this plainly rather than implying Coriqo shows everything
+the trace contained; closing it needs a decision about how a third party's
+enforcement decision should be modelled on Coriqo's side, not just a
+publisher change.
+
 #### Syncing to Coriqo (opt-in, requires enrollment)
 
 > **Client-only for now.** No released Coriqo serves the `/v1/enroll` and

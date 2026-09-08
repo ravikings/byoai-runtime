@@ -542,3 +542,51 @@ def test_a_collaborator_output_that_is_not_a_dict_still_seals() -> None:
         EventKind.TOOL_USE.value,
         EventKind.TOOL_RESULT.value,
     ]
+
+
+def test_a_bedrock_run_publishes_to_coriqo_with_its_action_group_names(tmp_path) -> None:
+    """The Coriqo publisher needs nothing Bedrock-specific, but only because
+    the names line up: Coriqo matches a step's tool_name against the agent's
+    allowed_tools, which coriqo_sync registers from the same declared_tool_names
+    this seam seals. Verified against a live local Coriqo on 2026-09-08 — the
+    run landed as a flagged trajectory and Coriqo raised its own major finding
+    for the out-of-mandate call.
+    """
+    from byoai.recorder.coriqo_agents import read_tool_steps
+    from byoai.recorder.integration import Recorder
+
+    # The real Recorder, not a stand-in: its promotion step is what stamps
+    # payload_hash and device_id, and a hand-rolled copy here would drift from
+    # it silently — which is exactly the seam this test exists to hold.
+    recorder = Recorder(dir=tmp_path)
+    try:
+        chunks = REAL_TRACE + [
+            {
+                "returnControl": {
+                    "invocationId": "inv-1",
+                    "invocationInputs": [
+                        {
+                            "functionInvocationInput": {
+                                "actionGroup": "PaymentActions",
+                                "function": "initiate_wire_transfer",
+                                "parameters": [],
+                            }
+                        }
+                    ],
+                }
+            }
+        ]
+        seal_run(recorder, normalize_run(chunks, session_id=SESSION))
+
+        steps = read_tool_steps(recorder.ledger, SESSION)
+        assert [s.tool_name for s in steps] == [
+            "TransactionActions::get_transaction",
+            "knowledge_base::KB99",
+            "PaymentActions::initiate_wire_transfer",
+        ]
+        # The returnControl call has no result and must still publish. Dropping
+        # it for want of one would hide the only call nothing else records.
+        assert [s.result_hash is not None for s in steps] == [True, True, False]
+        assert all(s.entry_hash for s in steps)
+    finally:
+        recorder.close()
