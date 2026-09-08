@@ -233,11 +233,19 @@ class AgentRunner:
                     yield event
                 _LAST_LIVE_CALL[self.agent.id] = time.time()
                 _save_last_live_call(_LAST_LIVE_CALL)
-            except ByoAIError:
+            except ByoAIError as exc:
                 log.warning("agent_showcase: model API error for %s, using fallback transcript", self.agent.id)
                 used_fallback = True
                 mode = "replay"
-                async for event in self._run_fallback(session_id, recorder):
+                # A ConfigurationError means nobody supplied credentials — a
+                # configuration state, not a failure, and the one case where
+                # replaying quietly is honest. Anything else is a live call
+                # that was attempted and did not work (bad IAM policy, wrong
+                # region, an agent alias that isn't published), and a demo
+                # that swallowed that would look identical to a working one
+                # while never touching AWS. Say which.
+                reason = None if isinstance(exc, ConfigurationError) else str(exc)
+                async for event in self._run_fallback(session_id, recorder, reason=reason):
                     if event.kind == EventKind.MESSAGE.value and event.text:
                         final_text = event.text
                     yield event
@@ -572,13 +580,17 @@ class AgentRunner:
                 nested_events.append(item)
         return {"sub_agent": sub_agent.id, "summary": final_text}, nested_events
 
-    async def _run_fallback(self, session_id: str, recorder: Any) -> AsyncIterator[RunEvent]:
+    async def _run_fallback(
+        self, session_id: str, recorder: Any, *, reason: str | None = None
+    ) -> AsyncIterator[RunEvent]:
+        """``reason`` is set when the fallback follows a live call that was
+        attempted and failed, and left None when there was nothing to attempt."""
         fallback_path = FALLBACKS_DIR / self.agent.fallback_file
         transcript = json.loads(fallback_path.read_text())
 
         if self.agent.provider == BEDROCK_AGENT_PROVIDER:
             async for event in self._replay_bedrock_trace(
-                transcript["chunks"], session_id, recorder
+                transcript["chunks"], session_id, recorder, reason=reason
             ):
                 yield event
             return
@@ -750,15 +762,54 @@ class AgentRunner:
             yield event
 
     async def _replay_bedrock_trace(
-        self, chunks: list[dict[str, Any]], session_id: str, recorder: Any
+        self,
+        chunks: list[dict[str, Any]],
+        session_id: str,
+        recorder: Any,
+        *,
+        reason: str | None = None,
     ) -> AsyncIterator[RunEvent]:
         """Replay a recorded ``InvokeAgent`` stream through the live normalizer.
 
-        Unlike the other agents' fallbacks this does not seal an ``api_error``
-        first. Those transcripts stand in for a model call that failed; this
-        one stands in for an AWS account the demo box does not have, which is
-        a configuration state and not a failure to record as one.
+        With no ``reason`` this seals no ``api_error``, unlike the other
+        agents' fallbacks: theirs stand in for a model call that failed, while
+        this one stands in for an AWS account the demo box does not have —
+        a configuration state, not a failure to record as one.
+
+        With a ``reason`` it does, and says it out loud. Someone who has set
+        ``BYOAI_BEDROCK_AGENT_ID`` and hit an IAM policy that omits
+        ``bedrock:InvokeAgent`` would otherwise watch a run that looks exactly
+        like a working one and never learn it never reached AWS.
         """
+        if reason is not None:
+            yield RunEvent(
+                kind=EventKind.API_ERROR.value,
+                trace_id=self.trace_id,
+                span_id=self.span_id,
+                parent_span_id=self.parent_span_id,
+                data={"reason": f"Bedrock InvokeAgent failed: {reason}"},
+            )
+            if recorder is not None:
+                from byoai.recorder.extract import PartialEvent
+                from byoai.recorder.schema import now_monotonic_ns, now_ts_device
+
+                recorder.record(
+                    PartialEvent(
+                        session_id=session_id,
+                        kind=EventKind.API_ERROR.value,
+                        ts_device=now_ts_device(),
+                        ts_monotonic_ns=now_monotonic_ns(),
+                        tool_use_id=None,
+                        tool_name=None,
+                        payload={"reason": reason, "source": "bedrock_invoke_agent"},
+                        model=self.agent.model,
+                        provider=BEDROCK_AGENT_PROVIDER,
+                        trace_id=self.trace_id,
+                        span_id=self.span_id,
+                        parent_span_id=self.parent_span_id,
+                    )
+                )
+
         async for event in self._emit_bedrock_run(chunks, session_id, recorder):
             yield event
 

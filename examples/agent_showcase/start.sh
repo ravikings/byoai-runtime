@@ -61,8 +61,16 @@ done
 
 cd "$REPO_ROOT"
 
-echo "==> Installing byoai-runtime (editable) with fastapi + recorder extras"
-pip install --pre -e ".[fastapi,recorder]"
+# boto3 is only pulled in when B6 is actually pointed at AWS. It is a large
+# dependency and every other agent in this gallery runs without it, so a demo
+# box that will never call Bedrock should not pay for it.
+EXTRAS="fastapi,recorder"
+if [ -n "${BYOAI_BEDROCK_AGENT_ID:-}" ]; then
+  EXTRAS="$EXTRAS,bedrock-agent"
+fi
+
+echo "==> Installing byoai-runtime (editable) with $EXTRAS extras"
+pip install --pre -e ".[$EXTRAS]"
 
 export BYOAI_RECORDER_ENABLED="${BYOAI_RECORDER_ENABLED:-1}"
 export BYOAI_RECORDER_DIR="${BYOAI_RECORDER_DIR:-$HOME/.byoai/recorder}"
@@ -75,6 +83,21 @@ if [ "$BYOAI_RECORDER_ENABLED" = "1" ]; then
   echo "      curl -s localhost:$PORT/api/runs/<run_id>/verify | python -m json.tool"
 else
   echo "    Recorder disabled — runs will NOT be sealed; /verify will report it as disabled."
+fi
+
+if [ -n "${BYOAI_BEDROCK_AGENT_ID:-}" ] && [ -n "${BYOAI_BEDROCK_AGENT_ALIAS_ID:-}" ]; then
+  echo "==> B6 will call a real Bedrock agent: $BYOAI_BEDROCK_AGENT_ID / $BYOAI_BEDROCK_AGENT_ALIAS_ID"
+  echo "    Region: ${BYOAI_BEDROCK_REGION:-${AWS_REGION:-<from your AWS config>}}"
+  echo "    Credentials come from the usual boto3 chain (env vars, AWS_PROFILE, SSO, instance role)."
+  echo "    The role needs bedrock:InvokeAgent on that agent alias — see the README."
+elif [ -n "${BYOAI_BEDROCK_AGENT_ID:-}" ] || [ -n "${BYOAI_BEDROCK_AGENT_ALIAS_ID:-}" ]; then
+  # Half-set is the common first-run mistake, and it fails silently into a
+  # replay that looks like a working live run.
+  echo "==> B6: BYOAI_BEDROCK_AGENT_ID and BYOAI_BEDROCK_AGENT_ALIAS_ID must BOTH be set."
+  echo "    Only one is set, so B6 will replay its recorded trace instead."
+else
+  echo "==> B6 will replay its recorded Bedrock trace (set BYOAI_BEDROCK_AGENT_ID +"
+  echo "    BYOAI_BEDROCK_AGENT_ALIAS_ID to call a real agent in your own account)"
 fi
 
 if [ -n "${BYOAI_CORIQO_URL:-}" ]; then

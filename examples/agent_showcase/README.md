@@ -68,6 +68,89 @@ Point the showcase at a Coriqo (below) and the whole thing lands there with no
 Bedrock-specific wiring: B6 registers with its `actionGroup::function` names as
 `allowed_tools`, the run publishes as a flagged trajectory with four decision
 traces, and Coriqo raises its own **major open finding** for the wire transfer.
+### Pointing B6 at your own Bedrock agent
+
+Nothing below is needed to run the demo — B6 replays a recorded trace by
+default. This is for running it against an agent in your own AWS account.
+
+**1. Install the extra.** `boto3` is not a base dependency; every other agent
+here runs without it.
+
+```bash
+pip install --pre "byoai-runtime[fastapi,recorder,bedrock-agent]"
+```
+
+`start.sh` adds `bedrock-agent` on its own when `BYOAI_BEDROCK_AGENT_ID` is
+set, so exporting the vars before running it is enough.
+
+**2. Give the caller credentials.** There is no credential handling in this
+code — `boto3.client()` is called with nothing but a region, so the standard
+chain applies unchanged: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`,
+`AWS_PROFILE` against `~/.aws/credentials`, `aws sso login`, or an instance
+/task role if you run the demo on EC2 or ECS. Whatever `aws sts
+get-caller-identity` works with here will work.
+
+**3. Allow the one call.** `InvokeAgent` against the alias, and nothing else:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "bedrock:InvokeAgent",
+    "Resource": "arn:aws:bedrock:<region>:<account>:agent-alias/<AGENT_ID>/<ALIAS_ID>"
+  }]
+}
+```
+
+The agent's own execution role is what needs `bedrock:InvokeModel`, Lambda
+invoke, and knowledge-base access — that role is yours already and this demo
+does not touch it. If you also want the after-the-fact CloudWatch path
+(`iter_cloudwatch_invocations`), add `logs:FilterLogEvents` on the log group.
+
+**4. Export the ids and run.**
+
+```bash
+export BYOAI_BEDROCK_AGENT_ID=ABCDE12345      # the agent, not its ARN
+export BYOAI_BEDROCK_AGENT_ALIAS_ID=FGHIJ67890 # a PUBLISHED alias, not DRAFT/TSTALIASID
+export BYOAI_BEDROCK_REGION=eu-west-2          # optional; falls back to your AWS config
+./start.sh
+```
+
+Both ids are required. With only one set, `/api/agents` reports B6 as not
+live and the run replays — deliberately, since a half-configured agent cannot
+be invoked and reporting it as live would promise a run that fails.
+
+**5. Check it actually went to AWS.** `/api/agents` shows `"live": true` once
+both vars are set, but that only means the demo will *try*. The run itself is
+the proof: a live run's timeline has no `api_error`, and its steps carry your
+own action groups rather than `SanctionsActions::screen_party`.
+
+```bash
+curl -s localhost:8001/api/agents | python -m json.tool | grep -A2 bedrock
+```
+
+If the call fails, the run falls back to the recorded trace **and says why** —
+an `api_error` event carrying the AWS error, sealed into the ledger like any
+other. The three that come up first:
+
+| What you see | What it usually is |
+|---|---|
+| `AccessDeniedException` | the policy above is missing, or names the agent rather than the agent *alias* |
+| `ResourceNotFoundException` | wrong region, or the alias id is `TSTALIASID`/a draft that was never published |
+| `boto3 is required for Bedrock agent ingest` | the `bedrock-agent` extra isn't installed |
+
+**6. Tracing is not optional.** `stream_invocation` sets `enableTrace=True`
+and does not take an override. Without it AWS returns the answer and no
+orchestration steps, which would seal an empty run — evidence that reads like
+a quiet agent rather than like a missing flag.
+
+**What this costs.** One `InvokeAgent` per run, billed to you at your agent's
+usual rate, plus whatever its action groups and knowledge bases cost. The
+24-hour live-call TTL applies to B6 like every other agent, so mashing the Run
+button replays the cached trace instead of spending again; `?force_live=true`
+bypasses it.
+
 The guardrail intervention travels too, to its own endpoint, and shows up on
 the agent's Runs tab under *Controls outside Coriqo* — attributed to AWS,
 sealed, and deliberately kept out of the flagged count. That separation is

@@ -126,3 +126,38 @@ def test_collaborator_steps_land_on_their_own_span(demo_client):
     parented = {e["span_id"] for e in summary["events"] if e.get("parent_span_id")}
     assert parented
     assert parented < spans
+
+
+def test_a_configured_agent_that_cannot_reach_aws_says_so(demo_client, monkeypatch):
+    """The failure a first-time AWS setup actually hits: the env vars are set,
+    the IAM policy is missing bedrock:InvokeAgent, and the run falls back. If
+    that replayed quietly it would look exactly like a working demo while never
+    touching AWS — so the reason is surfaced and sealed.
+    """
+    monkeypatch.setenv("BYOAI_BEDROCK_AGENT_ID", "AGENT123")
+    monkeypatch.setenv("BYOAI_BEDROCK_AGENT_ALIAS_ID", "ALIAS123")
+
+    from byoai.recorder import bedrock_agent_source
+
+    def _boom(**_kwargs):
+        raise bedrock_agent_source.BedrockAgentSourceError(
+            "invoke_agent failed: AccessDeniedException"
+        )
+
+    monkeypatch.setattr(bedrock_agent_source, "stream_invocation", _boom)
+
+    summary = _run(demo_client)
+    errors = [e for e in summary["events"] if e["kind"] == "api_error"]
+    assert len(errors) == 1
+    assert "AccessDeniedException" in errors[0]["data"]["reason"]
+    # The run still completes off the recorded trace — a broken AWS setup
+    # shouldn't leave a demo with nothing to show.
+    assert summary["events"][-1]["kind"] == "run_complete"
+    assert "OFSI" in (summary["events"][-1]["text"] or "")
+
+
+def test_the_unconfigured_default_stays_quiet(demo_client):
+    """Nothing to attempt is not a failure, and recording one would put a red
+    event in every demo run on a box with no AWS account."""
+    summary = _run(demo_client)
+    assert [e for e in summary["events"] if e["kind"] == "api_error"] == []
