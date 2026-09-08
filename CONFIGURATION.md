@@ -895,6 +895,21 @@ it, and `coriqo-verify` still checks the ledger offline, so neither store has
 to be trusted on its own. Pass `ground_in_ledger=False` to leave the anchors
 off.
 
+`publish_session` also ships any third-party control events the session
+sealed — a Bedrock guardrail intervening — to Coriqo's
+`POST /api/v1/agents/{id}/external-controls`, added by its migration 0314.
+`PublishResult.external_controls` counts them, deliberately apart from
+`flagged`: one is the agent breaching its mandate, the other is somebody
+else's control firing, and a caller that added the two would report a number
+meaning neither. They never move a run's status, on either side. Read them
+without publishing with `read_external_controls(ledger, session_id)`, which
+returns `ExternalControlStep` records; `MAX_EXTERNAL_CONTROLS` is the batch
+cap, and `CoriqoAgentsClient.record_external_controls` is the raw call. A
+Coriqo too old to know the endpoint answers 404, which is logged and ignored
+rather than failing the publish — the run's own record is complete without
+it, and the ledger keeps the authoritative copy either way. See *Managed
+agents you cannot intercept* above for how the events are captured.
+
 The one field that isn't digest-only is `final_output` — a run's decision
 text, attached to the last step, ships as readable prose on purpose. Its
 handling follows `publish_session`'s own `payload_mode` argument (default
