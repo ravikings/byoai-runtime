@@ -393,6 +393,25 @@ function appendWorkflowNode(event) {
   }
 }
 
+// A node still pulsing after the run is over is a lie by omission: it reads as
+// "running" when nothing is going to arrive. B6 ends on a Bedrock
+// returnControl call — the agent asked the caller to run a tool and the caller
+// never did — so the node has to say that rather than spin forever.
+function settleUnresolvedWorkflowNodes() {
+  for (const node of document.querySelectorAll("#workflow-graph .wf-node.active")) {
+    node.classList.remove("active");
+    node.classList.add("unresolved");
+    const mark = document.createElement("span");
+    mark.className = "wf-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = "⧗";
+    node.appendChild(mark);
+    const label = node.querySelector(".label")?.textContent ?? "step";
+    node.setAttribute("aria-label", `${label} — requested, never executed`);
+    node.title = "Requested by the agent; no result was ever recorded.";
+  }
+}
+
 function describeEvent(event) {
   if (event.kind === "message" && event.text) return event.text;
   if (event.kind === "tool_use") {
@@ -402,6 +421,19 @@ function describeEvent(event) {
     return `${event.tool_name} → ${JSON.stringify(event.data?.result ?? {})}`;
   }
   if (event.kind === "session_start") return "session started";
+  // AWS's own guardrail firing mid-run (B6). Named as theirs, not ours: it is
+  // not a mandate verdict, and reading it as one would credit us with a
+  // control we did not apply.
+  if (event.kind === "guardrail_intervention") {
+    const topics = (event.data?.output_assessments ?? [])
+      .concat(event.data?.input_assessments ?? [])
+      .flatMap((a) => a?.topicPolicy?.topics ?? [])
+      .map((t) => t.name)
+      .filter(Boolean);
+    return topics.length
+      ? `AWS Bedrock guardrail blocked the response (${topics.join(", ")})`
+      : "AWS Bedrock guardrail intervened";
+  }
   if (event.kind === "api_error") return event.data?.reason || "model API error — using fallback transcript";
   if (event.kind === "run_complete") return event.text ?? "";
   return JSON.stringify(event.data ?? {});
@@ -460,6 +492,8 @@ function renderRunSummary(summary, focus) {
     modeEl.className = "tag" + (mode ? " " + mode : "");
     modeEl.textContent = mode ?? "";
   }
+
+  if (focus) settleUnresolvedWorkflowNodes();
 
   const errored = mode === "misfire" || Boolean(summary.flagged);
   if (!focus) setSwarmStatus(errored ? "error" : "idle");

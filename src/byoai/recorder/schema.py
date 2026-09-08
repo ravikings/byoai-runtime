@@ -63,6 +63,11 @@ class EventKind(str, Enum):
     #: Written by byoai.recorder.verdicts, which is also where the reason
     #: codes that tell a first denial from a latched repeat are set.
     MANDATE_VERDICT = "mandate_verdict"
+    #: A third-party guardrail that actually fired mid-run — today only AWS
+    #: Bedrock's, sealed by byoai.recorder.bedrock_agent. Distinct from
+    #: MANDATE_VERDICT because the decision was not ours and carries none of
+    #: our reason codes; distinct from API_ERROR because nothing failed.
+    GUARDRAIL_INTERVENTION = "guardrail_intervention"
 
 
 @dataclass(frozen=True, slots=True)

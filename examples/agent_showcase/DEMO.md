@@ -107,12 +107,50 @@ On any completed run, click **Tamper demo**.
 the app process's memory. Restart the server, kill the demo, come back a
 year later: the ledger is the source of truth, not some in-memory cache."
 
+## 8. The agent you don't run (3 min — the AWS conversation)
+
+Run **B6 Sanctions Review (AWS Bedrock Agent)**.
+
+"Everything so far was our loop. This one is a managed AWS Bedrock Agent —
+AWS builds the prompts, picks the tools, calls the Lambdas, decides when to
+stop. We are not in the path and there is no path to be in. So where does
+evidence come from?"
+
+Point at the timeline as it fills:
+
+"From the agent's own trace. AWS emits one for every orchestration step, and
+we normalize it into the same sealed events you just watched — same ledger,
+same hash chain, same verify."
+
+Then the two events at the end, in this order:
+
+1. **The guardrail intervention.** "That's AWS's own control firing. We record
+   that it fired. Good — that's their control working, and now it's in the
+   same evidence chain as everything else."
+2. **The flagged wire transfer.** "And this one the guardrail let straight
+   through. The agent asked the caller to run `initiate_wire_transfer` — for
+   the payment it had just decided to hold — using a tool outside its declared
+   action groups. A guardrail scores content. It does not check authority."
+
+The line to land: "That call is a `returnControl` action, which means it runs
+in *your* process, not in AWS's. It is in no CloudWatch log. If we weren't
+sealing this trace, there would be no record anywhere that it was ever
+requested."
+
+If they ask whether it works on their agents: yes, `enableTrace=True` on the
+invoke and their agent id — no change to the agent, the Lambdas, or the
+prompts. Say the limit too, because their security team will find it: we see
+what the trace says, and a caller who invokes without tracing leaves nothing
+behind. That flag belongs to them, unlike the proxy, which cannot be switched
+off from inside an agent.
+
 ## Closing line
 
-"Eight production-shaped agents, two industries, real tool-calling loops,
-one of them deliberately misbehaving — and in every case, the full record
-survives, verifies, and tells you exactly what happened. That's what you're
-buying: not fewer agent failures, but zero blind spots when they happen."
+"Ten production-shaped agents, two industries, real tool-calling loops, one
+deliberately misbehaving, and one running inside AWS where we never touch it
+— and in every case, the full record survives, verifies, and tells you
+exactly what happened. That's what you're buying: not fewer agent failures,
+but zero blind spots when they happen."
 
 ## If something goes wrong live
 
@@ -123,5 +161,10 @@ buying: not fewer agent failures, but zero blind spots when they happen."
   apology.
 - Forgot `DEMO_TAMPER=1`: the tamper button returns a 403 with a clear
   message; restart with the env var set, or skip §6 for this run.
+- No AWS account for §8: that is the default and nothing needs saying. B6
+  replays a recorded Bedrock trace through the same normalizer the live path
+  uses, so the timeline, the guardrail event and the flagged transfer are all
+  real output from real code. Only the input is recorded. If asked, say so
+  plainly — it holds up better than hedging.
 - Want a clean ledger for the next room: stop the server, delete the
   `BYOAI_RECORDER_DIR` (defaults to `~/.byoai/recorder`), restart.

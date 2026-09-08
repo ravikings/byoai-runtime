@@ -22,6 +22,7 @@ import pytest
 
 from byoai.recorder.coriqo_agents import (
     GROUNDING_SYSTEM,
+    GUARDRAIL_CONTROL_SYSTEM,
     MAX_TRACE_BATCH,
     AgentRegistration,
     AgentSuspendedError,
@@ -30,6 +31,7 @@ from byoai.recorder.coriqo_agents import (
     CoriqoCredentials,
     ensure_registered,
     publish_session,
+    read_external_controls,
     read_tool_steps,
 )
 from byoai.recorder.keys import load_or_create_device_key
@@ -131,6 +133,13 @@ def _batch_handler(traces_seen, *, flagged_steps=()):
                     "flagged": sum(1 for t in out if t["status"] == "flagged"),
                     "traces": out,
                 },
+            )
+        if path.endswith("/external-controls"):
+            body = json.loads(request.content)
+            traces_seen.setdefault("controls", []).append(body)
+            return httpx.Response(
+                201,
+                json={"recorded": len(body["controls"]), "skipped": 0, "controls": []},
             )
         raise AssertionError(f"unexpected {request.method} {path}")
 
@@ -329,9 +338,7 @@ def test_read_tool_steps_ignores_other_sessions(ledger):
 
 def test_an_unpaired_tool_use_still_publishes_with_no_result_hash(ledger):
     ledger.append(
-        make_event(
-            "dev_test", "run_1", EventKind.TOOL_USE, tool_use_id="toolu_x", tool_name="hung"
-        )
+        make_event("dev_test", "run_1", EventKind.TOOL_USE, tool_use_id="toolu_x", tool_name="hung")
     )
     steps = read_tool_steps(ledger, "run_1")
     assert len(steps) == 1 and steps[0].result_hash is None
@@ -563,9 +570,7 @@ def test_each_trace_cites_its_sealed_ledger_row_as_an_external_anchor(ledger):
     seen: dict = {}
 
     with _client(_batch_handler(seen)) as client:
-        publish_session(
-            client, coriqo_agent_id=_CORIQO_AGENT, ledger=ledger, session_id="run_1"
-        )
+        publish_session(client, coriqo_agent_id=_CORIQO_AGENT, ledger=ledger, session_id="run_1")
 
     for i, trace in enumerate(seen["batches"][0]):
         assert trace["grounding_refs"] == [
@@ -668,9 +673,7 @@ def test_malformed_counts_do_not_crash_a_publish(ledger):
         if path.endswith("/complete"):
             completions.append(json.loads(request.content))
             return httpx.Response(200, json={})
-        return httpx.Response(
-            201, json={"recorded": None, "flagged": "not-a-number", "traces": []}
-        )
+        return httpx.Response(201, json={"recorded": None, "flagged": "not-a-number", "traces": []})
 
     with _client(handler) as client:
         result = publish_session(
@@ -869,3 +872,173 @@ def test_a_caller_supplied_http_client_is_not_closed():
     client.close()
     assert not http_client.is_closed
     http_client.close()
+
+
+# -- third-party enforcement decisions -------------------------------------
+
+
+def _guardrail_payload(assessments, *, stage="output"):
+    """The payload byoai.recorder.bedrock_agent seals for an intervention.
+
+    Built through the real `guardrail_categories`, not by hand: the whole point
+    of the `categories` key is that redaction trusts what that function
+    guarantees, so a fixture that spelled it independently could drift into
+    asserting a guarantee the code no longer makes.
+    """
+    from byoai.recorder.bedrock_agent import guardrail_categories
+
+    key = "output_assessments" if stage == "output" else "input_assessments"
+    return {
+        "action": "INTERVENED",
+        "stage": stage,
+        "bedrock_trace_id": "demo-4",
+        "categories": guardrail_categories(assessments),
+        key: assessments,
+    }
+
+
+_TOPIC_ASSESSMENT = [{"topicPolicy": {"topics": [{"name": "LegalAdvice", "action": "BLOCKED"}]}}]
+
+
+def _seal_guardrail(ledger: Ledger, session_id: str, payload=None) -> str:
+    entry = ledger.append(
+        make_event(
+            "dev_test",
+            session_id,
+            EventKind.GUARDRAIL_INTERVENTION,
+            payload=payload if payload is not None else _guardrail_payload(_TOPIC_ASSESSMENT),
+            tool_use_id=None,
+            tool_name=None,
+        )
+    )
+    assert entry is not None
+    return entry.entry_hash
+
+
+def test_read_external_controls_normalizes_a_guardrail(ledger):
+    entry_hash = _seal_guardrail(ledger, "run_1")
+    controls = read_external_controls(ledger, "run_1")
+
+    assert len(controls) == 1
+    control = controls[0]
+    assert control.control_system == GUARDRAIL_CONTROL_SYSTEM
+    assert (control.action, control.stage) == ("intervened", "output")
+    assert control.categories == [{"policy": "topic", "name": "LegalAdvice", "action": "BLOCKED"}]
+    # The anchor is the sealed row's own chain link — Coriqo's idempotency key
+    # and what resolves the published row back to its bytes.
+    assert control.entry_hash == entry_hash
+
+
+def test_an_input_side_intervention_is_not_reported_as_an_output_one(ledger):
+    """A guardrail stopping the prompt and one stopping the answer mean
+    different things to a reviewer."""
+    _seal_guardrail(
+        ledger,
+        "run_1",
+        _guardrail_payload(
+            [{"topicPolicy": {"topics": [{"name": "InsiderTrading", "action": "BLOCKED"}]}}],
+            stage="input",
+        ),
+    )
+    control = read_external_controls(ledger, "run_1")[0]
+    assert control.stage == "input"
+    assert control.categories == [
+        {"policy": "topic", "name": "InsiderTrading", "action": "BLOCKED"}
+    ]
+
+
+def test_tool_steps_and_control_events_never_read_each_other(ledger):
+    """A control firing must not arrive as a tool call: Coriqo mandate-checks
+    tool calls, so publishing one there would flag the agent for a control
+    that worked."""
+    _seal_run(ledger, "run_1", ["screen_party"])
+    _seal_guardrail(ledger, "run_1")
+
+    assert [s.tool_name for s in read_tool_steps(ledger, "run_1")] == ["screen_party"]
+    assert len(read_external_controls(ledger, "run_1")) == 1
+
+
+def test_publish_session_ships_control_events_after_the_steps(ledger):
+    _seal_run(ledger, "run_1", ["screen_party", "lookup"])
+    entry_hash = _seal_guardrail(ledger, "run_1")
+    seen: dict = {}
+
+    with _client(_batch_handler(seen)) as client:
+        result = publish_session(
+            client,
+            coriqo_agent_id="agent-1",
+            ledger=ledger,
+            session_id="run_1",
+        )
+
+    assert result is not None
+    assert result.external_controls == 1
+    # Counted apart from `flagged`: one is the agent breaching its mandate, the
+    # other is someone else's control firing.
+    assert result.flagged == 0 and result.status == "completed"
+
+    posted = seen["controls"][0]
+    assert posted["trajectory_id"] == "traj-1"
+    control = posted["controls"][0]
+    assert control["control_system"] == GUARDRAIL_CONTROL_SYSTEM
+    assert control["evidence_ref"] == entry_hash
+    assert control["evidence_system"] == GROUNDING_SYSTEM
+
+
+def test_a_run_with_no_interventions_posts_nothing(ledger):
+    _seal_run(ledger, "run_1", ["screen_party"])
+    seen: dict = {}
+    with _client(_batch_handler(seen)) as client:
+        result = publish_session(
+            client,
+            coriqo_agent_id="agent-1",
+            ledger=ledger,
+            session_id="run_1",
+        )
+    assert result is not None and result.external_controls == 0
+    assert "controls" not in seen
+
+
+def test_a_coriqo_too_old_to_know_the_endpoint_does_not_break_the_run(ledger):
+    """The endpoint does not exist before migration 0314. A 404 there must not
+    turn a fully recorded run into a stranded one — the ledger keeps the
+    authoritative copy either way."""
+    _seal_run(ledger, "run_1", ["screen_party"])
+    _seal_guardrail(ledger, "run_1")
+    seen: dict = {}
+    inner = _batch_handler(seen)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/external-controls"):
+            return httpx.Response(404, json={"detail": "Not Found"})
+        return inner(request)
+
+    with _client(handler) as client:
+        result = publish_session(
+            client,
+            coriqo_agent_id="agent-1",
+            ledger=ledger,
+            session_id="run_1",
+        )
+
+    assert result is not None
+    assert result.external_controls == 0
+    # The run still closed cleanly — that is the whole point.
+    assert result.status == "completed"
+    assert seen["completions"] == [{"status": "completed"}]
+
+
+def test_control_events_are_not_grounded_when_grounding_is_off(ledger):
+    _seal_run(ledger, "run_1", ["screen_party"])
+    _seal_guardrail(ledger, "run_1")
+    seen: dict = {}
+    with _client(_batch_handler(seen)) as client:
+        publish_session(
+            client,
+            coriqo_agent_id="agent-1",
+            ledger=ledger,
+            session_id="run_1",
+            ground_in_ledger=False,
+        )
+    control = seen["controls"][0]["controls"][0]
+    assert control["evidence_ref"] is None and control["evidence_system"] is None

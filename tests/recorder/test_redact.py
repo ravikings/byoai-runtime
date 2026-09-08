@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
 from byoai.recorder.redact import PayloadMode, apply_payload_mode, redact_free_text
@@ -175,9 +176,10 @@ def test_redacted_mode_walks_nested_dicts_and_lists():
     out = apply_payload_mode(payload, PayloadMode.REDACTED, session_salt=SALT)
     assert out["outer"]["inner_email"] == "[REDACTED:email]"
     assert out["outer"]["items"][0]["ssn"] == "[REDACTED:ssn]"
-    assert out["outer"]["items"][1]["count"] == apply_payload_mode(
-        {"count": 1}, PayloadMode.REDACTED, session_salt=SALT
-    )["count"]
+    assert (
+        out["outer"]["items"][1]["count"]
+        == apply_payload_mode({"count": 1}, PayloadMode.REDACTED, session_salt=SALT)["count"]
+    )
 
 
 def test_redacted_mode_never_mutates_dict_keys():
@@ -209,3 +211,48 @@ def test_payload_hash_identical_regardless_of_mode():
         computed_hash = sha256_hex(canonicalize(raw_payload))
         _ = apply_payload_mode(raw_payload, mode, session_salt=SALT)
         assert computed_hash == raw_hash
+
+
+def test_an_unknown_kind_gets_no_passthrough():
+    """The vocabulary allowlist is opt-in per kind, and the default is the
+    stricter behaviour: a caller that doesn't name a kind, or names one with no
+    entry, must not accidentally inherit another kind's exemptions."""
+    payload = {"action": "INTERVENED", "categories": [{"name": "LegalAdvice"}]}
+    for kind in (None, "tool_use", "message"):
+        out = apply_payload_mode(payload, PayloadMode.REDACTED, session_salt=SALT, kind=kind)
+        assert out["action"] != "INTERVENED"
+        assert out["categories"][0]["name"] != "LegalAdvice"
+
+
+def test_only_the_allowlisted_keys_of_a_guardrail_survive():
+    """The raw assessments are NOT allowlisted, because they can carry the
+    matched span of text — for a PII entity, the address itself."""
+    payload = {
+        "action": "INTERVENED",
+        "stage": "output",
+        "categories": [{"policy": "pii", "name": "EMAIL", "action": "ANONYMIZED"}],
+        "output_assessments": [
+            {"sensitiveInformationPolicy": {"piiEntities": [{"match": "a@b.test"}]}}
+        ],
+        "bedrock_trace_id": "demo-4",
+    }
+    out = apply_payload_mode(
+        payload, PayloadMode.REDACTED, session_salt=SALT, kind="guardrail_intervention"
+    )
+    assert out["action"] == "INTERVENED"
+    assert out["stage"] == "output"
+    assert out["categories"] == payload["categories"]
+    assert "a@b.test" not in json.dumps(out["output_assessments"])
+    # Not allowlisted either — an id is not vocabulary a reviewer reads.
+    assert out["bedrock_trace_id"] != "demo-4"
+
+
+def test_hash_only_still_ships_nothing_for_a_guardrail():
+    """The allowlist is a REDACTED-mode concession. An operator who chose
+    hash-only asked for no payload bytes at all, and this must not carve an
+    exception into that."""
+    payload = {"action": "INTERVENED", "categories": [{"name": "LegalAdvice"}]}
+    out = apply_payload_mode(
+        payload, PayloadMode.HASH_ONLY, session_salt=SALT, kind="guardrail_intervention"
+    )
+    assert out == {}

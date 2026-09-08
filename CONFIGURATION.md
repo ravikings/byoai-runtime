@@ -646,6 +646,127 @@ tool-call pairing findings (a `tool_use` with no matching `tool_result`, or a
 each finding means). Exit code `0` on a clean ledger, `1` on any integrity
 failure, `2` if the file can't be read at all.
 
+#### Managed agents you cannot intercept (`byoai.recorder.bedrock_agent`)
+
+The two enforcement seams below (`@governed_tool`, the proxy gate) and the
+capture path above all assume something of ours sits in the path. An AWS
+Bedrock Agent breaks that assumption: the caller invokes the agent and AWS
+runs the whole orchestration loop — prompt construction, model turns,
+action-group Lambdas, knowledge-base retrieval — inside the service. No model
+request leaves the account for a proxy to tee.
+
+What AWS returns instead is a trace. Invoke with `enableTrace=True` and the
+response stream carries a `TracePart` for every step, and that is the
+evidence. `byoai.recorder.bedrock_agent` rewrites those parts into the same
+Anthropic-shaped bodies `extract.py` already reads, so one extractor and one
+digest rule cover this too:
+
+| Bedrock orchestration part | Sealed as |
+|---|---|
+| `rationale` | `message` — the agent's stated reasoning |
+| `invocationInput` | `tool_use` — action group, KB lookup, code interpreter, or collaborator handoff |
+| `observation.*Output` | `tool_result`, paired to its call by `traceId` |
+| `observation.finalResponse` | `message` — the decision text |
+| `returnControl` | `tool_use` — a call the *caller* executes |
+| `guardrailTrace` with `action: INTERVENED` | `guardrail_intervention` |
+| `failureTrace` | `api_error` |
+
+Sealed tool names are `actionGroup::function` (or `actionGroup::VERB /path`
+for an OpenAPI action group), which is what Coriqo matches against an agent's
+`allowed_tools`. A Bedrock guardrail firing gets its own event kind because it
+is a third party's decision, carrying none of the reason codes a
+`mandate_verdict` has. Collaborator steps land on their own span under the
+root, the same shape sub-agents use.
+
+`modelInvocationInput` is not sealed as an event — it is the constructed
+prompt, not an action, and the proxy seam does not seal prompts either.
+`modelInvocationOutput`'s raw scratchpad is off unless you pass
+`include_raw_model_output=True`.
+
+```python
+from byoai.recorder.bedrock_agent_source import record_invocation
+from byoai.recorder.integration import get_recorder
+
+run = record_invocation(
+    get_recorder(),
+    agent_id="AGENT123456",
+    agent_alias_id="ALIAS7890",
+    prompt="Payment pay_5512 is held for sanctions review. Can it be released?",
+)
+print(run.final_text, run.guardrail_interventions)
+```
+
+`normalize_run(chunks)` is pure — no AWS SDK, no ledger — so recorded JSON
+produces exactly what a live stream would. `seal_run(recorder, run)` writes
+it. `boto3` is confined to `bedrock_agent_source.py` and lives behind an
+extra:
+
+```bash
+pip install --pre "byoai-runtime[bedrock-agent,recorder]"
+```
+
+`iter_cloudwatch_invocations(...)` replays Bedrock's model-invocation logs
+after the fact for agents already running, and is the weaker source of the
+two. The log group is written by AWS and read by us: the customer's logging
+configuration decides what is in it, large payloads are dropped to S3, and
+anyone with CloudWatch write access could have edited a record before we
+sealed it. The ledger will faithfully attest to what the log said, which is
+not the same claim as attesting to what the agent did — say that out loud
+rather than letting a green verify imply more.
+
+The seam's own limit is worth stating too. It sees exactly what the trace
+says, and an agent invoked without `enableTrace` leaves nothing here. Unlike
+the proxy, which cannot be switched off from inside the agent, that flag
+belongs to the caller — and an empty ledger for an untraced agent looks
+identical to an agent that never ran.
+
+##### What a Bedrock run looks like in Coriqo
+
+Publishing needs nothing Bedrock-specific: `publish_session` reads the sealed
+tool steps and Coriqo's agent API does the rest. Verified against a local
+Coriqo (`acme_bank`, service account with `governance:approve` + `model:write`)
+with the showcase's B6:
+
+- The agent registers itself once, with `allowed_tools` set to the
+  `actionGroup::function` names — the same spelling the recorder seals, which
+  is what makes the mandate check work without a translation table.
+- The run becomes one trajectory (`status: flagged`, 4 steps, 1 flagged) and
+  one decision trace per sealed tool call, each citing its ledger row's
+  `entry_hash` as an external grounding anchor.
+- The `returnControl` wire transfer publishes with `result_hash: null` rather
+  than being dropped for want of a result, so Coriqo sees the call that
+  nothing executed.
+- Coriqo raises the mandate breach itself: a **major, open finding** reading
+  "acted outside its mandate. Used tool(s) outside the agent's mandate:
+  PaymentActions::initiate_wire_transfer", raised by "Coriqo · agent
+  oversight". The agent's Runs tab lists each Bedrock tool as in- or
+  not-in-mandate.
+- The run's decision text lands on the last step as readable prose, subject to
+  `payload_mode` like any other.
+
+**`guardrail_intervention` events publish too**, to their own endpoint —
+`POST /api/v1/agents/{id}/external-controls`, added by Coriqo's migration
+0314. Not as a trace: Coriqo mandate-checks a trace's tool calls, so a
+guardrail filed there would flag the agent for a control that worked. They
+land in their own table, sealed onto the mandate chain, and they **never move
+a run's status** — "flagged" means the agent breached the mandate Coriqo
+governs, and merging a third party's control firing into that counter would
+make a bank's breach rate climb every time one of its controls did its job.
+Coriqo shows them on the agent's Runs tab under *Controls outside Coriqo*.
+
+Only policy NAMES travel. `bedrock_agent.guardrail_categories` builds the
+published `categories` from a match's `name`/`type` and deliberately drops an
+item carrying only a `match` — the matched span of text, which for a PII
+entity is the email address itself. That structural guarantee is why
+`redact.py` lets `categories` through under `REDACTED` mode while the raw
+assessments stay digested; without it, a compliance screen showed
+`[REDACTED:hash:027cb…]` where a reviewer needed "LegalAdvice", which
+protected nothing because the matched text was never in that field.
+
+A Coriqo too old to know the endpoint returns 404, which is logged and
+ignored rather than failing the publish — the run's own record is complete
+without it, and the sealed ledger keeps the authoritative copy either way.
+
 #### Syncing to Coriqo (opt-in, requires enrollment)
 
 > **Client-only for now.** No released Coriqo serves the `/v1/enroll` and
@@ -773,6 +894,21 @@ to the same bytes: a hash off a Coriqo trace resolves to the sealed row behind
 it, and `coriqo-verify` still checks the ledger offline, so neither store has
 to be trusted on its own. Pass `ground_in_ledger=False` to leave the anchors
 off.
+
+`publish_session` also ships any third-party control events the session
+sealed — a Bedrock guardrail intervening — to Coriqo's
+`POST /api/v1/agents/{id}/external-controls`, added by its migration 0314.
+`PublishResult.external_controls` counts them, deliberately apart from
+`flagged`: one is the agent breaching its mandate, the other is somebody
+else's control firing, and a caller that added the two would report a number
+meaning neither. They never move a run's status, on either side. Read them
+without publishing with `read_external_controls(ledger, session_id)`, which
+returns `ExternalControlStep` records; `MAX_EXTERNAL_CONTROLS` is the batch
+cap, and `CoriqoAgentsClient.record_external_controls` is the raw call. A
+Coriqo too old to know the endpoint answers 404, which is logged and ignored
+rather than failing the publish — the run's own record is complete without
+it, and the ledger keeps the authoritative copy either way. See *Managed
+agents you cannot intercept* above for how the events are captured.
 
 The one field that isn't digest-only is `final_output` — a run's decision
 text, attached to the last step, ships as readable prose on purpose. Its

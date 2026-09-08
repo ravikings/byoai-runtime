@@ -4,6 +4,8 @@ Run:
 
     export ANTHROPIC_API_KEY=sk-ant-...       # powers the banking (B1-B4) agents live
     export OPENAI_API_KEY=sk-...              # powers the healthcare (H1-H4) agents live
+    export BYOAI_BEDROCK_AGENT_ID=...         # powers B6 against a real AWS Bedrock agent
+    export BYOAI_BEDROCK_AGENT_ALIAS_ID=...   # (both required; falls back to a recorded trace)
     export BYOAI_RECORDER_ENABLED=1
     export DEMO_TAMPER=1                      # optional: enables /api/demo/tamper
     export BYOAI_DEMO_AUTOPILOT=1             # optional: pings a random agent every 1.5-4min
@@ -137,8 +139,16 @@ async def _start_autopilot() -> None:
 
 _PROVIDER_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
+# B6's agent is not reached with an API key but with an agent id and alias in
+# the caller's own AWS account, and needs both — an id without an alias
+# cannot be invoked, so half-configured has to read as not live rather than
+# as a run that will fail.
+_BEDROCK_AGENT_ENV = ("BYOAI_BEDROCK_AGENT_ID", "BYOAI_BEDROCK_AGENT_ALIAS_ID")
+
 
 def _provider_live(provider: str) -> bool:
+    if provider == "bedrock_agent":
+        return all(os.environ.get(var) for var in _BEDROCK_AGENT_ENV)
     env_var = _PROVIDER_KEY_ENV.get(provider)
     return bool(env_var and os.environ.get(env_var))
 

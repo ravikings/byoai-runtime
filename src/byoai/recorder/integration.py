@@ -130,7 +130,8 @@ class Recorder:
         # this must never change regardless of payload_mode.
         payload_hash = sha256_hex(canonicalize(partial.payload))
         shipped_payload = apply_payload_mode(
-            partial.payload, self.payload_mode, session_salt=self._session_salt
+            partial.payload, self.payload_mode, session_salt=self._session_salt,
+            kind=partial.kind,
         )
         return AgentEvent(
             schema_version=partial.schema_version,

@@ -78,17 +78,21 @@ from .schema import EventKind
 
 __all__ = [
     "GROUNDING_SYSTEM",
+    "GUARDRAIL_CONTROL_SYSTEM",
+    "MAX_EXTERNAL_CONTROLS",
     "MAX_TRACE_BATCH",
     "AgentRegistration",
     "AgentSuspendedError",
     "CoriqoAgentsClient",
     "CoriqoAgentsError",
     "CoriqoCredentials",
+    "ExternalControlStep",
     "PublishResult",
     "ToolStep",
     "ensure_registered",
     "parse_response",
     "publish_session",
+    "read_external_controls",
     "read_tool_steps",
     "trace_body",
 ]
@@ -100,6 +104,9 @@ _LIST_PAGE_SIZE = 200  # Coriqo caps `limit` at 200 on GET /api/v1/agents.
 
 #: Coriqo's cap on ``/traces/batch``. Longer runs are split across batches.
 MAX_TRACE_BATCH = 200
+#: Matches Coriqo's own cap on POST .../external-controls. Interventions are
+#: rare next to tool calls, so a smaller batch is not a constraint in practice.
+MAX_EXTERNAL_CONTROLS = 100
 
 #: The ``system`` value on the external grounding anchors this module writes, so
 #: an auditor reading a Coriqo trace knows which store the cited hash lives in.
@@ -247,6 +254,77 @@ class PublishResult:
     recorded: int
     flagged: int
     status: str
+    #: Third-party control events published alongside the steps. Counted
+    #: separately from `flagged` on purpose: one is the agent breaching its
+    #: mandate, the other is somebody else's control firing, and a caller that
+    #: added them together would be reporting a number that means neither.
+    external_controls: int = 0
+
+
+@dataclass(frozen=True)
+class ExternalControlStep:
+    """One sealed control event from a system other than the agent's own.
+
+    Today that means a Bedrock guardrail (see
+    :mod:`byoai.recorder.bedrock_agent`). It is deliberately NOT a
+    :class:`ToolStep`: a tool step is something the agent did, and Coriqo
+    checks those against the mandate. A control firing is something done TO the
+    agent, under a policy Coriqo has never seen — publishing it as a tool call
+    would flag the agent for a control that worked.
+    """
+
+    control_system: str
+    control_ref: str | None
+    action: str
+    stage: str | None
+    categories: list[dict[str, Any]] | None
+    entry_hash: str
+    occurred_at: str
+
+
+#: Guardrail vocabulary -> the action words Coriqo's API accepts. Mapped here
+#: rather than passed through, so a vendor renaming its verbs is one line.
+_GUARDRAIL_ACTIONS = {"INTERVENED": "intervened", "NONE": "allowed"}
+
+#: Which control system a ``guardrail_intervention`` event came from. Only
+#: Bedrock writes this kind today; when a second one does, the event payload
+#: will have to name its own system and this constant becomes a fallback.
+GUARDRAIL_CONTROL_SYSTEM = "aws.bedrock.guardrail"
+
+
+def read_external_controls(ledger: Ledger, session_id: str) -> list[ExternalControlStep]:
+    """One session's sealed third-party control events, in ledger order.
+
+    Reads the ``categories`` the capture seam already normalized rather than
+    re-deriving them from the raw assessments. Two reasons, and the second is
+    the one that bites: those raw assessments are redacted in the shipped
+    payload under the default ``REDACTED`` mode, so deriving from them here
+    published policy names as ``[REDACTED:hash:…]`` — evidence a reviewer
+    cannot read, protecting nothing, since the matched text was never in that
+    field. ``categories`` survives redaction precisely because
+    ``bedrock_agent.guardrail_categories`` guarantees it holds names only.
+    """
+    steps: list[ExternalControlStep] = []
+    for entry in ledger.read_session(session_id):
+        event = entry.event
+        if event.kind != EventKind.GUARDRAIL_INTERVENTION.value:
+            continue
+        payload = event.payload or {}
+        raw_action = str(payload.get("action") or "INTERVENED").upper()
+        categories = payload.get("categories")
+        stage = payload.get("stage")
+        steps.append(
+            ExternalControlStep(
+                control_system=GUARDRAIL_CONTROL_SYSTEM,
+                control_ref=payload.get("bedrock_trace_id"),
+                action=_GUARDRAIL_ACTIONS.get(raw_action, "intervened"),
+                stage=stage if stage in ("input", "output") else None,
+                categories=categories if isinstance(categories, list) and categories else None,
+                entry_hash=entry.entry_hash,
+                occurred_at=event.ts_device,
+            )
+        )
+    return steps
 
 
 # -- reading a run back out of the ledger -----------------------------------
@@ -341,9 +419,7 @@ def parse_response(response: httpx.Response, *, path: str = "") -> tuple[Any, in
         # A 2xx carrying a non-JSON body isn't a Coriqo response at all —
         # usually a proxy or maintenance page. Surface it as the same error
         # type every other failure uses so one `except` covers it.
-        raise CoriqoAgentsError(
-            response.status_code, f"non-JSON response body: {exc}"
-        ) from exc
+        raise CoriqoAgentsError(response.status_code, f"non-JSON response body: {exc}") from exc
 
 
 # -- the client ------------------------------------------------------------
@@ -492,9 +568,7 @@ class CoriqoAgentsClient:
             body["use_case"] = use_case
         if parent_trajectory_id is not None:
             body["parent_trajectory_id"] = parent_trajectory_id
-        return self._request(
-            "POST", f"/api/v1/agents/{coriqo_agent_id}/trajectories", json=body
-        )
+        return self._request("POST", f"/api/v1/agents/{coriqo_agent_id}/trajectories", json=body)
 
     def complete_trajectory(
         self, coriqo_agent_id: str, trajectory_id: str, *, status: str = "completed"
@@ -515,9 +589,7 @@ class CoriqoAgentsClient:
         params: dict[str, Any] = {"limit": limit}
         if status is not None:
             params["status"] = status
-        return self._request(
-            "GET", f"/api/v1/agents/{coriqo_agent_id}/trajectories", params=params
-        )
+        return self._request("GET", f"/api/v1/agents/{coriqo_agent_id}/trajectories", params=params)
 
     def record_trace(
         self,
@@ -580,13 +652,39 @@ class CoriqoAgentsClient:
         if not traces:
             raise ValueError("traces must not be empty")
         if len(traces) > MAX_TRACE_BATCH:
-            raise ValueError(
-                f"a batch holds at most {MAX_TRACE_BATCH} traces, got {len(traces)}"
-            )
+            raise ValueError(f"a batch holds at most {MAX_TRACE_BATCH} traces, got {len(traces)}")
         return self._request(
             "POST",
             f"/api/v1/agents/{coriqo_agent_id}/traces/batch",
             json={"traces": [dict(t) for t in traces]},
+        )
+
+    def record_external_controls(
+        self,
+        coriqo_agent_id: str,
+        trajectory_id: str,
+        controls: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Records enforcement decisions taken on a run by controls outside
+        Coriqo — a Bedrock guardrail intervening, say.
+
+        Idempotent per ``evidence_ref`` on Coriqo's side, so a retried flush
+        does not double-count an intervention; the response separates
+        ``recorded`` from ``skipped`` so a caller can tell the two apart.
+        """
+        if not controls:
+            raise ValueError("controls must not be empty")
+        if len(controls) > MAX_EXTERNAL_CONTROLS:
+            raise ValueError(
+                f"a batch holds at most {MAX_EXTERNAL_CONTROLS} control events, got {len(controls)}"
+            )
+        return self._request(
+            "POST",
+            f"/api/v1/agents/{coriqo_agent_id}/external-controls",
+            json={
+                "trajectory_id": trajectory_id,
+                "controls": [dict(c) for c in controls],
+            },
         )
 
     def authorize(
@@ -727,15 +825,11 @@ def ensure_registered(
     resolved: dict[str, str] = {}
     for key, registration in registrations.items():
         if registration.external_id is None:
-            registration = replace(
-                registration, external_id=f"{external_id_prefix}{key}"
-            )
+            registration = replace(registration, external_id=f"{external_id_prefix}{key}")
         record, created = client.register_agent(registration)
         agent_id = record.get("agent_id")
         if not agent_id:
-            raise CoriqoAgentsError(
-                None, f"registration of {key!r} returned no agent_id"
-            )
+            raise CoriqoAgentsError(None, f"registration of {key!r} returned no agent_id")
         resolved[key] = agent_id
         if created:
             log.info(
@@ -908,6 +1002,22 @@ def publish_session(
         _close_quietly(client, coriqo_agent_id, trajectory_id, session_id)
         raise
 
+    # After the steps and before the close: the run has to exist and still be
+    # open, and a failure here must not strand it (see _publish_external_controls).
+    external_controls = _publish_external_controls(
+        client,
+        coriqo_agent_id=coriqo_agent_id,
+        trajectory_id=trajectory_id,
+        ledger=ledger,
+        session_id=session_id,
+        ground_in_ledger=ground_in_ledger,
+    )
+
+    # Note what does NOT go into this: external_controls. A run's status is
+    # about the agent's own conduct against its mandate, and a third party's
+    # control firing is a different fact — often the opposite one, since a
+    # control that fired is a control that worked. Coriqo refuses to move the
+    # status for these too; agreeing here keeps one answer, not two.
     status = "flagged" if flagged else "completed"
     client.complete_trajectory(coriqo_agent_id, trajectory_id, status=status)
 
@@ -928,4 +1038,66 @@ def publish_session(
         recorded=recorded,
         flagged=flagged,
         status=status,
+        external_controls=external_controls,
     )
+
+
+def _publish_external_controls(
+    client: CoriqoAgentsClient,
+    *,
+    coriqo_agent_id: str,
+    trajectory_id: str,
+    ledger: Ledger,
+    session_id: str,
+    ground_in_ledger: bool,
+) -> int:
+    """Ship this session's third-party control events. Never raises.
+
+    Swallowing the error is the opposite of what the trace path does, and it
+    is deliberate. A rejected trace means the run's own record is incomplete,
+    so the run is closed flagged and the caller told. A rejected control event
+    means one piece of *corroborating* evidence did not land — the run itself
+    is fully recorded and verifiable without it, and failing the publish here
+    would turn a complete run into a stranded one over a Coriqo that is merely
+    older than this client (the endpoint does not exist before migration 0314,
+    and a 404 must not take a working integration down with it).
+
+    The ledger keeps the authoritative copy either way, so nothing is lost that
+    ``coriqo-verify`` cannot still show.
+    """
+    controls = read_external_controls(ledger, session_id)
+    if not controls:
+        return 0
+
+    bodies = [
+        {
+            "control_system": control.control_system,
+            "control_ref": control.control_ref,
+            "action": control.action,
+            "stage": control.stage,
+            "categories": control.categories,
+            # The sealed ledger row this was read out of: Coriqo's idempotency
+            # key, and the anchor that resolves the row back to its bytes.
+            "evidence_ref": control.entry_hash if ground_in_ledger else None,
+            "evidence_system": GROUNDING_SYSTEM if ground_in_ledger else None,
+            "occurred_at": _as_utc_isoformat(control.occurred_at),
+        }
+        for control in controls
+    ]
+
+    published = 0
+    for start in range(0, len(bodies), MAX_EXTERNAL_CONTROLS):
+        batch = bodies[start : start + MAX_EXTERNAL_CONTROLS]
+        try:
+            response = client.record_external_controls(coriqo_agent_id, trajectory_id, batch)
+        except CoriqoAgentsError as exc:
+            log.warning(
+                "coriqo: could not publish %s control event(s) for session %s (%s); "
+                "the sealed ledger keeps them",
+                len(batch),
+                session_id,
+                exc.detail,
+            )
+            continue
+        published += _as_count(response.get("recorded"))
+    return published

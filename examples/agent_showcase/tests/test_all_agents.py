@@ -168,7 +168,7 @@ def test_tamper_demo_breaks_verify_when_enabled(demo_client, monkeypatch):
     assert verify_after["tampered_events"], "expected the tampered seq to show up as a broken link"
 
 
-def test_all_8_agents_seal_cleanly_into_one_ledger(demo_client):
+def test_every_agent_seals_cleanly_into_one_ledger(demo_client):
     client, ledger_dir = demo_client
     for agent_id in ALL_AGENT_IDS:
         _run_to_completion(client, agent_id)
@@ -176,5 +176,11 @@ def test_all_8_agents_seal_cleanly_into_one_ledger(demo_client):
     report = verify_ledger(ledger_dir / "ledger.db")
     assert report.ok
     assert report.broken_links == []
-    assert report.unpaired_tool_uses == []
     assert report.orphan_tool_results == []
+
+    # B6's Bedrock trace ends with a returnControl call: the agent asked the
+    # caller to run initiate_wire_transfer and the demo never did, so that
+    # tool_use has no result and verify names it. That is the true state of
+    # the run, not a defect in capture — an unpaired call is a finding the
+    # examiner is supposed to see, so it is asserted rather than excused.
+    assert report.unpaired_tool_uses == ["bda_returnControl:demo-return-control-01"]
