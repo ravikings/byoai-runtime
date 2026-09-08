@@ -646,6 +646,80 @@ tool-call pairing findings (a `tool_use` with no matching `tool_result`, or a
 each finding means). Exit code `0` on a clean ledger, `1` on any integrity
 failure, `2` if the file can't be read at all.
 
+#### Managed agents you cannot intercept (`byoai.recorder.bedrock_agent`)
+
+The two enforcement seams below (`@governed_tool`, the proxy gate) and the
+capture path above all assume something of ours sits in the path. An AWS
+Bedrock Agent breaks that assumption: the caller invokes the agent and AWS
+runs the whole orchestration loop — prompt construction, model turns,
+action-group Lambdas, knowledge-base retrieval — inside the service. No model
+request leaves the account for a proxy to tee.
+
+What AWS returns instead is a trace. Invoke with `enableTrace=True` and the
+response stream carries a `TracePart` for every step, and that is the
+evidence. `byoai.recorder.bedrock_agent` rewrites those parts into the same
+Anthropic-shaped bodies `extract.py` already reads, so one extractor and one
+digest rule cover this too:
+
+| Bedrock orchestration part | Sealed as |
+|---|---|
+| `rationale` | `message` — the agent's stated reasoning |
+| `invocationInput` | `tool_use` — action group, KB lookup, code interpreter, or collaborator handoff |
+| `observation.*Output` | `tool_result`, paired to its call by `traceId` |
+| `observation.finalResponse` | `message` — the decision text |
+| `returnControl` | `tool_use` — a call the *caller* executes |
+| `guardrailTrace` with `action: INTERVENED` | `guardrail_intervention` |
+| `failureTrace` | `api_error` |
+
+Sealed tool names are `actionGroup::function` (or `actionGroup::VERB /path`
+for an OpenAPI action group), which is what Coriqo matches against an agent's
+`allowed_tools`. A Bedrock guardrail firing gets its own event kind because it
+is a third party's decision, carrying none of the reason codes a
+`mandate_verdict` has. Collaborator steps land on their own span under the
+root, the same shape sub-agents use.
+
+`modelInvocationInput` is not sealed as an event — it is the constructed
+prompt, not an action, and the proxy seam does not seal prompts either.
+`modelInvocationOutput`'s raw scratchpad is off unless you pass
+`include_raw_model_output=True`.
+
+```python
+from byoai.recorder.bedrock_agent_source import record_invocation
+from byoai.recorder.integration import get_recorder
+
+run = record_invocation(
+    get_recorder(),
+    agent_id="AGENT123456",
+    agent_alias_id="ALIAS7890",
+    prompt="Payment pay_5512 is held for sanctions review. Can it be released?",
+)
+print(run.final_text, run.guardrail_interventions)
+```
+
+`normalize_run(chunks)` is pure — no AWS SDK, no ledger — so recorded JSON
+produces exactly what a live stream would. `seal_run(recorder, run)` writes
+it. `boto3` is confined to `bedrock_agent_source.py` and lives behind an
+extra:
+
+```bash
+pip install --pre "byoai-runtime[bedrock-agent,recorder]"
+```
+
+`iter_cloudwatch_invocations(...)` replays Bedrock's model-invocation logs
+after the fact for agents already running, and is the weaker source of the
+two. The log group is written by AWS and read by us: the customer's logging
+configuration decides what is in it, large payloads are dropped to S3, and
+anyone with CloudWatch write access could have edited a record before we
+sealed it. The ledger will faithfully attest to what the log said, which is
+not the same claim as attesting to what the agent did — say that out loud
+rather than letting a green verify imply more.
+
+The seam's own limit is worth stating too. It sees exactly what the trace
+says, and an agent invoked without `enableTrace` leaves nothing here. Unlike
+the proxy, which cannot be switched off from inside the agent, that flag
+belongs to the caller — and an empty ledger for an untraced agent looks
+identical to an agent that never ran.
+
 #### Syncing to Coriqo (opt-in, requires enrollment)
 
 > **Client-only for now.** No released Coriqo serves the `/v1/enroll` and

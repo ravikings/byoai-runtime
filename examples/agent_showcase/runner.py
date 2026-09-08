@@ -24,6 +24,14 @@ providers. Missing/invalid credentials for either provider raise
 ConfigurationError/ProviderError (both ByoAIError), which the fallback path
 below catches — so a run with no API key transparently replays a cached
 transcript instead of live-calling.
+
+B6 is provider="bedrock_agent" and is not run by this loop at all. A managed
+AWS Bedrock Agent runs its own orchestration inside AWS, so there is no tool
+loop here to instrument; the run is invoked (or its recorded trace replayed)
+and ``byoai.recorder.bedrock_agent`` normalizes the resulting trace stream
+into the same sealed events. Both paths go through that one normalizer, so
+the no-credentials replay exercises the live code rather than standing in
+for it.
 """
 
 from __future__ import annotations
@@ -38,9 +46,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from byoai.errors import ByoAIError, ConfigurationError
+from byoai.errors import ByoAIError, ConfigurationError, ProviderError
 from byoai.providers.anthropic import AnthropicProvider
 from byoai.providers.openai_compat import OpenAICompatProvider
+from byoai.recorder.bedrock_agent import PROVIDER as BEDROCK_AGENT_PROVIDER
+from byoai.recorder.bedrock_agent import normalize_run, seal_run
 from byoai.recorder.integration import get_recorder
 from byoai.recorder.schema import EventKind, new_span_id, new_trace_id
 from byoai.types import Message
@@ -265,7 +275,10 @@ class AgentRunner:
         yield final_text
 
     async def _run_live(self, session_id: str, recorder: Any) -> AsyncIterator[RunEvent]:
-        if self.agent.provider == "openai":
+        if self.agent.provider == BEDROCK_AGENT_PROVIDER:
+            async for event in self._run_live_bedrock_agent(session_id, recorder):
+                yield event
+        elif self.agent.provider == "openai":
             async for event in self._run_live_openai(session_id, recorder):
                 yield event
         else:
@@ -563,6 +576,13 @@ class AgentRunner:
         fallback_path = FALLBACKS_DIR / self.agent.fallback_file
         transcript = json.loads(fallback_path.read_text())
 
+        if self.agent.provider == BEDROCK_AGENT_PROVIDER:
+            async for event in self._replay_bedrock_trace(
+                transcript["chunks"], session_id, recorder
+            ):
+                yield event
+            return
+
         if recorder is not None:
             from byoai.recorder.extract import PartialEvent
             from byoai.recorder.schema import now_monotonic_ns, now_ts_device
@@ -675,3 +695,161 @@ class AgentRunner:
                     )
                 if FALLBACK_STEP_DELAY_SECONDS:
                     await asyncio.sleep(FALLBACK_STEP_DELAY_SECONDS)
+
+    # ------------------------------------------------- AWS Bedrock Agent (B6)
+
+    async def _run_live_bedrock_agent(
+        self, session_id: str, recorder: Any
+    ) -> AsyncIterator[RunEvent]:
+        """Invoke a real Bedrock agent and seal what its trace reports.
+
+        Raises ``ConfigurationError``/``ProviderError`` — both ``ByoAIError``,
+        which ``run()`` already treats as "fall back to the recorded trace".
+        That is why an unconfigured demo box shows a working B6 rather than a
+        broken one.
+
+        The stream is drained before any event is surfaced. The other agents
+        stream because this process is running their loop and knows each step
+        as it happens; here AWS owns the loop, and a step is only evidence
+        once its observation has arrived to pair with it.
+        """
+        agent_id = os.environ.get("BYOAI_BEDROCK_AGENT_ID", "").strip()
+        alias_id = os.environ.get("BYOAI_BEDROCK_AGENT_ALIAS_ID", "").strip()
+        if not agent_id or not alias_id:
+            raise ConfigurationError(
+                "BYOAI_BEDROCK_AGENT_ID and BYOAI_BEDROCK_AGENT_ALIAS_ID are unset"
+            )
+
+        from byoai.recorder.bedrock_agent_source import (
+            BedrockAgentSourceError,
+            stream_invocation,
+        )
+
+        region = os.environ.get("BYOAI_BEDROCK_REGION") or None
+
+        def _invoke() -> list[dict[str, Any]]:
+            return list(
+                stream_invocation(
+                    agent_id=agent_id,
+                    agent_alias_id=alias_id,
+                    prompt=self.agent.scenario_message,
+                    session_id=session_id,
+                    region_name=region,
+                )
+            )
+
+        try:
+            # boto3 is synchronous and this runs inside the event loop serving
+            # the SSE stream, so the invocation goes to a worker thread rather
+            # than stalling every other run in flight.
+            chunks = await asyncio.to_thread(_invoke)
+        except BedrockAgentSourceError as exc:
+            raise ProviderError(str(exc), provider=BEDROCK_AGENT_PROVIDER) from exc
+
+        async for event in self._emit_bedrock_run(chunks, session_id, recorder):
+            yield event
+
+    async def _replay_bedrock_trace(
+        self, chunks: list[dict[str, Any]], session_id: str, recorder: Any
+    ) -> AsyncIterator[RunEvent]:
+        """Replay a recorded ``InvokeAgent`` stream through the live normalizer.
+
+        Unlike the other agents' fallbacks this does not seal an ``api_error``
+        first. Those transcripts stand in for a model call that failed; this
+        one stands in for an AWS account the demo box does not have, which is
+        a configuration state and not a failure to record as one.
+        """
+        async for event in self._emit_bedrock_run(chunks, session_id, recorder):
+            yield event
+
+    async def _emit_bedrock_run(
+        self, chunks: list[dict[str, Any]], session_id: str, recorder: Any
+    ) -> AsyncIterator[RunEvent]:
+        """Seal a normalized Bedrock run, then mirror it to the UI.
+
+        ``record_session_start=False`` because ``run()`` already sealed one for
+        this session; two would put a second start in the middle of a chain
+        that is supposed to read as one run.
+        """
+        run = normalize_run(
+            chunks,
+            session_id=session_id,
+            trace_id=self.trace_id,
+            span_id=self.span_id,
+        )
+        if recorder is not None:
+            seal_run(recorder, run, record_session_start=False)
+
+        last_text = ""
+        for capture in run.captures:
+            for event in self._bedrock_capture_events(capture):
+                if event.kind == EventKind.MESSAGE.value and event.text:
+                    last_text = event.text
+                yield event
+                if FALLBACK_STEP_DELAY_SECONDS:
+                    await asyncio.sleep(FALLBACK_STEP_DELAY_SECONDS)
+
+        # Only when the decision text came from the streamed completion rather
+        # than from a finalResponse step — otherwise it has already been
+        # yielded and sealed, and repeating it would show the UI a step the
+        # ledger does not have.
+        if run.final_text and run.final_text != last_text:
+            yield RunEvent(
+                kind=EventKind.MESSAGE.value,
+                trace_id=self.trace_id,
+                span_id=self.span_id,
+                parent_span_id=self.parent_span_id,
+                text=run.final_text,
+            )
+
+    def _bedrock_capture_events(self, capture: Any) -> list[RunEvent]:
+        """One normalized capture -> the RunEvents the UI shows.
+
+        Deliberately reads the same bodies the recorder sealed rather than the
+        raw AWS trace: if these two disagreed, the timeline a demo viewer is
+        looking at would not be the timeline that was sealed.
+        """
+        events: list[RunEvent] = []
+        common = {
+            "trace_id": self.trace_id,
+            "span_id": capture.span_id,
+            "parent_span_id": capture.parent_span_id,
+        }
+
+        if capture.direction == "direct" and capture.event is not None:
+            return [RunEvent(kind=capture.event.kind, data=capture.event.payload, **common)]
+
+        body = capture.body or {}
+        if capture.direction == "response":
+            for block in body.get("content") or []:
+                if block.get("type") == "text":
+                    events.append(RunEvent(kind=EventKind.MESSAGE.value, text=block["text"], **common))
+                elif block.get("type") == "tool_use":
+                    name = block.get("name") or ""
+                    events.append(
+                        RunEvent(
+                            kind=EventKind.TOOL_USE.value,
+                            tool_name=name,
+                            data=self._tool_use_data(name, block.get("input") or {}),
+                            **common,
+                        )
+                    )
+            return events
+
+        for message in body.get("messages") or []:
+            for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    events.append(
+                        RunEvent(
+                            kind=EventKind.TOOL_RESULT.value,
+                            # Named from the capture, not the body: a
+                            # tool_result carries only the id it answers, and
+                            # the demo's workflow graph resolves its nodes by
+                            # (span, tool name) — an unnamed result leaves
+                            # every B6 node spinning as though still running.
+                            tool_name=capture.tool_name,
+                            data={"result": block.get("content")},
+                            **common,
+                        )
+                    )
+        return events

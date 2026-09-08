@@ -284,6 +284,7 @@ h3 {
   gap: 0;
 }
 .wf-node {
+  position: relative;  /* anchors the .unresolved reason label below the pill */
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -317,6 +318,21 @@ h3 {
 .wf-mark { font-size: 0.72rem; line-height: 1; flex-shrink: 0; }
 .wf-node.validated .wf-mark { color: #2f9d78; }
 .wf-node.flagged .wf-mark { color: var(--off-scope); }
+/* Requested but never executed — distinct from both "running" (which pulses)
+   and "flagged" (which is a verdict). Muted, static, and carrying its reason
+   in the label below, so it doesn't read as a control that failed. */
+.wf-node.unresolved { border-color: var(--line); background: var(--paper-2); color: var(--ink-soft); }
+.wf-node.unresolved .dot { background: var(--ink-soft); animation: none; }
+.wf-node.unresolved .wf-mark { color: var(--ink-soft); }
+.wf-node.unresolved::after {
+  content: "no result recorded";
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  font-size: .68rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
 .wf-node .label { font-family: 'IBM Plex Mono', monospace; font-size: 0.74rem; color: var(--ink); }
 .wf-node.flagged .label { color: var(--off-scope); }
 .wf-edge {
@@ -349,6 +365,12 @@ h3 {
 #timeline li.tool_use .kind { color: var(--azure); }
 #timeline li.tool_result .kind { color: var(--validated); }
 #timeline li.message .kind { color: var(--ink); }
+/* A third party's control firing, not ours — gold rather than the azure of
+   our own steps or the red of an off-scope call, so a viewer can see at a
+   glance which events we decided and which AWS did. */
+#timeline li.guardrail_intervention { border-left-color: var(--gold); }
+#timeline li.guardrail_intervention .kind { color: var(--gold); }
+#timeline li.guardrail_intervention .kind::after { content: " · AWS control"; color: var(--ink-soft); }
 #timeline li.flagged { border-left-color: var(--off-scope); background: #fbeeeb; animation: slide-in 0.3s ease both, flag-flash 1.4s ease-out; }
 #timeline li.flagged .kind::after { content: " ⚠ off-scope"; color: var(--off-scope); }
 

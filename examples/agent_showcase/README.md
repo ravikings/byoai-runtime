@@ -4,8 +4,8 @@ Client-facing demo: enterprise agents captured live by byoai-runtime, sealed
 by the Coriqo agent recorder, verifiable after the fact. Full spec:
 `internal_doc/demo_agent_showcase_spec.md` (gitignored, internal).
 
-**Status: M5 — feature-complete.** All milestones (M1-M5) landed: 9 agents
-(8 real + 1 deliberate misfire demo), sub-agent spans, the UI, verify,
+**Status: M5 — feature-complete, plus B6.** All milestones (M1-M5) landed: 10
+agents (8 real, 1 deliberate misfire demo, 1 managed AWS Bedrock Agent), sub-agent spans, the UI, verify,
 sealed replay, the tamper demo, and a Coriqo shipping smoke test. See
 [`DEMO.md`](./DEMO.md) for the sales walkthrough script.
 
@@ -29,6 +29,40 @@ to the recorder is re-shaped so one extractor covers both providers.
 **M3 — UI.** A static single-page UI (`ui/`, served at `/`) lists the agent
 gallery, runs an agent, streams its timeline live over SSE, renders the span
 tree (root + sub-agent spans), and calls `/verify` on demand.
+
+**B6 — a managed AWS Bedrock Agent.** Every other agent here is ours: our
+loop, our tool dispatch, our process. B6 is not. AWS builds the prompts, picks
+the tools, calls the Lambdas and decides when to stop, so there is nothing to
+intercept and nothing to decorate. The evidence comes out of the agent's own
+`InvokeAgent` trace instead, normalized by `byoai.recorder.bedrock_agent` into
+the same sealed events every other agent produces.
+
+Set `BYOAI_BEDROCK_AGENT_ID` and `BYOAI_BEDROCK_AGENT_ALIAS_ID` and it invokes
+a real agent in your account. Unset — the default — it replays
+`fallbacks/b6_bedrock_sanctions_review.json`, which holds real response-stream
+events rather than the step transcripts the other agents fall back to, so the
+no-credentials path runs the same normalizer the live path runs. Nothing about
+the demo is stubbed; only the input is recorded.
+
+The recorded run screens a held payment, hits a 0.71 partial OFSI match, reads
+its own knowledge base, asks a collaborator agent about the settlement window,
+and refuses to release the payment. Two things happen alongside that, and the
+pairing is the point:
+
+- **A Bedrock guardrail intervenes**, and the ledger records that AWS's own
+  control fired — a `guardrail_intervention` event, distinct from anything we
+  decided.
+- **A `returnControl` call asks the caller to run
+  `PaymentActions::initiate_wire_transfer`** — outside the agent's declared
+  action groups, for the payment it just said to hold. The guardrail did not
+  stop it, because a guardrail scores content, not authority. The recorder
+  seals it like any other call and the app flags it against
+  `declared_tool_names`.
+
+That second one has the least coverage anywhere else: a `returnControl` action
+runs in the caller's own process, so it appears in no AWS log at all. Without
+this seam the request would exist nowhere. `coriqo-verify` reports it as an
+unpaired `tool_use`, which is correct — nothing executed it.
 
 **Misfire demo (B5).** `b5-misfire-demo` has the exact same declared tool
 schema as B1 Fraud Triage, but its fallback transcript calls
@@ -136,6 +170,9 @@ retyping `export` each time you run it.
 | `DEMO_TAMPER` | `1` to enable `/api/demo/tamper/{run_id}`, which flips a byte in a sealed row to demonstrate `/verify` catching it. |
 | `BYOAI_DEMO_STEP_DELAY_MS` | Milliseconds to pause between fallback-transcript replay steps. Fallback replay has no real network latency, so without this every step fires in milliseconds — too fast for the UI's heartbeat/active-card/workflow indicators to be seen. `start.sh` sets this to `400` by default; `0` (the library default) disables pacing, which is what the test suite runs with. |
 | `BYOAI_DEMO_LIVE_CALL_STATE` | File tracking each agent's last live-call time, so the 24h live-call TTL (below) survives a server restart. Defaults to `~/.byoai/agent_showcase_live_calls.json`. |
+| `BYOAI_BEDROCK_AGENT_ID` | Invoke a real AWS Bedrock agent for B6 instead of replaying its recorded trace. Requires the alias below; standard AWS credentials apply. Needs `pip install 'byoai-runtime[bedrock-agent]'`. |
+| `BYOAI_BEDROCK_AGENT_ALIAS_ID` | The agent alias to invoke. Both this and the id must be set — `/api/agents` reports B6 as not live otherwise, rather than promising a run that will fail. |
+| `BYOAI_BEDROCK_REGION` | Region for the Bedrock call. Falls back to the usual boto3 resolution (`AWS_REGION`, profile, instance metadata). |
 | `PORT` | Port to serve on. Defaults to `8001`, since a local Coriqo API takes 8000. |
 | `BYOAI_CORIQO_URL` | Publish every run to this Coriqo as governed agent evidence, e.g. `http://localhost:8000`. Unset (the default) turns sync off entirely. |
 | `BYOAI_CORIQO_API_KEY` | Coriqo service account key (`cq_sa_...`). Required with the URL. |

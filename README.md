@@ -513,6 +513,18 @@ forged checkpoint signature. It also flags a `tool_use` the agent sent that
 never got a matching `tool_result` — and, the sharper case, a `tool_result`
 with no `tool_use` behind it.
 
+Capture so far assumes the proxy is in the path. A managed agent — an AWS
+Bedrock Agent, say — offers no path to sit in: the caller invokes it and
+AWS runs the entire orchestration loop inside the service, so no model request
+ever comes past. `byoai.recorder.bedrock_agent` is the third seam for that
+case, sealing the agent's own `InvokeAgent` trace instead of an interception.
+Rationales, action-group calls, knowledge-base lookups, collaborator handoffs,
+`returnControl` calls and guardrail interventions all become the same
+hash-chained events, through the same extractor. Its limit is honest and worth
+repeating: it sees exactly what the trace says, and a caller who invokes
+without `enableTrace` leaves nothing behind — see
+**[CONFIGURATION.md](CONFIGURATION.md#managed-agents-you-cannot-intercept-byoairecorderbedrock_agent)**.
+
 The ledger is designed to also sync to a Coriqo instance rather than staying
 local-only. **The client side of that is built; the server side does not exist
 yet** — no released Coriqo serves the `/v1/enroll` and `/v1/ingest/batch`

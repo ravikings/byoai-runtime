@@ -96,6 +96,9 @@ class TestEventKind:
             "stream_aborted",
             "parse_failure",
             "mandate_verdict",
+            # Added with the Bedrock Agent seam: a third party's guardrail
+            # firing mid-run is neither our verdict nor a failure.
+            "guardrail_intervention",
         }
 
 

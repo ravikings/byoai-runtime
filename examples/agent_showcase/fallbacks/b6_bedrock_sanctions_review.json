@@ -1,0 +1,292 @@
+{
+  "agent_id": "b6-bedrock-sanctions-review",
+  "format": "bedrock_agent_trace",
+  "note": "Raw AWS Bedrock InvokeAgent response-stream events, replayed verbatim when BYOAI_BEDROCK_AGENT_ID is unset. These are the exact shapes byoai.recorder.bedrock_agent normalizes on the live path, so the demo exercises the real code with no AWS account.",
+  "chunks": [
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "agentVersion": "4",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "modelInvocationInput": {
+              "traceId": "demo-0",
+              "type": "ORCHESTRATION",
+              "foundationModel": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+              "text": "You are a payments sanctions reviewer..."
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "rationale": {
+              "traceId": "demo-0",
+              "text": "Payment pay_5512 is held pending sanctions review. I'll screen the beneficiary first."
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "invocationInput": {
+              "traceId": "demo-1",
+              "invocationType": "ACTION_GROUP",
+              "actionGroupInvocationInput": {
+                "actionGroupName": "SanctionsActions",
+                "function": "screen_party",
+                "executionType": "LAMBDA",
+                "parameters": [
+                  {
+                    "name": "party_name",
+                    "type": "string",
+                    "value": "Kestrel Maritime Holdings"
+                  },
+                  {
+                    "name": "country",
+                    "type": "string",
+                    "value": "CY"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "observation": {
+              "traceId": "demo-1",
+              "type": "ACTION_GROUP",
+              "actionGroupInvocationOutput": {
+                "text": "{\"match\": \"partial\", \"list\": \"OFSI\", \"score\": 0.71, \"matched_entity\": \"Kestrel Maritime Hldg Ltd\"}"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "invocationInput": {
+              "traceId": "demo-2",
+              "invocationType": "KNOWLEDGE_BASE",
+              "knowledgeBaseLookupInput": {
+                "knowledgeBaseId": "KB-SANCTIONS-2026",
+                "text": "partial name match escalation threshold OFSI"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "observation": {
+              "traceId": "demo-2",
+              "type": "KNOWLEDGE_BASE",
+              "knowledgeBaseLookupOutput": {
+                "retrievedReferences": [
+                  {
+                    "content": {
+                      "text": "Partial matches scoring 0.65 or above must be escalated to a human reviewer. Automated release is not permitted."
+                    },
+                    "location": {
+                      "type": "S3",
+                      "s3Location": {
+                        "uri": "s3://demo-policies/ofsi-screening-sop-v4.pdf"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "invocationInput": {
+              "traceId": "demo-3",
+              "invocationType": "AGENT_COLLABORATOR",
+              "agentCollaboratorInvocationInput": {
+                "agentCollaboratorName": "PaymentsSpecialist",
+                "agentCollaboratorAliasArn": "arn:aws:bedrock:eu-west-2:123456789012:agent-alias/DEMOCOLLAB1/DEMOALIAS2",
+                "input": {
+                  "text": "Can pay_5512 be held without breaching the settlement window?"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "collaboratorName": "PaymentsSpecialist",
+        "trace": {
+          "orchestrationTrace": {
+            "rationale": {
+              "traceId": "demo-3",
+              "text": "Checking whether pay_5512 can be held without breaching the settlement window."
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "collaboratorName": "PaymentsSpecialist",
+        "trace": {
+          "orchestrationTrace": {
+            "observation": {
+              "traceId": "demo-3",
+              "type": "FINISH",
+              "finalResponse": {
+                "text": "Hold is safe: settlement window closes in 41 hours."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "observation": {
+              "traceId": "demo-3",
+              "type": "AGENT_COLLABORATOR",
+              "agentCollaboratorInvocationOutput": {
+                "agentCollaboratorName": "PaymentsSpecialist",
+                "output": {
+                  "text": "Hold is safe: settlement window closes in 41 hours."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "guardrailTrace": {
+            "traceId": "demo-4",
+            "action": "INTERVENED",
+            "outputAssessments": [
+              {
+                "topicPolicy": {
+                  "topics": [
+                    {
+                      "name": "LegalAdvice",
+                      "type": "DENY",
+                      "action": "BLOCKED"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "returnControl": {
+        "invocationId": "demo-return-control-01",
+        "invocationInputs": [
+          {
+            "functionInvocationInput": {
+              "actionGroup": "PaymentActions",
+              "function": "initiate_wire_transfer",
+              "actionInvocationType": "RESULT",
+              "parameters": [
+                {
+                  "name": "payment_id",
+                  "type": "string",
+                  "value": "pay_5512"
+                },
+                {
+                  "name": "amount_gbp",
+                  "type": "number",
+                  "value": "48250"
+                },
+                {
+                  "name": "beneficiary",
+                  "type": "string",
+                  "value": "Kestrel Maritime Holdings"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "trace": {
+        "agentId": "DEMOAGENT01",
+        "agentAliasId": "DEMOALIAS1",
+        "sessionId": "demo-sanctions-0001",
+        "trace": {
+          "orchestrationTrace": {
+            "observation": {
+              "traceId": "demo-5",
+              "type": "FINISH",
+              "finalResponse": {
+                "text": "Beneficiary Kestrel Maritime Holdings is a 0.71 partial match against the OFSI list. Policy requires escalation to a human reviewer; payment pay_5512 stays held."
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
