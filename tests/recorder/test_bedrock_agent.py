@@ -590,3 +590,70 @@ def test_a_bedrock_run_publishes_to_coriqo_with_its_action_group_names(tmp_path)
         assert all(s.entry_hash for s in steps)
     finally:
         recorder.close()
+
+
+def test_policy_names_survive_redaction_but_the_matched_text_does_not(tmp_path) -> None:
+    """The bug a live pass caught, and the reason `categories` exists.
+
+    Under the default REDACTED payload mode the recorder digests every string
+    it ships, because it cannot tell a vendor's vocabulary from a customer's
+    text. Deriving a published policy name from the raw assessments therefore
+    put `[REDACTED:hash:027cb…]` on a compliance screen where "LegalAdvice"
+    belongs — unreadable evidence protecting nothing, since the matched text
+    was never in that field.
+
+    So the capture seam normalizes to names at seal time and redaction passes
+    that one key through. This pins BOTH halves: the names survive, and the
+    matched email in the raw assessment still does not.
+    """
+    from byoai.recorder.coriqo_agents import read_external_controls
+    from byoai.recorder.integration import Recorder
+    from byoai.recorder.redact import PayloadMode
+
+    recorder = Recorder(dir=tmp_path, payload_mode=PayloadMode.REDACTED)
+    try:
+        chunks = [
+            _trace(
+                {
+                    "guardrailTrace": {
+                        "traceId": "t-g",
+                        "action": "INTERVENED",
+                        "outputAssessments": [
+                            {
+                                "topicPolicy": {
+                                    "topics": [{"name": "LegalAdvice", "action": "BLOCKED"}]
+                                },
+                                "sensitiveInformationPolicy": {
+                                    "piiEntities": [
+                                        {
+                                            "type": "EMAIL",
+                                            "match": "kestrel.ops@example.com",
+                                            "action": "ANONYMIZED",
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                }
+            )
+        ]
+        seal_run(recorder, normalize_run(chunks, session_id=SESSION))
+
+        control = read_external_controls(recorder.ledger, SESSION)[0]
+        assert control.stage == "output"
+        assert control.categories == [
+            {"policy": "topic", "name": "LegalAdvice", "action": "BLOCKED"},
+            # The PII entity's TYPE, never its match.
+            {"policy": "pii", "name": "EMAIL", "action": "ANONYMIZED"},
+        ]
+
+        shipped = json.dumps([e.event.payload for e in recorder.ledger.read_session(SESSION)])
+        assert "kestrel.ops@example.com" not in shipped, (
+            "the matched span reached the shipped payload"
+        )
+        # The raw assessments are still there and still redacted — only the
+        # normalized key is trusted.
+        assert "[REDACTED" in shipped
+    finally:
+        recorder.close()

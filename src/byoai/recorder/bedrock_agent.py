@@ -74,6 +74,7 @@ __all__ = [
     "TOOL_NAME_SEPARATOR",
     "Capture",
     "NormalizedRun",
+    "guardrail_categories",
     "normalize_run",
     "seal_run",
     "tool_names",
@@ -195,6 +196,60 @@ def _request_body_to_dict(request_body: Any) -> dict[str, Any]:
     if not isinstance(content, dict):
         return {}
     return {ctype: _parameters_to_dict(params) for ctype, params in content.items()}
+
+
+#: Bedrock nests each policy type's matches under a different key and calls the
+#: matched thing a different word. Normalized rather than shipped raw so a
+#: reviewer's screen doesn't have to know four vendor shapes to say what fired.
+_GUARDRAIL_POLICY_SHAPES = (
+    ("topicPolicy", "topics", "topic"),
+    ("contentPolicy", "filters", "content"),
+    ("wordPolicy", "customWords", "word"),
+    ("sensitiveInformationPolicy", "piiEntities", "pii"),
+)
+
+
+def guardrail_categories(assessments: Any) -> list[dict[str, Any]]:
+    """Policy NAMES from a guardrail assessment. Never the matched content.
+
+    This distinction is the whole reason the function exists. ``name``/``type``
+    are the vendor's vocabulary — "LegalAdvice", "EMAIL", the name of a rule in
+    the customer's own guardrail configuration — and are safe to read on a
+    compliance screen. ``match`` is the span of text that triggered the rule:
+    for a PII entity that IS the email address, and for a word policy it is
+    what the user typed. It is deliberately not a fallback here, so an item
+    carrying only a match is dropped rather than quietly promoted into a field
+    the redactor is told to leave alone.
+
+    That is what lets :mod:`byoai.recorder.redact` pass this key through under
+    ``REDACTED`` mode: the guarantee is structural, made here, not a hope about
+    what a vendor happens to put in an assessment.
+    """
+    out: list[dict[str, Any]] = []
+    if not isinstance(assessments, list):
+        return out
+    for assessment in assessments:
+        if not isinstance(assessment, dict):
+            continue
+        for key, items_key, policy in _GUARDRAIL_POLICY_SHAPES:
+            policy_block = assessment.get(key)
+            if not isinstance(policy_block, dict):
+                continue
+            for item in policy_block.get(items_key) or []:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name") or item.get("type")
+                if not isinstance(name, str) or not name:
+                    continue
+                action = item.get("action")
+                out.append(
+                    {
+                        "policy": policy,
+                        "name": name,
+                        "action": action if isinstance(action, str) else None,
+                    }
+                )
+    return out
 
 
 def _compact(data: dict[str, Any]) -> dict[str, Any]:
@@ -609,14 +664,26 @@ class _Normalizer:
         if guardrail.get("action") != "INTERVENED":
             return
         self.guardrail_interventions += 1
+        outputs = guardrail.get("outputAssessments") or []
+        inputs = guardrail.get("inputAssessments") or []
+        assessments, stage = (outputs, "output") if outputs else (inputs, "input")
         self._emit_direct(
             KIND_GUARDRAIL_INTERVENTION,
             _compact(
                 {
                     "action": guardrail.get("action"),
+                    "stage": stage,
                     "bedrock_trace_id": guardrail.get("traceId"),
-                    "input_assessments": guardrail.get("inputAssessments"),
-                    "output_assessments": guardrail.get("outputAssessments"),
+                    # Normalized to policy NAMES here, at capture, and kept in
+                    # its own key — see guardrail_categories() for why that
+                    # separation is load-bearing rather than tidiness.
+                    "categories": guardrail_categories(assessments),
+                    # The raw assessments still travel, and are still redacted
+                    # like any other payload: they can carry the matched span
+                    # of text, which is the customer content the guardrail
+                    # existed to contain.
+                    "input_assessments": inputs,
+                    "output_assessments": outputs,
                 }
             ),
             span,

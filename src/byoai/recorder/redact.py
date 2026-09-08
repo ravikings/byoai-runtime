@@ -228,11 +228,38 @@ def redact_free_text(text: str) -> str:
     return "".join(out)
 
 
+#: Payload keys that survive REDACTED mode, per event kind.
+#:
+#: Redaction cannot tell a vendor's vocabulary from a customer's text, so by
+#: default it assumes the worst and digests everything. That is right for a
+#: tool call's arguments and wrong for exactly one thing: the record of a
+#: third-party control firing, whose whole value is *which policy* fired.
+#: Shipping ``[REDACTED:hash:027cb…]`` where a reviewer needs "LegalAdvice"
+#: does not protect anything — the matched text was never in that field — it
+#: just makes the evidence unreadable.
+#:
+#: An entry here is only safe because the publisher guarantees the field's
+#: shape before sealing. ``guardrail_categories`` in
+#: :mod:`byoai.recorder.bedrock_agent` builds ``categories`` from policy
+#: names and types only, and deliberately drops an item that carries just a
+#: ``match`` — the matched span of text, which for a PII entity is the email
+#: address itself. The raw ``input_assessments``/``output_assessments`` are
+#: NOT listed here and stay redacted, because those do carry it.
+#:
+#: Do not add a key here without that kind of structural guarantee at the
+#: point the payload is built. "The vendor probably doesn't put anything
+#: sensitive there" is not one.
+_VOCABULARY_FIELDS: dict[str, frozenset[str]] = {
+    "guardrail_intervention": frozenset({"action", "stage", "categories"}),
+}
+
+
 def apply_payload_mode(
     payload: dict[str, Any],
     mode: PayloadMode,
     *,
     session_salt: str,
+    kind: str | None = None,
 ) -> dict[str, Any]:
     """Return what actually ships in the event's ``payload`` field for ``mode``.
 
@@ -242,12 +269,20 @@ def apply_payload_mode(
       compute over the RAW payload before calling this function).
     - REDACTED: returns a deep copy of ``payload`` with detected secrets/PII
       masked in place, and low-entropy/unclassified values replaced with a
-      salted digest.
+      salted digest — except the ``kind``'s vocabulary fields, if it has any
+      (see :data:`_VOCABULARY_FIELDS`).
+
+    ``kind`` is optional and defaults to redacting everything, so a caller that
+    doesn't pass it gets the stricter behaviour rather than the looser one.
     """
     if mode is PayloadMode.FULL:
         return payload
     if mode is PayloadMode.HASH_ONLY:
         return {}
     if mode is PayloadMode.REDACTED:
-        return {k: _redact_value(v, session_salt=session_salt) for k, v in payload.items()}
+        passthrough = _VOCABULARY_FIELDS.get(kind or "", frozenset())
+        return {
+            k: v if k in passthrough else _redact_value(v, session_salt=session_salt)
+            for k, v in payload.items()
+        }
     raise ValueError(f"unknown payload mode: {mode!r}")

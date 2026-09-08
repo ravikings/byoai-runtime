@@ -68,10 +68,12 @@ Point the showcase at a Coriqo (below) and the whole thing lands there with no
 Bedrock-specific wiring: B6 registers with its `actionGroup::function` names as
 `allowed_tools`, the run publishes as a flagged trajectory with four decision
 traces, and Coriqo raises its own **major open finding** for the wire transfer.
-The one thing that does not travel is the `guardrail_intervention` event —
-Coriqo's agent API models tool steps, so AWS's guardrail firing stays in the
-ledger and in this timeline. Worth saying out loud in a demo rather than
-letting the Coriqo view imply it saw everything.
+The guardrail intervention travels too, to its own endpoint, and shows up on
+the agent's Runs tab under *Controls outside Coriqo* — attributed to AWS,
+sealed, and deliberately kept out of the flagged count. That separation is
+worth pointing at in a demo: the wire transfer is the agent breaching its
+mandate, the guardrail is somebody else's control firing, and a screen that
+merged them would tell a bank neither.
 
 **Misfire demo (B5).** `b5-misfire-demo` has the exact same declared tool
 schema as B1 Fraud Triage, but its fallback transcript calls

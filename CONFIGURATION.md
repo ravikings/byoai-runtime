@@ -744,14 +744,28 @@ with the showcase's B6:
 - The run's decision text lands on the last step as readable prose, subject to
   `payload_mode` like any other.
 
-**`guardrail_intervention` events stay local.** `publish_session` publishes
-tool steps, and a guardrail firing is not one — so an AWS guardrail
-intervention is sealed in the ledger and shown in the showcase timeline, but
-does not appear in Coriqo. `coriqo-verify` and the sealed ledger remain the
-record for it. Say this plainly rather than implying Coriqo shows everything
-the trace contained; closing it needs a decision about how a third party's
-enforcement decision should be modelled on Coriqo's side, not just a
-publisher change.
+**`guardrail_intervention` events publish too**, to their own endpoint —
+`POST /api/v1/agents/{id}/external-controls`, added by Coriqo's migration
+0314. Not as a trace: Coriqo mandate-checks a trace's tool calls, so a
+guardrail filed there would flag the agent for a control that worked. They
+land in their own table, sealed onto the mandate chain, and they **never move
+a run's status** — "flagged" means the agent breached the mandate Coriqo
+governs, and merging a third party's control firing into that counter would
+make a bank's breach rate climb every time one of its controls did its job.
+Coriqo shows them on the agent's Runs tab under *Controls outside Coriqo*.
+
+Only policy NAMES travel. `bedrock_agent.guardrail_categories` builds the
+published `categories` from a match's `name`/`type` and deliberately drops an
+item carrying only a `match` — the matched span of text, which for a PII
+entity is the email address itself. That structural guarantee is why
+`redact.py` lets `categories` through under `REDACTED` mode while the raw
+assessments stay digested; without it, a compliance screen showed
+`[REDACTED:hash:027cb…]` where a reviewer needed "LegalAdvice", which
+protected nothing because the matched text was never in that field.
+
+A Coriqo too old to know the endpoint returns 404, which is logged and
+ignored rather than failing the publish — the run's own record is complete
+without it, and the sealed ledger keeps the authoritative copy either way.
 
 #### Syncing to Coriqo (opt-in, requires enrollment)
 
