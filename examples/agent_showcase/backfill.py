@@ -115,7 +115,9 @@ def plan_runs(agents: list[AgentDef], *, days: int, seed: int, today: date | Non
     for agent in agents:
         times = sorted(slots[agent.id])
         if not agent.cases:
-            planned.extend(PlannedRun(at=at, agent=agent, case=None) for at in times)
+            # One recorded scenario is one real event; replaying it daily is the
+            # exact repetition the case pools exist to avoid.
+            planned.extend(PlannedRun(at=at, agent=agent, case=None) for at in times[-1:])
             continue
         if len(times) > len(agent.cases):
             raise CasePoolExhausted(

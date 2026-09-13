@@ -51,6 +51,12 @@ def test_every_banking_agent_except_bedrock_has_a_varied_pool():
         assert len({c.scenario_message for c in cases}) == len(cases)
 
 
+def test_a_single_recorded_scenario_is_planned_once():
+    banking = [a for a in list_agents() if a.domain == "banking"]
+    plan = backfill.plan_runs(banking, days=90, seed=7)
+    assert sum(run.agent.id == "b6-bedrock-sanctions-review" for run in plan) <= 1
+
+
 def test_misfire_is_a_minority_of_its_pool():
     b5 = next(a for a in list_agents() if a.id == "b5-misfire-demo")
     wires = [
