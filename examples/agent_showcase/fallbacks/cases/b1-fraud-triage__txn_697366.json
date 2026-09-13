@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_697366",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_697366.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_697366"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_839013.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_839013"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_697366"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_697366",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Dallas, the customer's home city; $201.25 against a $39.98 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_697366: Card-present purchase in Dallas, the customer's home city; $201.25 against a $39.98 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_697366: Card-present purchase in Dallas, the customer's home city; $201.25 against a $39.98 average with no velocity anomaly."
+}

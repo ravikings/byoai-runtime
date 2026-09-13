@@ -8,6 +8,7 @@ result, and a backfilled quarter would be full of them.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -15,6 +16,8 @@ import httpx
 import pytest
 from examples.agent_showcase import backfill
 from examples.agent_showcase.agents.registry import list_agents
+from examples.agent_showcase.mocks import case_data
+from examples.agent_showcase.mocks.bank import MISFIRE_FRAUD_TRIAGE_DISPATCH
 from examples.agent_showcase.runner import FALLBACKS_DIR, AgentRunner
 
 from byoai.recorder import coriqo_agents
@@ -23,7 +26,9 @@ from byoai.recorder.coriqo_agents import AgentRegistration, CoriqoAgentsClient, 
 from byoai.recorder.schema import now_ts_device, set_device_clock
 
 CASE_AGENTS = [a for a in list_agents() if a.cases]
-ALL_CASES = [(agent, case) for agent in CASE_AGENTS for case in agent.cases]
+# Replaying every case through the runner is slow at this pool size; a sample
+# per agent covers the runner, and the static check below covers every case.
+SAMPLED_CASES = [(agent, case) for agent in CASE_AGENTS for case in agent.cases[:3]]
 
 
 @pytest.fixture
@@ -41,7 +46,7 @@ def test_every_banking_agent_except_bedrock_has_a_varied_pool():
         if agent_id == "b6-bedrock-sanctions-review":
             assert cases == ()
             continue
-        assert 8 <= len(cases) <= 12, agent_id
+        assert len(cases) >= backfill.max_runs(agent_id, 90), agent_id
         assert len({c.id for c in cases}) == len(cases)
         assert len({c.scenario_message for c in cases}) == len(cases)
 
@@ -56,10 +61,47 @@ def test_misfire_is_a_minority_of_its_pool():
             for call in step["tool_calls"]
         )
     ]
-    assert 1 <= len(wires) <= 2
+    assert 1 <= len(wires) <= 0.05 * len(b5.cases)
 
 
-@pytest.mark.parametrize(("agent", "case"), ALL_CASES, ids=[f"{a.id}:{c.id}" for a, c in ALL_CASES])
+def _dispatch_for(agent):
+    tables = dict(agent.dispatch)
+    for sub in agent.sub_agent_tools.values():
+        tables.update(sub.dispatch)
+    if agent.id == "b5-misfire-demo":
+        tables.update(MISFIRE_FRAUD_TRIAGE_DISPATCH)
+    return tables
+
+
+@pytest.mark.parametrize("agent", CASE_AGENTS, ids=[a.id for a in CASE_AGENTS])
+def test_every_transcript_tool_call_resolves_in_the_mocks(agent):
+    """Generator output agrees with itself: each call a transcript makes,
+    including its sub-agents', returns real mock data rather than an error."""
+    dispatch = _dispatch_for(agent)
+    for case in agent.cases:
+        files = [case.fallback_file, *(file for _, file in case.sub_cases.values())]
+        for file in files:
+            transcript = json.loads((FALLBACKS_DIR / file).read_text())
+            assert transcript["steps"][-1]["tool_calls"] == [] and transcript["steps"][-1]["assistant_text"]
+            for step in transcript["steps"]:
+                for call in step["tool_calls"]:
+                    result = dispatch[call["name"]](call["input"])
+                    assert not (isinstance(result, dict) and "error" in result), (file, call, result)
+
+
+def test_no_person_appears_in_two_cases():
+    people = (
+        [c["name"] for c in case_data.CUSTOMER_HISTORY.values()]
+        + [a["applicant_name"] for a in case_data.ONBOARDING_APPLICATIONS.values()]
+        + [d["cardholder_name"] for d in case_data.DISPUTES.values()]
+        + [a["applicant_name"] for a in case_data.LOAN_APPLICATIONS.values()]
+    )
+    assert len(people) == len(set(people))
+    total = sum(len(a.cases) for a in CASE_AGENTS)
+    assert len(people) == total
+
+
+@pytest.mark.parametrize(("agent", "case"), SAMPLED_CASES, ids=[f"{a.id}:{c.id}" for a, c in SAMPLED_CASES])
 async def test_each_case_replays_without_tool_errors(recorder_env, agent, case):
     results = []
     outcome = None
@@ -100,6 +142,24 @@ def test_plan_is_deterministic_business_hours_and_domain_scoped():
         assert run.agent.domain == "banking"
     assert [r.at for r in first] == sorted(r.at for r in first)
     assert {r.agent.id for r in first} >= {"b1-fraud-triage", "b4-loan-prequalification"}
+
+
+@pytest.mark.parametrize("seed", [1, 20260912, 99])
+def test_a_ninety_day_plan_never_repeats_a_case(seed):
+    banking = [a for a in list_agents() if a.domain == "banking"]
+    plan = backfill.plan_runs(banking, days=90, seed=seed, today=date(2026, 9, 12))
+    drawn = [(r.agent.id, r.case.id) for r in plan if r.case is not None]
+    assert len(drawn) == len(set(drawn))
+    for agent_id, (low, high) in backfill.RUNS_PER_DAY.items():
+        runs = sum(1 for r in plan if r.agent.id == agent_id)
+        assert runs <= backfill.max_runs(agent_id, 90)
+
+
+def test_a_plan_larger_than_the_pool_fails_loudly():
+    b1 = next(a for a in list_agents() if a.id == "b1-fraud-triage")
+    tiny = replace(b1, cases=b1.cases[:5])
+    with pytest.raises(backfill.CasePoolExhausted, match="b1-fraud-triage"):
+        backfill.plan_runs([tiny], days=30, seed=1, today=date(2026, 9, 12))
 
 
 def test_device_clock_is_injectable_and_restorable():

@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_799463",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_799463.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_799463"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_799463"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_799463",
+            "message": "We reviewed your dispute about CloudVault Storage ($1,111.48, cancelled recurring). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_799463 (CloudVault Storage, cancelled recurring): Signed agreement with the disclosed cancellation terms provided. Prior disputes by customer: 1.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_799463 (CloudVault Storage, cancelled recurring): Signed agreement with the disclosed cancellation terms provided. Prior disputes by customer: 1."
+}

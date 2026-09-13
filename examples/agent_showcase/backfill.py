@@ -42,10 +42,30 @@ BUSINESS_TZ = ZoneInfo("America/New_York")
 OPEN, CLOSE = time(8, 0), time(18, 0)
 # Monday is busiest (weekend backlog), Friday tails off.
 WEEKDAY_WEIGHT = {0: 1.15, 1: 1.0, 2: 1.0, 3: 0.95, 4: 0.8}
-# Held payments reach the Bedrock sanctions reviewer rarely; the other queues
-# run all day. Per business day, before the weekday weight.
-RUNS_PER_DAY = {"b6-bedrock-sanctions-review": (0, 2)}
-DEFAULT_RUNS_PER_DAY = (3, 8)
+# What a community bank's agent fleet plausibly handles per business day,
+# before the weekday weight. Held payments reach the Bedrock sanctions reviewer
+# rarely. tools/generate_cases.py sizes each case pool from this table.
+RUNS_PER_DAY = {
+    "b1-fraud-triage": (1, 5),
+    "b2-kyc-onboarding": (1, 4),
+    "b3-dispute-resolution": (0, 3),
+    "b4-loan-prequalification": (1, 4),
+    "b5-misfire-demo": (0, 2),
+    "b6-bedrock-sanctions-review": (0, 1),
+}
+DEFAULT_RUNS_PER_DAY = (1, 3)
+
+
+class CasePoolExhausted(RuntimeError):
+    """A plan needs more distinct cases than an agent's pool holds."""
+
+
+def max_runs(agent_id: str, days: int) -> int:
+    """The most runs ``plan_runs`` can schedule for one agent over ``days``:
+    every business day at the top of its range on the heaviest weekday."""
+    high = RUNS_PER_DAY.get(agent_id, DEFAULT_RUNS_PER_DAY)[1]
+    business_days = sum(1 for offset in range(days) if (offset % 7) < 5) + 1
+    return round(high * max(WEEKDAY_WEIGHT.values())) * business_days
 
 
 class StepClock:
@@ -78,20 +98,33 @@ def _business_days(days: int, today: date) -> list[date]:
 
 
 def plan_runs(agents: list[AgentDef], *, days: int, seed: int, today: date | None = None) -> list[PlannedRun]:
+    """Cases are drawn without replacement: a real queue never sees the same
+    transaction twice, so a plan that would need a repeat raises instead."""
     rng = random.Random(seed)
-    planned: list[PlannedRun] = []
+    slots: dict[str, list[datetime]] = {agent.id: [] for agent in agents}
     for day in _business_days(days, today or datetime.now(BUSINESS_TZ).date()):
         weight = WEEKDAY_WEIGHT[day.weekday()]
         opening = datetime.combine(day, OPEN, BUSINESS_TZ)
         span = (datetime.combine(day, CLOSE, BUSINESS_TZ) - opening).total_seconds()
         for agent in agents:
             low, high = RUNS_PER_DAY.get(agent.id, DEFAULT_RUNS_PER_DAY)
-            count = round(rng.randint(low, high) * weight)
-            for _ in range(count):
-                at = (opening + timedelta(seconds=rng.uniform(0, span))).astimezone(timezone.utc)
-                case = rng.choice(agent.cases) if agent.cases else None
-                planned.append(PlannedRun(at=at, agent=agent, case=case))
-    planned.sort(key=lambda run: run.at)
+            for _ in range(round(rng.randint(low, high) * weight)):
+                slots[agent.id].append((opening + timedelta(seconds=rng.uniform(0, span))).astimezone(timezone.utc))
+
+    planned: list[PlannedRun] = []
+    for agent in agents:
+        times = sorted(slots[agent.id])
+        if not agent.cases:
+            planned.extend(PlannedRun(at=at, agent=agent, case=None) for at in times)
+            continue
+        if len(times) > len(agent.cases):
+            raise CasePoolExhausted(
+                f"{agent.id}: plan needs {len(times)} distinct cases, pool has {len(agent.cases)}; "
+                "regenerate with tools/generate_cases.py or shorten --days"
+            )
+        drawn = rng.sample(agent.cases, len(times))
+        planned.extend(PlannedRun(at=at, agent=agent, case=case) for at, case in zip(times, drawn))
+    planned.sort(key=lambda run: (run.at, run.agent.id))
     return planned
 
 
@@ -193,7 +226,11 @@ def main(argv: list[str] | None = None) -> int:
     from .agents.registry import list_agents
 
     agents = [a for a in list_agents() if args.domain == "all" or a.domain == args.domain]
-    planned = plan_runs(agents, days=args.days, seed=args.seed)
+    try:
+        planned = plan_runs(agents, days=args.days, seed=args.seed)
+    except CasePoolExhausted as exc:
+        log.error("backfill: %s", exc)
+        return 2
     if args.limit is not None:
         planned = planned[: args.limit]
     if not planned:

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_899518",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_899518.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_899518"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 1975.53,
+            "monthly_debt_payments_usd": 236.81
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1199,
+            "monthly_income_usd": 1975.53
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_899518",
+            "decision": "declined",
+            "rationale": "Monthly income $1,975.53 is below the $3,000.00 policy minimum; DTI 12.0%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_899518 (Chidi Abara, $15,500.00 requested): Monthly income $1,975.53 is below the $3,000.00 policy minimum; DTI 12.0%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_899518 (Chidi Abara, $15,500.00 requested): Monthly income $1,975.53 is below the $3,000.00 policy minimum; DTI 12.0%."
+}

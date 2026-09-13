@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_875830",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_875830.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_875830"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 10867.17,
+            "monthly_debt_payments_usd": 5977.14
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.55,
+            "monthly_income_usd": 10867.17
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_875830",
+            "decision": "declined",
+            "rationale": "DTI 0.55 (55.0%) exceeds the 0.43 policy max ($5,977.14 debt on $10,867.17 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_875830 (Katarzyna Barros, $39,500.00 requested): DTI 0.55 (55.0%) exceeds the 0.43 policy max ($5,977.14 debt on $10,867.17 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_875830 (Katarzyna Barros, $39,500.00 requested): DTI 0.55 (55.0%) exceeds the 0.43 policy max ($5,977.14 debt on $10,867.17 income)."
+}

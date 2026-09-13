@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_864427",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_864427.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_864427"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_864427"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_864427",
+            "message": "We reviewed your dispute about Airbnb ($627.90, cancelled recurring). The evidence supports your claim, so we have posted a provisional credit of $627.90 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_864427",
+            "amount_usd": 627.9
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $627.90 posted for disp_864427 (Airbnb, cancelled recurring): No response within 10 days.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $627.90 posted for disp_864427 (Airbnb, cancelled recurring): No response within 10 days."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_503407",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_503407.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_503407"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_482471.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_482471"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_503407"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocking and routing to the fraud desk.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_503407",
+            "decision": "block",
+            "rationale": "Istanbul, TR is 7,918 km from the prior transaction in Albany 52 minutes earlier, which is impossible travel; $187.76 at GameKey Store is 1.8x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_503407: Istanbul, TR is 7,918 km from the prior transaction in Albany 52 minutes earlier, which is impossible travel; $187.76 at GameKey Store is 1.8x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_503407: Istanbul, TR is 7,918 km from the prior transaction in Albany 52 minutes earlier, which is impossible travel; $187.76 at GameKey Store is 1.8x the customer's average."
+}

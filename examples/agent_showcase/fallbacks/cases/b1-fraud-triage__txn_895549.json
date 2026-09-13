@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_895549",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_895549.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_895549"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_196661.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_196661"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_895549"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_895549",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Kansas City, the customer's home city; $229.78 against a $45.42 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_895549: Card-present purchase in Kansas City, the customer's home city; $229.78 against a $45.42 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_895549: Card-present purchase in Kansas City, the customer's home city; $229.78 against a $45.42 average with no velocity anomaly."
+}

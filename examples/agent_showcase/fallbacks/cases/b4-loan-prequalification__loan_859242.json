@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_859242",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_859242.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_859242"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2923.6,
+            "monthly_debt_payments_usd": 436.84
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1494,
+            "monthly_income_usd": 2923.6
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_859242",
+            "decision": "declined",
+            "rationale": "Monthly income $2,923.60 is below the $3,000.00 policy minimum; DTI 14.9%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_859242 (Farah Zhang, $7,500.00 requested): Monthly income $2,923.60 is below the $3,000.00 policy minimum; DTI 14.9%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_859242 (Farah Zhang, $7,500.00 requested): Monthly income $2,923.60 is below the $3,000.00 policy minimum; DTI 14.9%."
+}

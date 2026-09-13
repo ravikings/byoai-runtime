@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_713794",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_713794.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_713794"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_713794"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_713794",
+            "message": "We reviewed your dispute about Northwind Electronics ($1,252.48, not as described). The evidence supports your claim, so we have posted a provisional credit of $1,252.48 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_713794",
+            "amount_usd": 1252.48
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $1,252.48 posted for disp_713794 (Northwind Electronics, not as described): Accepted return authorization RMA-7878.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $1,252.48 posted for disp_713794 (Northwind Electronics, not as described): Accepted return authorization RMA-7878."
+}

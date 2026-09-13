@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_574271",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_574271.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_574271"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_131506.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_131506"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_574271"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_574271",
+            "decision": "clear",
+            "rationale": "Online purchase in the customer's home city, no geo or velocity anomaly; $1,618.26 at Crate & Barrel is above the $53.76 average but consistent with the category."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_574271: Online purchase in the customer's home city, no geo or velocity anomaly; $1,618.26 at Crate & Barrel is above the $53.76 average but consistent with the category.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_574271: Online purchase in the customer's home city, no geo or velocity anomaly; $1,618.26 at Crate & Barrel is above the $53.76 average but consistent with the category."
+}

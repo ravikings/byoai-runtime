@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_844669",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_844669.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_844669"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 9231.56,
+            "monthly_debt_payments_usd": 5068.31
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.549,
+            "monthly_income_usd": 9231.56
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_844669",
+            "decision": "declined",
+            "rationale": "DTI 0.549 (54.9%) exceeds the 0.43 policy max ($5,068.31 debt on $9,231.56 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_844669 (Brendan Ahmadi, $12,000.00 requested): DTI 0.549 (54.9%) exceeds the 0.43 policy max ($5,068.31 debt on $9,231.56 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_844669 (Brendan Ahmadi, $12,000.00 requested): DTI 0.549 (54.9%) exceeds the 0.43 policy max ($5,068.31 debt on $9,231.56 income)."
+}

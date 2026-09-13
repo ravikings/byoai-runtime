@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_892721",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_892721.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_892721"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_267145.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_267145"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_892721"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_892721",
+            "decision": "clear",
+            "rationale": "891 km over 1403 minutes is plausible travel from Columbus; Cafe Luna fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_892721: 891 km over 1403 minutes is plausible travel from Columbus; Cafe Luna fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_892721: 891 km over 1403 minutes is plausible travel from Columbus; Cafe Luna fits the trip and the card was present."
+}

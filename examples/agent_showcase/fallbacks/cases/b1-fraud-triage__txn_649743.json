@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_649743",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_649743.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_649743"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_519961.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_519961"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_649743"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_649743",
+            "decision": "block",
+            "rationale": "Istanbul, TR is 9,479 km from the prior transaction in Orlando 128 minutes earlier, which is impossible travel; $147.14 at CardCart is 2.6x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_649743: Istanbul, TR is 9,479 km from the prior transaction in Orlando 128 minutes earlier, which is impossible travel; $147.14 at CardCart is 2.6x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_649743: Istanbul, TR is 9,479 km from the prior transaction in Orlando 128 minutes earlier, which is impossible travel; $147.14 at CardCart is 2.6x the customer's average."
+}

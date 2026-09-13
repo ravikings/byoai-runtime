@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_647877",
+  "steps": [
+    {
+      "assistant_text": "Screening Mohammed Richter against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Mohammed Richter"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: OFAC-SDN 'Mohammed Richtee' (score 0.78). Partial match; SDN entry DOB 1960-03-26.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: OFAC-SDN 'Mohammed Richtee' (score 0.78). Partial match; SDN entry DOB 1960-03-26."
+}

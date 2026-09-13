@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_563319",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_563319.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_563319"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_768610.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_768610"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_563319"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_563319",
+            "decision": "clear",
+            "rationale": "3,813 km over 1857 minutes is plausible travel from Las Vegas; Hertz fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_563319: 3,813 km over 1857 minutes is plausible travel from Las Vegas; Hertz fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_563319: 3,813 km over 1857 minutes is plausible travel from Las Vegas; Hertz fits the trip and the card was present."
+}

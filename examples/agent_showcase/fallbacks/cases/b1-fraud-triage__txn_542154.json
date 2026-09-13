@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_542154",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_542154.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_542154"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_230769.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_230769"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_542154"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocking and routing to the fraud desk.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_542154",
+            "decision": "block",
+            "rationale": "Bogota, CO is 5,063 km from the prior transaction in Phoenix 21 minutes earlier, which is impossible travel; $535.76 at eGift Hub is 4.1x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_542154: Bogota, CO is 5,063 km from the prior transaction in Phoenix 21 minutes earlier, which is impossible travel; $535.76 at eGift Hub is 4.1x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_542154: Bogota, CO is 5,063 km from the prior transaction in Phoenix 21 minutes earlier, which is impossible travel; $535.76 at eGift Hub is 4.1x the customer's average."
+}

@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_788594",
+  "steps": [
+    {
+      "assistant_text": "Screening Amina Russo against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Amina Russo"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: OFAC-SDN 'Amina Russe' (score 0.81). Partial match; SDN entry DOB 1959-02-08.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: OFAC-SDN 'Amina Russe' (score 0.81). Partial match; SDN entry DOB 1959-02-08."
+}

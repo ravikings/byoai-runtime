@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_722987",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_722987.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_722987"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_451660.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_451660"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_722987"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_722987",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Miami, the customer's home city; $243.85 against a $78.70 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_722987: Card-present purchase in Miami, the customer's home city; $243.85 against a $78.70 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_722987: Card-present purchase in Miami, the customer's home city; $243.85 against a $78.70 average with no velocity anomaly."
+}

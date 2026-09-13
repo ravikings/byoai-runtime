@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_875974",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_875974.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_875974"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_376139.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_376139"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_875974"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_875974",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Boise, the customer's home city; $26.09 against a $45.33 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_875974: Card-present purchase in Boise, the customer's home city; $26.09 against a $45.33 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_875974: Card-present purchase in Boise, the customer's home city; $26.09 against a $45.33 average with no velocity anomaly."
+}

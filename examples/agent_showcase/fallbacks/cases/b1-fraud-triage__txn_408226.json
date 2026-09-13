@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_408226",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_408226.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_408226"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_651771.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_651771"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_408226"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_408226",
+            "decision": "block",
+            "rationale": "Kyiv, UA is 9,101 km from the prior transaction in Tampa 72 minutes earlier, which is impossible travel; $2,595.20 at Luxe Timepieces is 55.3x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_408226: Kyiv, UA is 9,101 km from the prior transaction in Tampa 72 minutes earlier, which is impossible travel; $2,595.20 at Luxe Timepieces is 55.3x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_408226: Kyiv, UA is 9,101 km from the prior transaction in Tampa 72 minutes earlier, which is impossible travel; $2,595.20 at Luxe Timepieces is 55.3x the customer's average."
+}

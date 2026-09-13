@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_816790",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_816790.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_816790"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_816790"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_816790",
+            "message": "We reviewed your dispute about Etsy Seller: MapleCraft ($404.09, cancelled recurring). The evidence supports your claim, so we have posted a provisional credit of $404.09 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_816790",
+            "amount_usd": 404.09
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $404.09 posted for disp_816790 (Etsy Seller: MapleCraft, cancelled recurring): No response within 10 days.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $404.09 posted for disp_816790 (Etsy Seller: MapleCraft, cancelled recurring): No response within 10 days."
+}

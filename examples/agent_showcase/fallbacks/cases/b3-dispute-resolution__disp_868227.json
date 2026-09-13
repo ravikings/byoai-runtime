@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_868227",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_868227.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_868227"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_868227"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_868227",
+            "message": "We reviewed your dispute about Grubhub ($742.29, item not received). The evidence supports your claim, so we have posted a provisional credit of $742.29 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_868227",
+            "amount_usd": 742.29
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $742.29 posted for disp_868227 (Grubhub, item not received): Carrier marked delivered with no signature or photo; merchant did not reship.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $742.29 posted for disp_868227 (Grubhub, item not received): Carrier marked delivered with no signature or photo; merchant did not reship."
+}

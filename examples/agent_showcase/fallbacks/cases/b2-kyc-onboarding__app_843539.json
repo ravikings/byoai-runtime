@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_843539",
+  "steps": [
+    {
+      "assistant_text": "Opening the document set for app_843539.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_843539"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Olumide Andersen"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_843539"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_843539",
+            "decision": "escalate",
+            "rationale": "PEP match at score 0.92: Former deputy minister of finance, TR. Enhanced due diligence required. Risk score 77 (high)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_843539: PEP match at score 0.92: Former deputy minister of finance, TR. Enhanced due diligence required. Risk score 77 (high).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_843539: PEP match at score 0.92: Former deputy minister of finance, TR. Enhanced due diligence required. Risk score 77 (high)."
+}

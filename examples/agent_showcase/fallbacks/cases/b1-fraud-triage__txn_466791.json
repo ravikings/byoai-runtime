@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_466791",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_466791.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_466791"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_270203.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_270203"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_466791"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_466791",
+            "decision": "clear",
+            "rationale": "1,892 km over 2064 minutes is plausible travel from Albuquerque; Hyatt Place fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_466791: 1,892 km over 2064 minutes is plausible travel from Albuquerque; Hyatt Place fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_466791: 1,892 km over 2064 minutes is plausible travel from Albuquerque; Hyatt Place fits the trip and the card was present."
+}

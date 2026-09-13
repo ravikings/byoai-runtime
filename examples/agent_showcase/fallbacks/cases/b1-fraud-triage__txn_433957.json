@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_433957",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_433957.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_433957"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_476633.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_476633"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_433957"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_433957",
+            "decision": "clear",
+            "rationale": "3,920 km over 1653 minutes is plausible travel from Jacksonville; Harbor Grill fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_433957: 3,920 km over 1653 minutes is plausible travel from Jacksonville; Harbor Grill fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_433957: 3,920 km over 1653 minutes is plausible travel from Jacksonville; Harbor Grill fits the trip and the card was present."
+}

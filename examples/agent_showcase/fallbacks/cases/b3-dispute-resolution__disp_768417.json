@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_768417",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_768417.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_768417"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_768417"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_768417",
+            "message": "We reviewed your dispute about Overstock ($68.51, cancelled recurring). The evidence supports your claim, so we have posted a provisional credit of $68.51 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_768417",
+            "amount_usd": 68.51
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $68.51 posted for disp_768417 (Overstock, cancelled recurring): No response within 10 days.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $68.51 posted for disp_768417 (Overstock, cancelled recurring): No response within 10 days."
+}

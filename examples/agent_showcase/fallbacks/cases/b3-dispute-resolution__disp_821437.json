@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_821437",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_821437.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_821437"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_821437"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_821437",
+            "message": "We reviewed your dispute about DoorDash ($39.36, item not received). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_821437 (DoorDash, item not received): Signed proof of delivery to the cardholder address provided. Prior disputes by customer: 3.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_821437 (DoorDash, item not received): Signed proof of delivery to the cardholder address provided. Prior disputes by customer: 3."
+}

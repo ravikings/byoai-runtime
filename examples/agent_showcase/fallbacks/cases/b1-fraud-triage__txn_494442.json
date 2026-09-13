@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_494442",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_494442.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_494442"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_890342.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_890342"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_494442"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_494442",
+            "decision": "block",
+            "rationale": "Card-not-present $546.49 at ByteVault Crypto (MCC 6051) 6 minute(s) after the prior transaction, 4.1x the $133.69 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_494442: Card-not-present $546.49 at ByteVault Crypto (MCC 6051) 6 minute(s) after the prior transaction, 4.1x the $133.69 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_494442: Card-not-present $546.49 at ByteVault Crypto (MCC 6051) 6 minute(s) after the prior transaction, 4.1x the $133.69 average; the category is a common cash-out route."
+}

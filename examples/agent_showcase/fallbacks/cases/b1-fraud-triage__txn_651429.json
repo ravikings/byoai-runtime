@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_651429",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_651429.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_651429"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_441585.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_441585"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_651429"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_651429",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Philadelphia, the customer's home city; $33.65 against a $138.18 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_651429: Card-present purchase in Philadelphia, the customer's home city; $33.65 against a $138.18 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_651429: Card-present purchase in Philadelphia, the customer's home city; $33.65 against a $138.18 average with no velocity anomaly."
+}

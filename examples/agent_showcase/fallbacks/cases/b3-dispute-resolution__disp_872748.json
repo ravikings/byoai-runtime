@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_872748",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_872748.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_872748"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_872748"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_872748",
+            "message": "We reviewed your dispute about Harbor Bistro ($1,133.38, not as described). The evidence supports your claim, so we have posted a provisional credit of $1,133.38 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_872748",
+            "amount_usd": 1133.38
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $1,133.38 posted for disp_872748 (Harbor Bistro, not as described): Accepted return authorization RMA-4446.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $1,133.38 posted for disp_872748 (Harbor Bistro, not as described): Accepted return authorization RMA-4446."
+}

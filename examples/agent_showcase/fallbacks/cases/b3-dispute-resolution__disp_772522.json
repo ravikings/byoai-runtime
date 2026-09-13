@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_772522",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_772522.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_772522"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_772522"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_772522",
+            "message": "We reviewed your dispute about Harbor Bistro ($65.59, fraudulent). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_772522 (Harbor Bistro, fraudulent): Purchase made from the cardholder's usual device and IP. Prior disputes by customer: 4.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_772522 (Harbor Bistro, fraudulent): Purchase made from the cardholder's usual device and IP. Prior disputes by customer: 4."
+}

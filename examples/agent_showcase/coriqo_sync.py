@@ -95,12 +95,41 @@ def ensure_agents_registered(agents: list[AgentDef] | None = None) -> dict[str, 
     registrations = {agent.id: _registration(agent) for agent in (agents or list_agents())}
     try:
         with CoriqoAgentsClient(credentials) as client:
-            return ensure_registered(
-                client, registrations, external_id_prefix=_EXTERNAL_ID_PREFIX
-            )
+            try:
+                return ensure_registered(
+                    client, registrations, external_id_prefix=_EXTERNAL_ID_PREFIX
+                )
+            except CoriqoAgentsError as exc:
+                if exc.status_code != 403:
+                    raise
+                # A publishing key normally can't register (that takes
+                # governance:approve), but can still publish against agents a
+                # governance user already registered under the same external_id.
+                return _resolve_existing(client, registrations, refused=exc.detail)
     except CoriqoAgentsError as exc:
         log.warning("coriqo_sync: could not register agents (%s), sync inactive", exc.detail)
         return {}
+
+
+def _resolve_existing(
+    client: CoriqoAgentsClient, registrations: dict, *, refused: str
+) -> dict[str, str]:
+    by_external_id = {
+        item.get("external_id"): item.get("agent_id") for item in client.list_agents()
+    }
+    resolved = {
+        key: by_external_id[f"{_EXTERNAL_ID_PREFIX}{key}"]
+        for key in registrations
+        if by_external_id.get(f"{_EXTERNAL_ID_PREFIX}{key}")
+    }
+    missing = sorted(set(registrations) - set(resolved))
+    if missing:
+        log.warning(
+            "coriqo_sync: registration refused (%s); not registered yet, so not published: %s",
+            refused,
+            ", ".join(missing),
+        )
+    return resolved
 
 
 def publish_run(

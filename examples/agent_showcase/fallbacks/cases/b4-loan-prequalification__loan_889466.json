@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_889466",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_889466.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_889466"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 11175.59,
+            "monthly_debt_payments_usd": 5281.01
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.4725,
+            "monthly_income_usd": 11175.59
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_889466",
+            "decision": "declined",
+            "rationale": "DTI 0.4725 (47.2%) exceeds the 0.43 policy max ($5,281.01 debt on $11,175.59 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_889466 (Florian Takahashi, $26,500.00 requested): DTI 0.4725 (47.2%) exceeds the 0.43 policy max ($5,281.01 debt on $11,175.59 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_889466 (Florian Takahashi, $26,500.00 requested): DTI 0.4725 (47.2%) exceeds the 0.43 policy max ($5,281.01 debt on $11,175.59 income)."
+}

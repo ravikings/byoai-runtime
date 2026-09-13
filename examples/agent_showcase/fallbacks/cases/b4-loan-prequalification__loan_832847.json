@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_832847",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_832847.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_832847"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2920.98,
+            "monthly_debt_payments_usd": 540.43
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.185,
+            "monthly_income_usd": 2920.98
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_832847",
+            "decision": "declined",
+            "rationale": "Monthly income $2,920.98 is below the $3,000.00 policy minimum; DTI 18.5%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_832847 (Nia Pereira, $3,000.00 requested): Monthly income $2,920.98 is below the $3,000.00 policy minimum; DTI 18.5%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_832847 (Nia Pereira, $3,000.00 requested): Monthly income $2,920.98 is below the $3,000.00 policy minimum; DTI 18.5%."
+}

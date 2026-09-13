@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_587655",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_587655.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_587655"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_295510"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_587655"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_587655",
+            "decision": "block",
+            "rationale": "Card-not-present $337.59 at GameKey Store (MCC 5816) 6 minute(s) after the prior transaction, 2.8x the $119.89 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_587655: Card-not-present $337.59 at GameKey Store (MCC 5816) 6 minute(s) after the prior transaction, 2.8x the $119.89 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_587655: Card-not-present $337.59 at GameKey Store (MCC 5816) 6 minute(s) after the prior transaction, 2.8x the $119.89 average; the category is a common cash-out route."
+}

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_865313",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_865313.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_865313"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 9692.63,
+            "monthly_debt_payments_usd": 5862.52
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.6048,
+            "monthly_income_usd": 9692.63
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_865313",
+            "decision": "declined",
+            "rationale": "DTI 0.6048 (60.5%) exceeds the 0.43 policy max ($5,862.52 debt on $9,692.63 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_865313 (DeShawn Russo, $18,000.00 requested): DTI 0.6048 (60.5%) exceeds the 0.43 policy max ($5,862.52 debt on $9,692.63 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_865313 (DeShawn Russo, $18,000.00 requested): DTI 0.6048 (60.5%) exceeds the 0.43 policy max ($5,862.52 debt on $9,692.63 income)."
+}

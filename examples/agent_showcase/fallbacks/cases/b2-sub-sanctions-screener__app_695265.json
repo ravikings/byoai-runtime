@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_695265",
+  "steps": [
+    {
+      "assistant_text": "Screening Renata Gupta against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Renata Gupta"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "No matches on OFAC-SDN, UN-Consolidated, EU-Sanctions or PEP lists. Clear.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "No matches on OFAC-SDN, UN-Consolidated, EU-Sanctions or PEP lists. Clear."
+}

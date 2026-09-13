@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_713606",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_713606.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_713606"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_713606"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence favors the merchant. Replying without a credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_713606",
+            "message": "We reviewed your dispute about Frontier Airlines ($151.23, item not received). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_713606 (Frontier Airlines, item not received): Signed proof of delivery to the cardholder address provided. Prior disputes by customer: 1.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_713606 (Frontier Airlines, item not received): Signed proof of delivery to the cardholder address provided. Prior disputes by customer: 1."
+}

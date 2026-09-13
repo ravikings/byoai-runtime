@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_881262",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_881262.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_881262"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 8039.01,
+            "monthly_debt_payments_usd": 778.77
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.0969,
+            "monthly_income_usd": 8039.01
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_881262",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.0969 (9.7%) is under the 0.43 policy max and monthly income $8,039.01 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_881262 (Ada Nowak, $14,000.00 requested): DTI 0.0969 (9.7%) is under the 0.43 policy max and monthly income $8,039.01 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_881262 (Ada Nowak, $14,000.00 requested): DTI 0.0969 (9.7%) is under the 0.43 policy max and monthly income $8,039.01 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months."
+}

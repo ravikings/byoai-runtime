@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_688379",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_688379.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_688379"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_379475.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_379475"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_688379"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocking and routing to the fraud desk.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_688379",
+            "decision": "block",
+            "rationale": "Card-not-present $636.66 at Giftcards Direct (MCC 5999) 1 minute(s) after the prior transaction, 12.0x the $53.25 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_688379: Card-not-present $636.66 at Giftcards Direct (MCC 5999) 1 minute(s) after the prior transaction, 12.0x the $53.25 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_688379: Card-not-present $636.66 at Giftcards Direct (MCC 5999) 1 minute(s) after the prior transaction, 12.0x the $53.25 average; the category is a common cash-out route."
+}

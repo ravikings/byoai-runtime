@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_888159",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_888159.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_888159"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 7498.53,
+            "monthly_debt_payments_usd": 2423.18
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.3232,
+            "monthly_income_usd": 7498.53
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_888159",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.3232 (32.3%) is under the 0.43 policy max and monthly income $7,498.53 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_888159 (Naomi Hamid, $17,000.00 requested): DTI 0.3232 (32.3%) is under the 0.43 policy max and monthly income $7,498.53 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_888159 (Naomi Hamid, $17,000.00 requested): DTI 0.3232 (32.3%) is under the 0.43 policy max and monthly income $7,498.53 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+}

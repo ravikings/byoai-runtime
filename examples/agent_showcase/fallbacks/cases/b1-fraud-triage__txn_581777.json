@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_581777",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_581777.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_581777"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_364779.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_364779"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_581777"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_581777",
+            "decision": "clear",
+            "rationale": "Online purchase in the customer's home city, no geo or velocity anomaly; $341.10 at Southwest Airlines is above the $125.11 average but consistent with the category."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_581777: Online purchase in the customer's home city, no geo or velocity anomaly; $341.10 at Southwest Airlines is above the $125.11 average but consistent with the category.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_581777: Online purchase in the customer's home city, no geo or velocity anomaly; $341.10 at Southwest Airlines is above the $125.11 average but consistent with the category."
+}

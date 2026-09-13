@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_466598",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_466598.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_466598"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_633060.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_633060"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_466598"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_466598",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Newark, the customer's home city; $2,650.55 against a $247.21 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_466598: Card-present purchase in Newark, the customer's home city; $2,650.55 against a $247.21 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_466598: Card-present purchase in Newark, the customer's home city; $2,650.55 against a $247.21 average with no velocity anomaly."
+}

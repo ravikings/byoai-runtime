@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_732830",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_732830.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_732830"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_726301"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_732830"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_732830",
+            "decision": "block",
+            "rationale": "Card-not-present $485.25 at Nimbus Coin (MCC 6051) 4 minute(s) after the prior transaction, 8.1x the $59.66 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_732830: Card-not-present $485.25 at Nimbus Coin (MCC 6051) 4 minute(s) after the prior transaction, 8.1x the $59.66 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_732830: Card-not-present $485.25 at Nimbus Coin (MCC 6051) 4 minute(s) after the prior transaction, 8.1x the $59.66 average; the category is a common cash-out route."
+}

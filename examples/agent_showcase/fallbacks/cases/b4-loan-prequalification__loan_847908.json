@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_847908",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_847908.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_847908"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 14413.46,
+            "monthly_debt_payments_usd": 8660.64
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.6009,
+            "monthly_income_usd": 14413.46
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_847908",
+            "decision": "declined",
+            "rationale": "DTI 0.6009 (60.1%) exceeds the 0.43 policy max ($8,660.64 debt on $14,413.46 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_847908 (Jorge Pacheco, $12,000.00 requested): DTI 0.6009 (60.1%) exceeds the 0.43 policy max ($8,660.64 debt on $14,413.46 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_847908 (Jorge Pacheco, $12,000.00 requested): DTI 0.6009 (60.1%) exceeds the 0.43 policy max ($8,660.64 debt on $14,413.46 income)."
+}

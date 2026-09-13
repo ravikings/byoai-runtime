@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_538384",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_538384.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_538384"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_828696.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_828696"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_538384"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_538384",
+            "decision": "clear",
+            "rationale": "4,098 km over 2094 minutes is plausible travel from Orlando; Harbor Grill fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_538384: 4,098 km over 2094 minutes is plausible travel from Orlando; Harbor Grill fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_538384: 4,098 km over 2094 minutes is plausible travel from Orlando; Harbor Grill fits the trip and the card was present."
+}

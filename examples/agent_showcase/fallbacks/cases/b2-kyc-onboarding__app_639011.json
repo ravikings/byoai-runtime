@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_639011",
+  "steps": [
+    {
+      "assistant_text": "Opening the document set for app_639011.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_639011"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Rosa Alvarez"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_639011"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_639011",
+            "decision": "escalate",
+            "rationale": "Partial OFAC-SDN match 'Rosa Alvaree' at score 0.84; escalating to BSA/AML for disposition. Risk score 74."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_639011: Partial OFAC-SDN match 'Rosa Alvaree' at score 0.84; escalating to BSA/AML for disposition. Risk score 74.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_639011: Partial OFAC-SDN match 'Rosa Alvaree' at score 0.84; escalating to BSA/AML for disposition. Risk score 74."
+}

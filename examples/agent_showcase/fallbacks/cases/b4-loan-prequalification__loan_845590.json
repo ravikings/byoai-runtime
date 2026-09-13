@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_845590",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_845590.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_845590"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 12359.04,
+            "monthly_debt_payments_usd": 2509.29
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.203,
+            "monthly_income_usd": 12359.04
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_845590",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.203 (20.3%) is under the 0.43 policy max and monthly income $12,359.04 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_845590 (Aaliyah Weber, $27,000.00 requested): DTI 0.203 (20.3%) is under the 0.43 policy max and monthly income $12,359.04 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_845590 (Aaliyah Weber, $27,000.00 requested): DTI 0.203 (20.3%) is under the 0.43 policy max and monthly income $12,359.04 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+}

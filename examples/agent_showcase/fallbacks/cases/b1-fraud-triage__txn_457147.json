@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_457147",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_457147.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_457147"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_870643.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_870643"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_457147"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_457147",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Milwaukee, the customer's home city; $72.96 against a $67.71 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_457147: Card-present purchase in Milwaukee, the customer's home city; $72.96 against a $67.71 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_457147: Card-present purchase in Milwaukee, the customer's home city; $72.96 against a $67.71 average with no velocity anomaly."
+}

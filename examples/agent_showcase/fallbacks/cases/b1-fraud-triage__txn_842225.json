@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_842225",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_842225.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_842225"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_743514.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_743514"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_842225"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_842225",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Birmingham, the customer's home city; $16.70 against a $85.31 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_842225: Card-present purchase in Birmingham, the customer's home city; $16.70 against a $85.31 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_842225: Card-present purchase in Birmingham, the customer's home city; $16.70 against a $85.31 average with no velocity anomaly."
+}

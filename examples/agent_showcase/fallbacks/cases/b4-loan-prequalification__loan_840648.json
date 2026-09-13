@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_840648",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_840648.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_840648"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 8977.02,
+            "monthly_debt_payments_usd": 3550.03
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.3955,
+            "monthly_income_usd": 8977.02
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_840648",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.3955 (39.6%) is under the 0.43 policy max and monthly income $8,977.02 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_840648 (Dalia Moreau, $35,500.00 requested): DTI 0.3955 (39.6%) is under the 0.43 policy max and monthly income $8,977.02 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_840648 (Dalia Moreau, $35,500.00 requested): DTI 0.3955 (39.6%) is under the 0.43 policy max and monthly income $8,977.02 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+}

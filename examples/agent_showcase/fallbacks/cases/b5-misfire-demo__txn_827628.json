@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_827628",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_827628.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_827628"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_400050"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_827628"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_827628",
+            "decision": "block",
+            "rationale": "Bangkok, TH is 14,031 km from the prior transaction in Columbus 120 minutes earlier, which is impossible travel; $144.60 at GameKey Store is 0.7x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_827628: Bangkok, TH is 14,031 km from the prior transaction in Columbus 120 minutes earlier, which is impossible travel; $144.60 at GameKey Store is 0.7x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_827628: Bangkok, TH is 14,031 km from the prior transaction in Columbus 120 minutes earlier, which is impossible travel; $144.60 at GameKey Store is 0.7x the customer's average."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_614043",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_614043.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_614043"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_427686.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_427686"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_614043"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_614043",
+            "decision": "clear",
+            "rationale": "601 km over 971 minutes is plausible travel from Jacksonville; Local Tavern fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_614043: 601 km over 971 minutes is plausible travel from Jacksonville; Local Tavern fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_614043: 601 km over 971 minutes is plausible travel from Jacksonville; Local Tavern fits the trip and the card was present."
+}

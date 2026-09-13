@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_859881",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_859881.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_859881"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 8321.99,
+            "monthly_debt_payments_usd": 4864.1
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5845,
+            "monthly_income_usd": 8321.99
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_859881",
+            "decision": "declined",
+            "rationale": "DTI 0.5845 (58.5%) exceeds the 0.43 policy max ($4,864.10 debt on $8,321.99 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_859881 (Xavier Fofana, $23,000.00 requested): DTI 0.5845 (58.5%) exceeds the 0.43 policy max ($4,864.10 debt on $8,321.99 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_859881 (Xavier Fofana, $23,000.00 requested): DTI 0.5845 (58.5%) exceeds the 0.43 policy max ($4,864.10 debt on $8,321.99 income)."
+}

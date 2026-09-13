@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_753526",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_753526.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_753526"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_753526"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_753526",
+            "message": "We reviewed your dispute about Wayfair ($13.45, item not received). The evidence supports your claim, so we have posted a provisional credit of $13.45 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_753526",
+            "amount_usd": 13.45
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $13.45 posted for disp_753526 (Wayfair, item not received): Carrier shows package lost at a regional hub.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $13.45 posted for disp_753526 (Wayfair, item not received): Carrier shows package lost at a regional hub."
+}

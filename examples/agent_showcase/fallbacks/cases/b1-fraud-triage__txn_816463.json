@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_816463",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_816463.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_816463"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_265945"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_816463"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_816463",
+            "decision": "block",
+            "rationale": "Card-not-present $3,816.67 at Luxe Timepieces (MCC 5944) 5 minute(s) after the prior transaction, 52.0x the $73.35 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_816463: Card-not-present $3,816.67 at Luxe Timepieces (MCC 5944) 5 minute(s) after the prior transaction, 52.0x the $73.35 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_816463: Card-not-present $3,816.67 at Luxe Timepieces (MCC 5944) 5 minute(s) after the prior transaction, 52.0x the $73.35 average; the category is a common cash-out route."
+}

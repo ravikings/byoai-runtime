@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_855651",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_855651.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_855651"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 9252.75,
+            "monthly_debt_payments_usd": 4314.16
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.4663,
+            "monthly_income_usd": 9252.75
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_855651",
+            "decision": "declined",
+            "rationale": "DTI 0.4663 (46.6%) exceeds the 0.43 policy max ($4,314.16 debt on $9,252.75 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_855651 (Ifeoma Kahale, $11,500.00 requested): DTI 0.4663 (46.6%) exceeds the 0.43 policy max ($4,314.16 debt on $9,252.75 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_855651 (Ifeoma Kahale, $11,500.00 requested): DTI 0.4663 (46.6%) exceeds the 0.43 policy max ($4,314.16 debt on $9,252.75 income)."
+}

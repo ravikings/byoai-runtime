@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_866007",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_866007.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_866007"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 8075.49,
+            "monthly_debt_payments_usd": 500.62
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.062,
+            "monthly_income_usd": 8075.49
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_866007",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.062 (6.2%) is under the 0.43 policy max and monthly income $8,075.49 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_866007 (Kareem Wagner, $36,000.00 requested): DTI 0.062 (6.2%) is under the 0.43 policy max and monthly income $8,075.49 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_866007 (Kareem Wagner, $36,000.00 requested): DTI 0.062 (6.2%) is under the 0.43 policy max and monthly income $8,075.49 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months."
+}

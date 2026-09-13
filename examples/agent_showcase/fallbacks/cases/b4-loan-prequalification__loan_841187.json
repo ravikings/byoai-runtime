@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_841187",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_841187.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_841187"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2936.99,
+            "monthly_debt_payments_usd": 565.25
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1925,
+            "monthly_income_usd": 2936.99
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_841187",
+            "decision": "declined",
+            "rationale": "Monthly income $2,936.99 is below the $3,000.00 policy minimum; DTI 19.2%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_841187 (Joaquin Becker, $16,000.00 requested): Monthly income $2,936.99 is below the $3,000.00 policy minimum; DTI 19.2%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_841187 (Joaquin Becker, $16,000.00 requested): Monthly income $2,936.99 is below the $3,000.00 policy minimum; DTI 19.2%."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_761787",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_761787.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_761787"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_467752"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_761787"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_761787",
+            "decision": "clear",
+            "rationale": "2,290 km over 1904 minutes is plausible travel from Minneapolis; Enterprise Rent-A-Car fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_761787: 2,290 km over 1904 minutes is plausible travel from Minneapolis; Enterprise Rent-A-Car fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_761787: 2,290 km over 1904 minutes is plausible travel from Minneapolis; Enterprise Rent-A-Car fits the trip and the card was present."
+}

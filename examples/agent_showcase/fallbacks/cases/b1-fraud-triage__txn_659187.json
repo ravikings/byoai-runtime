@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_659187",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_659187.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_659187"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_166907.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_166907"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_659187"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_659187",
+            "decision": "block",
+            "rationale": "Accra, GH is 8,876 km from the prior transaction in Jacksonville 17 minutes earlier, which is impossible travel; $724.92 at eGift Hub is 5.3x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_659187: Accra, GH is 8,876 km from the prior transaction in Jacksonville 17 minutes earlier, which is impossible travel; $724.92 at eGift Hub is 5.3x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_659187: Accra, GH is 8,876 km from the prior transaction in Jacksonville 17 minutes earlier, which is impossible travel; $724.92 at eGift Hub is 5.3x the customer's average."
+}

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_831189",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_831189.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_831189"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 13819.4,
+            "monthly_debt_payments_usd": 7285.34
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5272,
+            "monthly_income_usd": 13819.4
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_831189",
+            "decision": "declined",
+            "rationale": "DTI 0.5272 (52.7%) exceeds the 0.43 policy max ($7,285.34 debt on $13,819.40 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_831189 (Elena Grant, $26,000.00 requested): DTI 0.5272 (52.7%) exceeds the 0.43 policy max ($7,285.34 debt on $13,819.40 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_831189 (Elena Grant, $26,000.00 requested): DTI 0.5272 (52.7%) exceeds the 0.43 policy max ($7,285.34 debt on $13,819.40 income)."
+}

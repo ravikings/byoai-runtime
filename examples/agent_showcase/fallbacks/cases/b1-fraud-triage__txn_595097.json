@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_595097",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_595097.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_595097"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_232663.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_232663"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_595097"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_595097",
+            "decision": "clear",
+            "rationale": "2,703 km over 428 minutes is plausible travel from Dallas; Local Tavern fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_595097: 2,703 km over 428 minutes is plausible travel from Dallas; Local Tavern fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_595097: 2,703 km over 428 minutes is plausible travel from Dallas; Local Tavern fits the trip and the card was present."
+}

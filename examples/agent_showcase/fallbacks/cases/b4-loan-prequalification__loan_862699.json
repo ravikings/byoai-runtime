@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_862699",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_862699.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_862699"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 6220.79,
+            "monthly_debt_payments_usd": 3736.93
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.6007,
+            "monthly_income_usd": 6220.79
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_862699",
+            "decision": "declined",
+            "rationale": "DTI 0.6007 (60.1%) exceeds the 0.43 policy max ($3,736.93 debt on $6,220.79 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_862699 (Nia Iyer, $13,000.00 requested): DTI 0.6007 (60.1%) exceeds the 0.43 policy max ($3,736.93 debt on $6,220.79 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_862699 (Nia Iyer, $13,000.00 requested): DTI 0.6007 (60.1%) exceeds the 0.43 policy max ($3,736.93 debt on $6,220.79 income)."
+}

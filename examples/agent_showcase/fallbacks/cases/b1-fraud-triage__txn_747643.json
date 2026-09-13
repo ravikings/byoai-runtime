@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_747643",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_747643.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_747643"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_220091"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_747643"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_747643",
+            "decision": "block",
+            "rationale": "Riga, LV is 7,896 km from the prior transaction in Kansas City 69 minutes earlier, which is impossible travel; $598.76 at Coinflux Exchange is 15.9x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_747643: Riga, LV is 7,896 km from the prior transaction in Kansas City 69 minutes earlier, which is impossible travel; $598.76 at Coinflux Exchange is 15.9x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_747643: Riga, LV is 7,896 km from the prior transaction in Kansas City 69 minutes earlier, which is impossible travel; $598.76 at Coinflux Exchange is 15.9x the customer's average."
+}

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_866339",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_866339.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_866339"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 12858.03,
+            "monthly_debt_payments_usd": 7951.42
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.6184,
+            "monthly_income_usd": 12858.03
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_866339",
+            "decision": "declined",
+            "rationale": "DTI 0.6184 (61.8%) exceeds the 0.43 policy max ($7,951.42 debt on $12,858.03 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_866339 (Nikhil Mehta, $12,000.00 requested): DTI 0.6184 (61.8%) exceeds the 0.43 policy max ($7,951.42 debt on $12,858.03 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_866339 (Nikhil Mehta, $12,000.00 requested): DTI 0.6184 (61.8%) exceeds the 0.43 policy max ($7,951.42 debt on $12,858.03 income)."
+}

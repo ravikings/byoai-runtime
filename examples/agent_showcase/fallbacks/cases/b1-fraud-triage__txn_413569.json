@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_413569",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_413569.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_413569"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_458845.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_458845"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_413569"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_413569",
+            "decision": "clear",
+            "rationale": "Online purchase in the customer's home city, no geo or velocity anomaly; $388.29 at Ashley Furniture is above the $135.60 average but consistent with the category."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_413569: Online purchase in the customer's home city, no geo or velocity anomaly; $388.29 at Ashley Furniture is above the $135.60 average but consistent with the category.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_413569: Online purchase in the customer's home city, no geo or velocity anomaly; $388.29 at Ashley Furniture is above the $135.60 average but consistent with the category."
+}

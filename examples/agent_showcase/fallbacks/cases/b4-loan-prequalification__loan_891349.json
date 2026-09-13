@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_891349",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_891349.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_891349"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 8082.54,
+            "monthly_debt_payments_usd": 4573.3
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5658,
+            "monthly_income_usd": 8082.54
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_891349",
+            "decision": "declined",
+            "rationale": "DTI 0.5658 (56.6%) exceeds the 0.43 policy max ($4,573.30 debt on $8,082.54 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_891349 (Marisol Joshi, $7,500.00 requested): DTI 0.5658 (56.6%) exceeds the 0.43 policy max ($4,573.30 debt on $8,082.54 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_891349 (Marisol Joshi, $7,500.00 requested): DTI 0.5658 (56.6%) exceeds the 0.43 policy max ($4,573.30 debt on $8,082.54 income)."
+}

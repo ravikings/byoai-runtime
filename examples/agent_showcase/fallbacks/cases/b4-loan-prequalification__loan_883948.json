@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_883948",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_883948.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_883948"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2736.04,
+            "monthly_debt_payments_usd": 581.94
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.2127,
+            "monthly_income_usd": 2736.04
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_883948",
+            "decision": "declined",
+            "rationale": "Monthly income $2,736.04 is below the $3,000.00 policy minimum; DTI 21.3%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_883948 (Samuel Fernandes, $10,000.00 requested): Monthly income $2,736.04 is below the $3,000.00 policy minimum; DTI 21.3%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_883948 (Samuel Fernandes, $10,000.00 requested): Monthly income $2,736.04 is below the $3,000.00 policy minimum; DTI 21.3%."
+}

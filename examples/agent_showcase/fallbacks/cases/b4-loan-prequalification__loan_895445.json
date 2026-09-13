@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_895445",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_895445.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_895445"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 4667.26,
+            "monthly_debt_payments_usd": 2724.34
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5837,
+            "monthly_income_usd": 4667.26
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_895445",
+            "decision": "declined",
+            "rationale": "DTI 0.5837 (58.4%) exceeds the 0.43 policy max ($2,724.34 debt on $4,667.26 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_895445 (Tamara Murphy, $10,000.00 requested): DTI 0.5837 (58.4%) exceeds the 0.43 policy max ($2,724.34 debt on $4,667.26 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_895445 (Tamara Murphy, $10,000.00 requested): DTI 0.5837 (58.4%) exceeds the 0.43 policy max ($2,724.34 debt on $4,667.26 income)."
+}

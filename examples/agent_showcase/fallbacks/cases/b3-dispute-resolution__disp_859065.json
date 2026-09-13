@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_859065",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_859065.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_859065"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_859065"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_859065",
+            "message": "We reviewed your dispute about Chewy ($51.13, item not received). The evidence supports your claim, so we have posted a provisional credit of $51.13 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_859065",
+            "amount_usd": 51.13
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $51.13 posted for disp_859065 (Chewy, item not received): Carrier shows package lost at a regional hub.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $51.13 posted for disp_859065 (Chewy, item not received): Carrier shows package lost at a regional hub."
+}

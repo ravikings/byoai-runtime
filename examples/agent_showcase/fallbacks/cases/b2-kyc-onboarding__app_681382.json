@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_681382",
+  "steps": [
+    {
+      "assistant_text": "Opening the document set for app_681382.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_681382"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Arjun Salazar"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_681382"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_681382",
+            "decision": "escalate",
+            "rationale": "Partial OFAC-SDN match 'Arjun Salazae' at score 0.79; escalating to BSA/AML for disposition. Risk score 67."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_681382: Partial OFAC-SDN match 'Arjun Salazae' at score 0.79; escalating to BSA/AML for disposition. Risk score 67.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_681382: Partial OFAC-SDN match 'Arjun Salazae' at score 0.79; escalating to BSA/AML for disposition. Risk score 67."
+}

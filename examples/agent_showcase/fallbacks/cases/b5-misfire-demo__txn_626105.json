@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_626105",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_626105.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_626105"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_497387.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_497387"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_626105"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocking and routing to the fraud desk.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_626105",
+            "decision": "block",
+            "rationale": "Bucharest, RO is 7,659 km from the prior transaction in Newark 44 minutes earlier, which is impossible travel; $333.61 at GameKey Store is 0.9x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_626105: Bucharest, RO is 7,659 km from the prior transaction in Newark 44 minutes earlier, which is impossible travel; $333.61 at GameKey Store is 0.9x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_626105: Bucharest, RO is 7,659 km from the prior transaction in Newark 44 minutes earlier, which is impossible travel; $333.61 at GameKey Store is 0.9x the customer's average."
+}

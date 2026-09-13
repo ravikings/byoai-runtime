@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_504603",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_504603.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_504603"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_332441.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_332441"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_504603"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_504603",
+            "decision": "clear",
+            "rationale": "1,894 km over 1974 minutes is plausible travel from Miami; Hertz fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_504603: 1,894 km over 1974 minutes is plausible travel from Miami; Hertz fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_504603: 1,894 km over 1974 minutes is plausible travel from Miami; Hertz fits the trip and the card was present."
+}

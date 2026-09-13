@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_445693",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_445693.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_445693"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_131499.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_131499"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_445693"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_445693",
+            "decision": "clear",
+            "rationale": "1,619 km over 932 minutes is plausible travel from Milwaukee; Riverside Honda fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_445693: 1,619 km over 932 minutes is plausible travel from Milwaukee; Riverside Honda fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_445693: 1,619 km over 932 minutes is plausible travel from Milwaukee; Riverside Honda fits the trip and the card was present."
+}

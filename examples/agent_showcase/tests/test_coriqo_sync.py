@@ -176,6 +176,25 @@ def test_sync_is_off_without_a_url(sync_env, monkeypatch):
     assert coriqo_sync.ensure_agents_registered() == {}
 
 
+def test_a_key_that_cannot_register_resolves_already_registered_agents(sync_env, monkeypatch):
+    banking = [a for a in list_agents() if a.domain == "banking"]
+    registered_first = banking[:2]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(403, json={"detail": "Role 'governance:approve' required"})
+        items = [
+            {"agent_id": f"coriqo-{a.id}", "external_id": f"byoai-agent-showcase:{a.id}"}
+            for a in registered_first
+        ]
+        return httpx.Response(200, json={"items": items, "total": len(items)})
+
+    _install_fake_coriqo(monkeypatch, handler)
+    mapping = coriqo_sync.ensure_agents_registered(banking)
+
+    assert mapping == {a.id: f"coriqo-{a.id}" for a in registered_first}
+
+
 def test_auto_register_off_registers_nothing(sync_env, monkeypatch):
     monkeypatch.setenv("BYOAI_CORIQO_AUTO_REGISTER", "0")
 

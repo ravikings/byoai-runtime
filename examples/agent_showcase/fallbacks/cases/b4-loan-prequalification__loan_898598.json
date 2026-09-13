@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_898598",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_898598.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_898598"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 6209.3,
+            "monthly_debt_payments_usd": 3319.17
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5345,
+            "monthly_income_usd": 6209.3
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_898598",
+            "decision": "declined",
+            "rationale": "DTI 0.5345 (53.4%) exceeds the 0.43 policy max ($3,319.17 debt on $6,209.30 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_898598 (Rosa Suzuki, $24,000.00 requested): DTI 0.5345 (53.4%) exceeds the 0.43 policy max ($3,319.17 debt on $6,209.30 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_898598 (Rosa Suzuki, $24,000.00 requested): DTI 0.5345 (53.4%) exceeds the 0.43 policy max ($3,319.17 debt on $6,209.30 income)."
+}

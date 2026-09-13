@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_857189",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_857189.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_857189"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_857189"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_857189",
+            "message": "We reviewed your dispute about Wayfair ($154.63, item not received). The evidence supports your claim, so we have posted a provisional credit of $154.63 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_857189",
+            "amount_usd": 154.63
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $154.63 posted for disp_857189 (Wayfair, item not received): Carrier marked delivered with no signature or photo; merchant did not reship.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $154.63 posted for disp_857189 (Wayfair, item not received): Carrier marked delivered with no signature or photo; merchant did not reship."
+}

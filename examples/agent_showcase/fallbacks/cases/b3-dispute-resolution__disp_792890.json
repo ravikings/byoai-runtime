@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_792890",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_792890.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_792890"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_792890"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_792890",
+            "message": "We reviewed your dispute about StreamPlus Media ($15.25, fraudulent). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_792890 (StreamPlus Media, fraudulent): Purchase made from the cardholder's usual device and IP. Prior disputes by customer: 3.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_792890 (StreamPlus Media, fraudulent): Purchase made from the cardholder's usual device and IP. Prior disputes by customer: 3."
+}

@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_843539",
+  "steps": [
+    {
+      "assistant_text": "Screening Olumide Andersen against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Olumide Andersen"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Olumide Andersen' (score 0.92). Former deputy minister of finance, TR.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Olumide Andersen' (score 0.92). Former deputy minister of finance, TR."
+}

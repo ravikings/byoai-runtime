@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_878248",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_878248.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_878248"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_185774"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_878248"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocking and routing to the fraud desk.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_878248",
+            "decision": "block",
+            "rationale": "Manila, PH is 14,649 km from the prior transaction in Orlando 45 minutes earlier, which is impossible travel; $394.42 at CardCart is 1.0x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_878248: Manila, PH is 14,649 km from the prior transaction in Orlando 45 minutes earlier, which is impossible travel; $394.42 at CardCart is 1.0x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_878248: Manila, PH is 14,649 km from the prior transaction in Orlando 45 minutes earlier, which is impossible travel; $394.42 at CardCart is 1.0x the customer's average."
+}

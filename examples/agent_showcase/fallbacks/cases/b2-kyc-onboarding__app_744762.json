@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_744762",
+  "steps": [
+    {
+      "assistant_text": "Opening the document set for app_744762.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_744762"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Alexei Okonkwo"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_744762"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_744762",
+            "decision": "escalate",
+            "rationale": "PEP match at score 0.96: Serving member of the national legislature, MX. Enhanced due diligence required. Risk score 44 (medium)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_744762: PEP match at score 0.96: Serving member of the national legislature, MX. Enhanced due diligence required. Risk score 44 (medium).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_744762: PEP match at score 0.96: Serving member of the national legislature, MX. Enhanced due diligence required. Risk score 44 (medium)."
+}

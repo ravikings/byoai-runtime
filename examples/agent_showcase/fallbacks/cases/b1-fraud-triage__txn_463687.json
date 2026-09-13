@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_463687",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_463687.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_463687"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_145435.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_145435"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_463687"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_463687",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Charlotte, the customer's home city; $417.18 against a $35.88 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_463687: Card-present purchase in Charlotte, the customer's home city; $417.18 against a $35.88 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_463687: Card-present purchase in Charlotte, the customer's home city; $417.18 against a $35.88 average with no velocity anomaly."
+}

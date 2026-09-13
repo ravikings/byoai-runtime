@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_679624",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_679624.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_679624"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_666760"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_679624"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_679624",
+            "decision": "block",
+            "rationale": "Card-not-present $93.61 at Steam Games (MCC 5816) 1 minute(s) after the prior transaction, 1.6x the $58.49 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_679624: Card-not-present $93.61 at Steam Games (MCC 5816) 1 minute(s) after the prior transaction, 1.6x the $58.49 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_679624: Card-not-present $93.61 at Steam Games (MCC 5816) 1 minute(s) after the prior transaction, 1.6x the $58.49 average; the category is a common cash-out route."
+}

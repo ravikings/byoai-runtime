@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_724868",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_724868.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_724868"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_724868"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_724868",
+            "message": "We reviewed your dispute about Instacart ($1,584.85, not as described). The evidence supports your claim, so we have posted a provisional credit of $1,584.85 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_724868",
+            "amount_usd": 1584.85
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $1,584.85 posted for disp_724868 (Instacart, not as described): Accepted return authorization RMA-8597.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $1,584.85 posted for disp_724868 (Instacart, not as described): Accepted return authorization RMA-8597."
+}

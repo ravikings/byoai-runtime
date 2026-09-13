@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_891703",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_891703.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_891703"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 5027.07,
+            "monthly_debt_payments_usd": 2480.99
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.4935,
+            "monthly_income_usd": 5027.07
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_891703",
+            "decision": "declined",
+            "rationale": "DTI 0.4935 (49.4%) exceeds the 0.43 policy max ($2,480.99 debt on $5,027.07 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_891703 (Abdul Gomez, $36,500.00 requested): DTI 0.4935 (49.4%) exceeds the 0.43 policy max ($2,480.99 debt on $5,027.07 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_891703 (Abdul Gomez, $36,500.00 requested): DTI 0.4935 (49.4%) exceeds the 0.43 policy max ($2,480.99 debt on $5,027.07 income)."
+}

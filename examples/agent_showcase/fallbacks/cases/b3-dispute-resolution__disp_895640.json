@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_895640",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_895640.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_895640"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_895640"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_895640",
+            "message": "We reviewed your dispute about Spotify ($973.60, services not rendered). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_895640 (Spotify, services not rendered): Check-in and usage records provided. Prior disputes by customer: 2.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_895640 (Spotify, services not rendered): Check-in and usage records provided. Prior disputes by customer: 2."
+}

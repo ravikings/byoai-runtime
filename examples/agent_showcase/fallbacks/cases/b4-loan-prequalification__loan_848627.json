@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_848627",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_848627.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_848627"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 10832.23,
+            "monthly_debt_payments_usd": 6404.87
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5913,
+            "monthly_income_usd": 10832.23
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_848627",
+            "decision": "declined",
+            "rationale": "DTI 0.5913 (59.1%) exceeds the 0.43 policy max ($6,404.87 debt on $10,832.23 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_848627 (Maya Bauer, $25,000.00 requested): DTI 0.5913 (59.1%) exceeds the 0.43 policy max ($6,404.87 debt on $10,832.23 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_848627 (Maya Bauer, $25,000.00 requested): DTI 0.5913 (59.1%) exceeds the 0.43 policy max ($6,404.87 debt on $10,832.23 income)."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_522264",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_522264.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_522264"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_318314"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_522264"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_522264",
+            "decision": "block",
+            "rationale": "Card-not-present $4,342.41 at Diamond Row Jewelers (MCC 5944) 5 minute(s) after the prior transaction, 56.5x the $76.87 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_522264: Card-not-present $4,342.41 at Diamond Row Jewelers (MCC 5944) 5 minute(s) after the prior transaction, 56.5x the $76.87 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_522264: Card-not-present $4,342.41 at Diamond Row Jewelers (MCC 5944) 5 minute(s) after the prior transaction, 56.5x the $76.87 average; the category is a common cash-out route."
+}

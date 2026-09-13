@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_673189",
+  "steps": [
+    {
+      "assistant_text": "Opening the document set for app_673189.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_673189"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Nadia Dimitrov"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_673189"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Approving.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_673189",
+            "decision": "approve",
+            "rationale": "Documents consistent, no sanctions or PEP matches, risk score 27 (medium)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Approved app_673189: Documents consistent, no sanctions or PEP matches, risk score 27 (medium).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Approved app_673189: Documents consistent, no sanctions or PEP matches, risk score 27 (medium)."
+}

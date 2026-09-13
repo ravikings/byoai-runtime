@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_888028",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_888028.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_888028"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_807599.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_807599"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_888028"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_888028",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Minneapolis, the customer's home city; $40.36 against a $44.66 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_888028: Card-present purchase in Minneapolis, the customer's home city; $40.36 against a $44.66 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_888028: Card-present purchase in Minneapolis, the customer's home city; $40.36 against a $44.66 average with no velocity anomaly."
+}

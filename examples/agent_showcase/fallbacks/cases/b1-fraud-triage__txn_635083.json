@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_635083",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_635083.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_635083"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_741298"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_635083"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_635083",
+            "decision": "block",
+            "rationale": "Jakarta, ID is 17,716 km from the prior transaction in Miami 128 minutes earlier, which is impossible travel; $98.71 at PlayCredits is 1.5x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_635083: Jakarta, ID is 17,716 km from the prior transaction in Miami 128 minutes earlier, which is impossible travel; $98.71 at PlayCredits is 1.5x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_635083: Jakarta, ID is 17,716 km from the prior transaction in Miami 128 minutes earlier, which is impossible travel; $98.71 at PlayCredits is 1.5x the customer's average."
+}

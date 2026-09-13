@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_871161",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_871161.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_871161"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_473614.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_473614"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_871161"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_871161",
+            "decision": "clear",
+            "rationale": "Card-present purchase in New Orleans, the customer's home city; $47.56 against a $82.67 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_871161: Card-present purchase in New Orleans, the customer's home city; $47.56 against a $82.67 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_871161: Card-present purchase in New Orleans, the customer's home city; $47.56 against a $82.67 average with no velocity anomaly."
+}

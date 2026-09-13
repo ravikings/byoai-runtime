@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_840236",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_840236.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_840236"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_840236"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_840236",
+            "message": "We reviewed your dispute about Uber Eats ($66.65, incorrect amount). The evidence supports your claim, so we have posted a provisional credit of $26.17 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_840236",
+            "amount_usd": 26.17
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $26.17 posted for disp_840236 (Uber Eats, incorrect amount): Keying error at checkout; merchant agrees to adjust.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $26.17 posted for disp_840236 (Uber Eats, incorrect amount): Keying error at checkout; merchant agrees to adjust."
+}

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_843205",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_843205.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_843205"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 14153.35,
+            "monthly_debt_payments_usd": 4464.81
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.3155,
+            "monthly_income_usd": 14153.35
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_843205",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.3155 (31.6%) is under the 0.43 policy max and monthly income $14,153.35 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_843205 (Samuel Iyer, $9,000.00 requested): DTI 0.3155 (31.6%) is under the 0.43 policy max and monthly income $14,153.35 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_843205 (Samuel Iyer, $9,000.00 requested): DTI 0.3155 (31.6%) is under the 0.43 policy max and monthly income $14,153.35 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+}

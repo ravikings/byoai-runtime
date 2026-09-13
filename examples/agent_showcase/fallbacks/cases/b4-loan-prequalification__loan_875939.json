@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_875939",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_875939.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_875939"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2584.14,
+            "monthly_debt_payments_usd": 672.9
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.2604,
+            "monthly_income_usd": 2584.14
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_875939",
+            "decision": "declined",
+            "rationale": "Monthly income $2,584.14 is below the $3,000.00 policy minimum; DTI 26.0%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_875939 (Fatima Santos, $13,500.00 requested): Monthly income $2,584.14 is below the $3,000.00 policy minimum; DTI 26.0%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_875939 (Fatima Santos, $13,500.00 requested): Monthly income $2,584.14 is below the $3,000.00 policy minimum; DTI 26.0%."
+}

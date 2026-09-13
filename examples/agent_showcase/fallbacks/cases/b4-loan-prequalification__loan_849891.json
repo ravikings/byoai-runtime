@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_849891",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_849891.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_849891"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 4608.14,
+            "monthly_debt_payments_usd": 2615.45
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5676,
+            "monthly_income_usd": 4608.14
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_849891",
+            "decision": "declined",
+            "rationale": "DTI 0.5676 (56.8%) exceeds the 0.43 policy max ($2,615.45 debt on $4,608.14 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_849891 (Abdul Walsh, $14,000.00 requested): DTI 0.5676 (56.8%) exceeds the 0.43 policy max ($2,615.45 debt on $4,608.14 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_849891 (Abdul Walsh, $14,000.00 requested): DTI 0.5676 (56.8%) exceeds the 0.43 policy max ($2,615.45 debt on $4,608.14 income)."
+}

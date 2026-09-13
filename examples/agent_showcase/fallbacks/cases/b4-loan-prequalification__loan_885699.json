@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_885699",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_885699.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_885699"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 6631.32,
+            "monthly_debt_payments_usd": 3271.7
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.4934,
+            "monthly_income_usd": 6631.32
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_885699",
+            "decision": "declined",
+            "rationale": "DTI 0.4934 (49.3%) exceeds the 0.43 policy max ($3,271.70 debt on $6,631.32 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_885699 (Rosa Flores, $29,500.00 requested): DTI 0.4934 (49.3%) exceeds the 0.43 policy max ($3,271.70 debt on $6,631.32 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_885699 (Rosa Flores, $29,500.00 requested): DTI 0.4934 (49.3%) exceeds the 0.43 policy max ($3,271.70 debt on $6,631.32 income)."
+}

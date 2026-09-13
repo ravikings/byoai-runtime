@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_788654",
+  "steps": [
+    {
+      "assistant_text": "Screening Bianca Mehta against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Bianca Mehta"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "No matches on OFAC-SDN, UN-Consolidated, EU-Sanctions or PEP lists. Clear.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "No matches on OFAC-SDN, UN-Consolidated, EU-Sanctions or PEP lists. Clear."
+}

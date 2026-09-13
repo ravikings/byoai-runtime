@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_862379",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_862379.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_862379"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_422045"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_862379"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_862379",
+            "decision": "block",
+            "rationale": "Bucharest, RO is 7,921 km from the prior transaction in Baltimore 132 minutes earlier, which is impossible travel; $883.85 at eGift Hub is 11.4x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_862379: Bucharest, RO is 7,921 km from the prior transaction in Baltimore 132 minutes earlier, which is impossible travel; $883.85 at eGift Hub is 11.4x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_862379: Bucharest, RO is 7,921 km from the prior transaction in Baltimore 132 minutes earlier, which is impossible travel; $883.85 at eGift Hub is 11.4x the customer's average."
+}

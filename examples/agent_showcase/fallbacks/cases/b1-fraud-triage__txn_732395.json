@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_732395",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_732395.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_732395"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_636903.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_636903"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_732395"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_732395",
+            "decision": "clear",
+            "rationale": "1,008 km over 291 minutes is plausible travel from Tulsa; Marriott fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_732395: 1,008 km over 291 minutes is plausible travel from Tulsa; Marriott fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_732395: 1,008 km over 291 minutes is plausible travel from Tulsa; Marriott fits the trip and the card was present."
+}

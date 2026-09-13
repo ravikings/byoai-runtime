@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_860912",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_860912.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_860912"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 3503.57,
+            "monthly_debt_payments_usd": 416.12
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1188,
+            "monthly_income_usd": 3503.57
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_860912",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.1188 (11.9%) is under the 0.43 policy max and monthly income $3,503.57 clears the $3,000.00 minimum; 3 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_860912 (Hiroshi Gomez, $22,500.00 requested): DTI 0.1188 (11.9%) is under the 0.43 policy max and monthly income $3,503.57 clears the $3,000.00 minimum; 3 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_860912 (Hiroshi Gomez, $22,500.00 requested): DTI 0.1188 (11.9%) is under the 0.43 policy max and monthly income $3,503.57 clears the $3,000.00 minimum; 3 overdraft(s) in 3 months."
+}
