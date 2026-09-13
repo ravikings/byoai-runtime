@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_698649",
+  "steps": [
+    {
+      "assistant_text": "Reading submitted documents for app_698649.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_698649"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Jonah Varga"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_698649"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Approving.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_698649",
+            "decision": "approve",
+            "rationale": "Documents consistent, no sanctions or PEP matches, risk score 31 (medium)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Approved app_698649: Documents consistent, no sanctions or PEP matches, risk score 31 (medium).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Approved app_698649: Documents consistent, no sanctions or PEP matches, risk score 31 (medium)."
+}

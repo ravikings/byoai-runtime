@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_662328",
+  "steps": [
+    {
+      "assistant_text": "Screening Isaac Russo against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Isaac Russo"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Isaac Russo' (score 0.94). Former deputy minister of finance, IN.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Isaac Russo' (score 0.94). Former deputy minister of finance, IN."
+}

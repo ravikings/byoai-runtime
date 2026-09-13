@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_855226",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_855226.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_855226"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_724382.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_724382"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_855226"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_855226",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Austin, the customer's home city; $1,934.91 against a $280.88 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_855226: Card-present purchase in Austin, the customer's home city; $1,934.91 against a $280.88 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_855226: Card-present purchase in Austin, the customer's home city; $1,934.91 against a $280.88 average with no velocity anomaly."
+}

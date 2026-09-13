@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_557601",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_557601.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_557601"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_398125.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_398125"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_557601"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_557601",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Columbus, the customer's home city; $31.93 against a $96.65 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_557601: Card-present purchase in Columbus, the customer's home city; $31.93 against a $96.65 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_557601: Card-present purchase in Columbus, the customer's home city; $31.93 against a $96.65 average with no velocity anomaly."
+}

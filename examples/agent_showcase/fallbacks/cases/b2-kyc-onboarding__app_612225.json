@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_612225",
+  "steps": [
+    {
+      "assistant_text": "Opening the document set for app_612225.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_612225"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The passport name does not match the application. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Hiroshi Hoang"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_612225"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_612225",
+            "decision": "escalate",
+            "rationale": "Surname on the passport ('Hiroshi Volkov') differs from the application ('Hiroshi Hoang') and no name-change document was submitted; needs document review before approval. Risk score 82."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_612225: Surname on the passport ('Hiroshi Volkov') differs from the application ('Hiroshi Hoang') and no name-change document was submitted; needs document review before approval. Risk score 82.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_612225: Surname on the passport ('Hiroshi Volkov') differs from the application ('Hiroshi Hoang') and no name-change document was submitted; needs document review before approval. Risk score 82."
+}

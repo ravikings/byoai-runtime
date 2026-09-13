@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_837592",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_837592.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_837592"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 13395.08,
+            "monthly_debt_payments_usd": 8000.32
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5973,
+            "monthly_income_usd": 13395.08
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_837592",
+            "decision": "declined",
+            "rationale": "DTI 0.5973 (59.7%) exceeds the 0.43 policy max ($8,000.32 debt on $13,395.08 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_837592 (Nour Laurent, $10,500.00 requested): DTI 0.5973 (59.7%) exceeds the 0.43 policy max ($8,000.32 debt on $13,395.08 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_837592 (Nour Laurent, $10,500.00 requested): DTI 0.5973 (59.7%) exceeds the 0.43 policy max ($8,000.32 debt on $13,395.08 income)."
+}

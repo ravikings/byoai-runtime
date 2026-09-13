@@ -83,12 +83,12 @@ BEDROCK_AGENT_TOOLS: list[dict] = [
 
 B6_BEDROCK_SANCTIONS_REVIEW = AgentDef(
     id="b6-bedrock-sanctions-review",
-    name="Sanctions Review (AWS Bedrock Agent)",
+    name="Sanctions Review Agent (AWS Bedrock)",
     domain="banking",
     description=(
-        "A managed AWS Bedrock Agent reviewing a held payment against sanctions "
-        "lists. Nothing intercepts it — the evidence is normalized out of the "
-        "agent's own InvokeAgent trace."
+        "Managed AWS Bedrock Agent that reviews payments held by the OFAC/Sanctions "
+        "Screening model and recommends release or hold. Evidence is normalized from "
+        "the agent's own InvokeAgent trace. Never releases a payment itself."
     ),
     system_prompt=(
         "Configured in AWS, not here. A Bedrock agent's instructions live on the "
@@ -104,6 +104,8 @@ B6_BEDROCK_SANCTIONS_REVIEW = AgentDef(
     model="anthropic.claude-3-5-sonnet-20241022-v2:0",
     provider="bedrock_agent",
     fallback_file="b6_bedrock_sanctions_review.json",
+    system="sanctions-ops",
+    use_case="aml-sanctions",
 )
 
 AGENTS: list[AgentDef] = [B6_BEDROCK_SANCTIONS_REVIEW]

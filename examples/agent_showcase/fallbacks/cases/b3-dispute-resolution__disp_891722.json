@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_891722",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_891722.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_891722"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_891722"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_891722",
+            "message": "We reviewed your dispute about Grubhub ($16.73, cancelled recurring). The evidence supports your claim, so we have posted a provisional credit of $16.73 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_891722",
+            "amount_usd": 16.73
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $16.73 posted for disp_891722 (Grubhub, cancelled recurring): No response within 10 days.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $16.73 posted for disp_891722 (Grubhub, cancelled recurring): No response within 10 days."
+}

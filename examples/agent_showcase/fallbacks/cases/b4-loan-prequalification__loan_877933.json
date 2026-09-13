@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_877933",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_877933.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_877933"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 5810.39,
+            "monthly_debt_payments_usd": 2951.01
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5079,
+            "monthly_income_usd": 5810.39
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_877933",
+            "decision": "declined",
+            "rationale": "DTI 0.5079 (50.8%) exceeds the 0.43 policy max ($2,951.01 debt on $5,810.39 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_877933 (Ingrid Yamamoto, $19,000.00 requested): DTI 0.5079 (50.8%) exceeds the 0.43 policy max ($2,951.01 debt on $5,810.39 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_877933 (Ingrid Yamamoto, $19,000.00 requested): DTI 0.5079 (50.8%) exceeds the 0.43 policy max ($2,951.01 debt on $5,810.39 income)."
+}

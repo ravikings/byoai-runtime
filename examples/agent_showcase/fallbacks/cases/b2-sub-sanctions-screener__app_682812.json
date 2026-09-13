@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_682812",
+  "steps": [
+    {
+      "assistant_text": "Screening Chinedu Walsh against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Chinedu Walsh"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Chinedu Walsh' (score 0.87). Senior official at the central bank, KE.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Chinedu Walsh' (score 0.87). Senior official at the central bank, KE."
+}

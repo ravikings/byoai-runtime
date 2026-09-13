@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_595470",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_595470.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_595470"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_728035"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_595470"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocking and routing to the fraud desk.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_595470",
+            "decision": "block",
+            "rationale": "Hanoi, VN is 13,153 km from the prior transaction in Pittsburgh 103 minutes earlier, which is impossible travel; $590.22 at Giftcards Direct is 6.8x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_595470: Hanoi, VN is 13,153 km from the prior transaction in Pittsburgh 103 minutes earlier, which is impossible travel; $590.22 at Giftcards Direct is 6.8x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_595470: Hanoi, VN is 13,153 km from the prior transaction in Pittsburgh 103 minutes earlier, which is impossible travel; $590.22 at Giftcards Direct is 6.8x the customer's average."
+}

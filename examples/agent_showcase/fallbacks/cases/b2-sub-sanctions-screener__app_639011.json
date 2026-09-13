@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_639011",
+  "steps": [
+    {
+      "assistant_text": "Screening Rosa Alvarez against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Rosa Alvarez"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: OFAC-SDN 'Rosa Alvaree' (score 0.84). Partial match; SDN entry DOB 1962-08-23.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: OFAC-SDN 'Rosa Alvaree' (score 0.84). Partial match; SDN entry DOB 1962-08-23."
+}

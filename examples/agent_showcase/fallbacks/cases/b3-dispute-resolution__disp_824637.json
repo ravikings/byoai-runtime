@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_824637",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_824637.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_824637"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_824637"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_824637",
+            "message": "We reviewed your dispute about Ticketmaster ($513.39, item not received). The evidence supports your claim, so we have posted a provisional credit of $513.39 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_824637",
+            "amount_usd": 513.39
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $513.39 posted for disp_824637 (Ticketmaster, item not received): Carrier shows package lost at a regional hub.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $513.39 posted for disp_824637 (Ticketmaster, item not received): Carrier shows package lost at a regional hub."
+}

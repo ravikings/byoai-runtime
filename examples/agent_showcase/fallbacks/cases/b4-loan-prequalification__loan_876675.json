@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_876675",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_876675.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_876675"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 5095.26,
+            "monthly_debt_payments_usd": 2527.51
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.4961,
+            "monthly_income_usd": 5095.26
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_876675",
+            "decision": "declined",
+            "rationale": "DTI 0.4961 (49.6%) exceeds the 0.43 policy max ($2,527.51 debt on $5,095.26 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_876675 (Thandiwe Popescu, $4,000.00 requested): DTI 0.4961 (49.6%) exceeds the 0.43 policy max ($2,527.51 debt on $5,095.26 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_876675 (Thandiwe Popescu, $4,000.00 requested): DTI 0.4961 (49.6%) exceeds the 0.43 policy max ($2,527.51 debt on $5,095.26 income)."
+}

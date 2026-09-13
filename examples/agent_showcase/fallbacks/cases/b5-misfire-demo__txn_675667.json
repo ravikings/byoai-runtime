@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_675667",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_675667.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_675667"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_604450"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_675667"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_675667",
+            "decision": "block",
+            "rationale": "Card-not-present $283.09 at GameKey Store (MCC 5816) 6 minute(s) after the prior transaction, 0.9x the $323.46 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_675667: Card-not-present $283.09 at GameKey Store (MCC 5816) 6 minute(s) after the prior transaction, 0.9x the $323.46 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_675667: Card-not-present $283.09 at GameKey Store (MCC 5816) 6 minute(s) after the prior transaction, 0.9x the $323.46 average; the category is a common cash-out route."
+}

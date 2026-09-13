@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_649968",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_649968.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_649968"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_154148.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_154148"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_649968"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_649968",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Boston, the customer's home city; $103.09 against a $48.29 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_649968: Card-present purchase in Boston, the customer's home city; $103.09 against a $48.29 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_649968: Card-present purchase in Boston, the customer's home city; $103.09 against a $48.29 average with no velocity anomaly."
+}

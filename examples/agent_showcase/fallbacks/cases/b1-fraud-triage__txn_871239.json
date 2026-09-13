@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_871239",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_871239.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_871239"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_313511.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_313511"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_871239"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_871239",
+            "decision": "clear",
+            "rationale": "1,584 km over 2086 minutes is plausible travel from Salt Lake City; Hyatt Place fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_871239: 1,584 km over 2086 minutes is plausible travel from Salt Lake City; Hyatt Place fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_871239: 1,584 km over 2086 minutes is plausible travel from Salt Lake City; Hyatt Place fits the trip and the card was present."
+}

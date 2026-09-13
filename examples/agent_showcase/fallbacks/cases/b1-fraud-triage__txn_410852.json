@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_410852",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_410852.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_410852"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_255067"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_410852"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_410852",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Tulsa, the customer's home city; $159.31 against a $63.57 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_410852: Card-present purchase in Tulsa, the customer's home city; $159.31 against a $63.57 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_410852: Card-present purchase in Tulsa, the customer's home city; $159.31 against a $63.57 average with no velocity anomaly."
+}

@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_744762",
+  "steps": [
+    {
+      "assistant_text": "Screening Alexei Okonkwo against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Alexei Okonkwo"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Alexei Okonkwo' (score 0.96). Serving member of the national legislature, MX.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Alexei Okonkwo' (score 0.96). Serving member of the national legislature, MX."
+}

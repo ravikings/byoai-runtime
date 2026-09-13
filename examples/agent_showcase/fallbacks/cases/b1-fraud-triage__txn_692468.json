@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_692468",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_692468.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_692468"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_134692.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_134692"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_692468"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_692468",
+            "decision": "clear",
+            "rationale": "3,369 km over 889 minutes is plausible travel from Salt Lake City; Enterprise Rent-A-Car fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_692468: 3,369 km over 889 minutes is plausible travel from Salt Lake City; Enterprise Rent-A-Car fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_692468: 3,369 km over 889 minutes is plausible travel from Salt Lake City; Enterprise Rent-A-Car fits the trip and the card was present."
+}

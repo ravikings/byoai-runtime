@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_635674",
+  "steps": [
+    {
+      "assistant_text": "Opening the document set for app_635674.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_635674"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The state id name does not match the application. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Theo Takahashi"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_635674"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_635674",
+            "decision": "escalate",
+            "rationale": "Surname on the state id ('Theo Iyer') differs from the application ('Theo Takahashi') and no name-change document was submitted; needs document review before approval. Risk score 55."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_635674: Surname on the state id ('Theo Iyer') differs from the application ('Theo Takahashi') and no name-change document was submitted; needs document review before approval. Risk score 55.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_635674: Surname on the state id ('Theo Iyer') differs from the application ('Theo Takahashi') and no name-change document was submitted; needs document review before approval. Risk score 55."
+}

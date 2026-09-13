@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_842321",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_842321.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_842321"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_842321"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_842321",
+            "message": "We reviewed your dispute about Spotify ($713.14, cancelled recurring). The evidence supports your claim, so we have posted a provisional credit of $713.14 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_842321",
+            "amount_usd": 713.14
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $713.14 posted for disp_842321 (Spotify, cancelled recurring): No response within 10 days.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $713.14 posted for disp_842321 (Spotify, cancelled recurring): No response within 10 days."
+}

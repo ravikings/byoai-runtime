@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_722881",
+  "steps": [
+    {
+      "assistant_text": "Reading submitted documents for app_722881.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_722881"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Emeka Bello"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_722881"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_722881",
+            "decision": "escalate",
+            "rationale": "Declared country CY is on the bank's high-risk jurisdiction list; EDD required before opening. Risk score 71 (high)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_722881: Declared country CY is on the bank's high-risk jurisdiction list; EDD required before opening. Risk score 71 (high).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_722881: Declared country CY is on the bank's high-risk jurisdiction list; EDD required before opening. Risk score 71 (high)."
+}

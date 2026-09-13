@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_646071",
+  "steps": [
+    {
+      "assistant_text": "Screening Alejandro Ortiz against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Alejandro Ortiz"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Alejandro Ortiz' (score 0.89). Former state governor, NG.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Alejandro Ortiz' (score 0.89). Former state governor, NG."
+}

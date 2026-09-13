@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_410910",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_410910.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_410910"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_167084"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_410910"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_410910",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Detroit, the customer's home city; $25.36 against a $68.13 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_410910: Card-present purchase in Detroit, the customer's home city; $25.36 against a $68.13 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_410910: Card-present purchase in Detroit, the customer's home city; $25.36 against a $68.13 average with no velocity anomaly."
+}

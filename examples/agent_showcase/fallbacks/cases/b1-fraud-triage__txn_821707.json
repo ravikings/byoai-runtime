@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_821707",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_821707.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_821707"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_193546.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_193546"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_821707"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_821707",
+            "decision": "clear",
+            "rationale": "Online purchase in the customer's home city, no geo or velocity anomaly; $1,097.96 at Booking.com is above the $125.49 average but consistent with the category."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_821707: Online purchase in the customer's home city, no geo or velocity anomaly; $1,097.96 at Booking.com is above the $125.49 average but consistent with the category.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_821707: Online purchase in the customer's home city, no geo or velocity anomaly; $1,097.96 at Booking.com is above the $125.49 average but consistent with the category."
+}

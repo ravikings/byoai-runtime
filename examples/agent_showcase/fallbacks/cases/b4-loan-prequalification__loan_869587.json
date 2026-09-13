@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_869587",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_869587.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_869587"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 12502.65,
+            "monthly_debt_payments_usd": 2510.27
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.2008,
+            "monthly_income_usd": 12502.65
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_869587",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.2008 (20.1%) is under the 0.43 policy max and monthly income $12,502.65 clears the $3,000.00 minimum; 2 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_869587 (Valentina Haddad, $9,500.00 requested): DTI 0.2008 (20.1%) is under the 0.43 policy max and monthly income $12,502.65 clears the $3,000.00 minimum; 2 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_869587 (Valentina Haddad, $9,500.00 requested): DTI 0.2008 (20.1%) is under the 0.43 policy max and monthly income $12,502.65 clears the $3,000.00 minimum; 2 overdraft(s) in 3 months."
+}

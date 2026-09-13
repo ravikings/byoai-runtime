@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_732473",
+  "steps": [
+    {
+      "assistant_text": "Reading submitted documents for app_732473.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_732473"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Names match across documents. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Teresa Brennan"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_732473"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_732473",
+            "decision": "escalate",
+            "rationale": "Partial OFAC-SDN match 'Teresa Brennae' at score 0.84; escalating to BSA/AML for disposition. Risk score 46."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_732473: Partial OFAC-SDN match 'Teresa Brennae' at score 0.84; escalating to BSA/AML for disposition. Risk score 46.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_732473: Partial OFAC-SDN match 'Teresa Brennae' at score 0.84; escalating to BSA/AML for disposition. Risk score 46."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_676299",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_676299.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_676299"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_344868"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_676299"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_676299",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Albany, the customer's home city; $2,783.89 against a $389.88 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_676299: Card-present purchase in Albany, the customer's home city; $2,783.89 against a $389.88 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_676299: Card-present purchase in Albany, the customer's home city; $2,783.89 against a $389.88 average with no velocity anomaly."
+}

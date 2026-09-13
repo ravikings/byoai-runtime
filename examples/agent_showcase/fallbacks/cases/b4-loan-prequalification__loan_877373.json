@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_877373",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_877373.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_877373"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2799.76,
+            "monthly_debt_payments_usd": 671.35
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.2398,
+            "monthly_income_usd": 2799.76
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_877373",
+            "decision": "declined",
+            "rationale": "Monthly income $2,799.76 is below the $3,000.00 policy minimum; DTI 24.0%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_877373 (Rahul Garcia, $29,000.00 requested): Monthly income $2,799.76 is below the $3,000.00 policy minimum; DTI 24.0%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_877373 (Rahul Garcia, $29,000.00 requested): Monthly income $2,799.76 is below the $3,000.00 policy minimum; DTI 24.0%."
+}

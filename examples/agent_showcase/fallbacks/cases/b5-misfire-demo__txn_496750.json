@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_496750",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_496750.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_496750"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_360743"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_496750"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_496750",
+            "decision": "clear",
+            "rationale": "750 km over 2361 minutes is plausible travel from Hartford; Summit Toyota fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_496750: 750 km over 2361 minutes is plausible travel from Hartford; Summit Toyota fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_496750: 750 km over 2361 minutes is plausible travel from Hartford; Summit Toyota fits the trip and the card was present."
+}

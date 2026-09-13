@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_584262",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_584262.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_584262"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_688117.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_688117"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_584262"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_584262",
+            "decision": "clear",
+            "rationale": "2,203 km over 831 minutes is plausible travel from Boise; Marriott fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_584262: 2,203 km over 831 minutes is plausible travel from Boise; Marriott fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_584262: 2,203 km over 831 minutes is plausible travel from Boise; Marriott fits the trip and the card was present."
+}

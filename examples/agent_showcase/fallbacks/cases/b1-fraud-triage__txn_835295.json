@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_835295",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_835295.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_835295"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_141038.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_141038"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_835295"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_835295",
+            "decision": "clear",
+            "rationale": "1,254 km over 687 minutes is plausible travel from Kansas City; Hertz fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_835295: 1,254 km over 687 minutes is plausible travel from Kansas City; Hertz fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_835295: 1,254 km over 687 minutes is plausible travel from Kansas City; Hertz fits the trip and the card was present."
+}

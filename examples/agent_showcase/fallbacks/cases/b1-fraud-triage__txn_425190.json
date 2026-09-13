@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_425190",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_425190.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_425190"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_673231.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_673231"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_425190"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_425190",
+            "decision": "clear",
+            "rationale": "734 km over 336 minutes is plausible travel from Louisville; Hyatt Place fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_425190: 734 km over 336 minutes is plausible travel from Louisville; Hyatt Place fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_425190: 734 km over 336 minutes is plausible travel from Louisville; Hyatt Place fits the trip and the card was present."
+}

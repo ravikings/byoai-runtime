@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_838994",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_838994.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_838994"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 6321.07,
+            "monthly_debt_payments_usd": 3794.66
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.6003,
+            "monthly_income_usd": 6321.07
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_838994",
+            "decision": "declined",
+            "rationale": "DTI 0.6003 (60.0%) exceeds the 0.43 policy max ($3,794.66 debt on $6,321.07 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_838994 (Jin Ramos, $34,500.00 requested): DTI 0.6003 (60.0%) exceeds the 0.43 policy max ($3,794.66 debt on $6,321.07 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_838994 (Jin Ramos, $34,500.00 requested): DTI 0.6003 (60.0%) exceeds the 0.43 policy max ($3,794.66 debt on $6,321.07 income)."
+}

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_860808",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_860808.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_860808"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 13797.45,
+            "monthly_debt_payments_usd": 1720.5
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1247,
+            "monthly_income_usd": 13797.45
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_860808",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.1247 (12.5%) is under the 0.43 policy max and monthly income $13,797.45 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_860808 (Tariq Silva, $5,000.00 requested): DTI 0.1247 (12.5%) is under the 0.43 policy max and monthly income $13,797.45 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_860808 (Tariq Silva, $5,000.00 requested): DTI 0.1247 (12.5%) is under the 0.43 policy max and monthly income $13,797.45 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+}

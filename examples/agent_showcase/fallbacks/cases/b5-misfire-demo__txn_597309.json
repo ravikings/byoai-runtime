@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_597309",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_597309.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_597309"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_452315"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_597309"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_597309",
+            "decision": "clear",
+            "rationale": "1,280 km over 1405 minutes is plausible travel from Houston; United Airlines fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_597309: 1,280 km over 1405 minutes is plausible travel from Houston; United Airlines fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_597309: 1,280 km over 1405 minutes is plausible travel from Houston; United Airlines fits the trip and the card was present."
+}

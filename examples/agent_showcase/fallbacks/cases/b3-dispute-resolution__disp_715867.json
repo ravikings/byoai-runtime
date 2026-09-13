@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_715867",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_715867.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_715867"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_715867"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The claim holds up. Crediting and replying.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_715867",
+            "message": "We reviewed your dispute about Gold's Fitness Club ($13.19, not as described). The evidence supports your claim, so we have posted a provisional credit of $13.19 while we complete the chargeback."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_715867",
+            "amount_usd": 13.19
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $13.19 posted for disp_715867 (Gold's Fitness Club, not as described): Accepted return authorization RMA-1442.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $13.19 posted for disp_715867 (Gold's Fitness Club, not as described): Accepted return authorization RMA-1442."
+}

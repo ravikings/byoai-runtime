@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_500975",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_500975.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_500975"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_461145.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_461145"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_500975"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_500975",
+            "decision": "clear",
+            "rationale": "2,767 km over 1693 minutes is plausible travel from Portland; Local Tavern fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_500975: 2,767 km over 1693 minutes is plausible travel from Portland; Local Tavern fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_500975: 2,767 km over 1693 minutes is plausible travel from Portland; Local Tavern fits the trip and the card was present."
+}

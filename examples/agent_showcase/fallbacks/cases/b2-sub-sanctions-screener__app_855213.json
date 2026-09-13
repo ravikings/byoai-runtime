@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_855213",
+  "steps": [
+    {
+      "assistant_text": "Screening Ifeoma Jensen against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Ifeoma Jensen"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Ifeoma Jensen' (score 0.94). Former state governor, TR.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Ifeoma Jensen' (score 0.94). Former state governor, TR."
+}

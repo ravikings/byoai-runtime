@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_792561",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_792561.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_792561"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_792561"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_792561",
+            "message": "We reviewed your dispute about Spotify ($1,679.52, item not received). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_792561 (Spotify, item not received): Signed proof of delivery to the cardholder address provided. Prior disputes by customer: 4.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_792561 (Spotify, item not received): Signed proof of delivery to the cardholder address provided. Prior disputes by customer: 4."
+}

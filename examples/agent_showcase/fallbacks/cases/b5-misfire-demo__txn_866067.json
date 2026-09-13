@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_866067",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_866067.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_866067"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_167176"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_866067"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_866067",
+            "decision": "clear",
+            "rationale": "1,462 km over 455 minutes is plausible travel from Minneapolis; Best Buy fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_866067: 1,462 km over 455 minutes is plausible travel from Minneapolis; Best Buy fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_866067: 1,462 km over 455 minutes is plausible travel from Minneapolis; Best Buy fits the trip and the card was present."
+}

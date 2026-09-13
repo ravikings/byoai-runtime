@@ -1,0 +1,57 @@
+{
+  "agent_id": "b2-kyc-onboarding",
+  "case_id": "app_751629",
+  "steps": [
+    {
+      "assistant_text": "Reading submitted documents for app_751629.",
+      "tool_calls": [
+        {
+          "name": "read_documents",
+          "input": {
+            "application_id": "app_751629"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The state id name does not match the application. Running the sanctions/PEP screen.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Sunita Russo"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing the onboarding risk score.",
+      "tool_calls": [
+        {
+          "name": "risk_score",
+          "input": {
+            "application_id": "app_751629"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This needs a human reviewer. Escalating.",
+      "tool_calls": [
+        {
+          "name": "approve_or_escalate",
+          "input": {
+            "application_id": "app_751629",
+            "decision": "escalate",
+            "rationale": "Surname on the state id ('Sunita Novak') differs from the application ('Sunita Russo') and no name-change document was submitted; needs document review before approval. Risk score 57."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Escalated app_751629: Surname on the state id ('Sunita Novak') differs from the application ('Sunita Russo') and no name-change document was submitted; needs document review before approval. Risk score 57.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Escalated app_751629: Surname on the state id ('Sunita Novak') differs from the application ('Sunita Russo') and no name-change document was submitted; needs document review before approval. Risk score 57."
+}

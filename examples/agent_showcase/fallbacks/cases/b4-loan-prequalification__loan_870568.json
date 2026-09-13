@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_870568",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_870568.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_870568"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2761.51,
+            "monthly_debt_payments_usd": 731.8
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.265,
+            "monthly_income_usd": 2761.51
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_870568",
+            "decision": "declined",
+            "rationale": "Monthly income $2,761.51 is below the $3,000.00 policy minimum; DTI 26.5%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_870568 (Mei Malik, $28,500.00 requested): Monthly income $2,761.51 is below the $3,000.00 policy minimum; DTI 26.5%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_870568 (Mei Malik, $28,500.00 requested): Monthly income $2,761.51 is below the $3,000.00 policy minimum; DTI 26.5%."
+}

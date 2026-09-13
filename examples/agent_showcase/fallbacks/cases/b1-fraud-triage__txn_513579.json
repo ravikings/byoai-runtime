@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_513579",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_513579.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_513579"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_885354"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_513579"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_513579",
+            "decision": "block",
+            "rationale": "Bogota, CO is 2,430 km from the prior transaction in Miami 117 minutes earlier, which is impossible travel; $253.52 at GameKey Store is 2.5x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_513579: Bogota, CO is 2,430 km from the prior transaction in Miami 117 minutes earlier, which is impossible travel; $253.52 at GameKey Store is 2.5x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_513579: Bogota, CO is 2,430 km from the prior transaction in Miami 117 minutes earlier, which is impossible travel; $253.52 at GameKey Store is 2.5x the customer's average."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_464729",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_464729.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_464729"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_323066"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_464729"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_464729",
+            "decision": "clear",
+            "rationale": "1,830 km over 987 minutes is plausible travel from Houston; Four Seasons fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_464729: 1,830 km over 987 minutes is plausible travel from Houston; Four Seasons fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_464729: 1,830 km over 987 minutes is plausible travel from Houston; Four Seasons fits the trip and the card was present."
+}

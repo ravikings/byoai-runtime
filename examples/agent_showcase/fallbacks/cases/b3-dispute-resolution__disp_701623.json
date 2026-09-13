@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_701623",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_701623.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_701623"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_701623"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence favors the merchant. Replying without a credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_701623",
+            "message": "We reviewed your dispute about Zappos ($1,191.78, fraudulent). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_701623 (Zappos, fraudulent): Purchase made from the cardholder's usual device and IP. Prior disputes by customer: 2.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_701623 (Zappos, fraudulent): Purchase made from the cardholder's usual device and IP. Prior disputes by customer: 2."
+}

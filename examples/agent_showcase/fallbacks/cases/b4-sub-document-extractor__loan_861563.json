@@ -1,0 +1,22 @@
+{
+  "agent_id": "b4-sub-document-extractor",
+  "case_id": "loan_861563",
+  "steps": [
+    {
+      "assistant_text": "Extracting income and debt figures from the statements on file for loan_861563.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_861563"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Extracted monthly income of $8,077.91 and monthly debt payments of $535.59 across 3 months of statements, 3 overdraft(s).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Extracted monthly income of $8,077.91 and monthly debt payments of $535.59 across 3 months of statements, 3 overdraft(s)."
+}

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_833210",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_833210.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_833210"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 13812.87,
+            "monthly_debt_payments_usd": 1702.68
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1233,
+            "monthly_income_usd": 13812.87
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_833210",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.1233 (12.3%) is under the 0.43 policy max and monthly income $13,812.87 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_833210 (Samuel Farouk, $35,000.00 requested): DTI 0.1233 (12.3%) is under the 0.43 policy max and monthly income $13,812.87 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_833210 (Samuel Farouk, $35,000.00 requested): DTI 0.1233 (12.3%) is under the 0.43 policy max and monthly income $13,812.87 clears the $3,000.00 minimum; 0 overdraft(s) in 3 months."
+}

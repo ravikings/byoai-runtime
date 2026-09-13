@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_416156",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_416156.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_416156"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_381720.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_381720"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_416156"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_416156",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Albuquerque, the customer's home city; $56.30 against a $64.22 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_416156: Card-present purchase in Albuquerque, the customer's home city; $56.30 against a $64.22 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_416156: Card-present purchase in Albuquerque, the customer's home city; $56.30 against a $64.22 average with no velocity anomaly."
+}

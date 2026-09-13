@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_836583",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_836583.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_836583"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 6496.37,
+            "monthly_debt_payments_usd": 995.97
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1533,
+            "monthly_income_usd": 6496.37
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_836583",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.1533 (15.3%) is under the 0.43 policy max and monthly income $6,496.37 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_836583 (Sara Odhiambo, $25,500.00 requested): DTI 0.1533 (15.3%) is under the 0.43 policy max and monthly income $6,496.37 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_836583 (Sara Odhiambo, $25,500.00 requested): DTI 0.1533 (15.3%) is under the 0.43 policy max and monthly income $6,496.37 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_613644",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_613644.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_613644"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_458085"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_613644"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_613644",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Omaha, the customer's home city; $53.86 against a $36.79 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_613644: Card-present purchase in Omaha, the customer's home city; $53.86 against a $36.79 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_613644: Card-present purchase in Omaha, the customer's home city; $53.86 against a $36.79 average with no velocity anomaly."
+}

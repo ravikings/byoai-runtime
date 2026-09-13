@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_529005",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_529005.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_529005"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_861516.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_861516"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_529005"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_529005",
+            "decision": "clear",
+            "rationale": "2,901 km over 636 minutes is plausible travel from Albuquerque; Harbor Grill fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_529005: 2,901 km over 636 minutes is plausible travel from Albuquerque; Harbor Grill fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_529005: 2,901 km over 636 minutes is plausible travel from Albuquerque; Harbor Grill fits the trip and the card was present."
+}

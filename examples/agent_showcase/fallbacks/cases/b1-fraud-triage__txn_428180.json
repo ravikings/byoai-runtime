@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_428180",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_428180.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_428180"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_881688"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_428180"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_428180",
+            "decision": "block",
+            "rationale": "Bogota, CO is 4,752 km from the prior transaction in Albuquerque 130 minutes earlier, which is impossible travel; $416.25 at Steam Games is 4.1x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_428180: Bogota, CO is 4,752 km from the prior transaction in Albuquerque 130 minutes earlier, which is impossible travel; $416.25 at Steam Games is 4.1x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_428180: Bogota, CO is 4,752 km from the prior transaction in Albuquerque 130 minutes earlier, which is impossible travel; $416.25 at Steam Games is 4.1x the customer's average."
+}

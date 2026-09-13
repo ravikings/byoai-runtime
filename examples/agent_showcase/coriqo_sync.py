@@ -69,13 +69,14 @@ def _registration(agent: AgentDef) -> AgentRegistration:
     return AgentRegistration(
         name=agent.name,
         mandate=agent.description,
-        system=f"byoai-agent-showcase/{agent.domain}",
+        system=agent.system or f"byoai-agent-showcase/{agent.domain}",
         risk_tier=_RISK_TIER_BY_DOMAIN.get(agent.domain, _DEFAULT_RISK_TIER),
         allowed_tools=tuple(sorted(agent.declared_tool_names)),
+        use_case=agent.use_case,
     )
 
 
-def ensure_agents_registered() -> dict[str, str]:
+def ensure_agents_registered(agents: list[AgentDef] | None = None) -> dict[str, str]:
     """Registers every showcase agent that isn't mapped yet; returns the map.
 
     Only the top-level catalog is registered. A sub-agent's work reaches Coriqo
@@ -91,15 +92,44 @@ def ensure_agents_registered() -> dict[str, str]:
         log.info("coriqo_sync: auto-register off, publishing nothing this session")
         return {}
 
-    registrations = {agent.id: _registration(agent) for agent in list_agents()}
+    registrations = {agent.id: _registration(agent) for agent in (agents or list_agents())}
     try:
         with CoriqoAgentsClient(credentials) as client:
-            return ensure_registered(
-                client, registrations, external_id_prefix=_EXTERNAL_ID_PREFIX
-            )
+            try:
+                return ensure_registered(
+                    client, registrations, external_id_prefix=_EXTERNAL_ID_PREFIX
+                )
+            except CoriqoAgentsError as exc:
+                if exc.status_code != 403:
+                    raise
+                # A publishing key normally can't register (that takes
+                # governance:approve), but can still publish against agents a
+                # governance user already registered under the same external_id.
+                return _resolve_existing(client, registrations, refused=exc.detail)
     except CoriqoAgentsError as exc:
         log.warning("coriqo_sync: could not register agents (%s), sync inactive", exc.detail)
         return {}
+
+
+def _resolve_existing(
+    client: CoriqoAgentsClient, registrations: dict, *, refused: str
+) -> dict[str, str]:
+    by_external_id = {
+        item.get("external_id"): item.get("agent_id") for item in client.list_agents()
+    }
+    resolved = {
+        key: by_external_id[f"{_EXTERNAL_ID_PREFIX}{key}"]
+        for key in registrations
+        if by_external_id.get(f"{_EXTERNAL_ID_PREFIX}{key}")
+    }
+    missing = sorted(set(registrations) - set(resolved))
+    if missing:
+        log.warning(
+            "coriqo_sync: registration refused (%s); not registered yet, so not published: %s",
+            refused,
+            ", ".join(missing),
+        )
+    return resolved
 
 
 def publish_run(
@@ -108,8 +138,10 @@ def publish_run(
     *,
     agent_map: dict[str, str],
     final_text: str | None = None,
+    goal: str | None = None,
 ) -> None:
-    """Publishes one completed run. Never raises."""
+    """Publishes one completed run. Never raises. ``goal`` defaults to the
+    agent's default scenario, for a run that was not bound to a case."""
     credentials = CoriqoCredentials.from_env()
     if credentials is None:
         return
@@ -129,7 +161,8 @@ def publish_run(
         return
 
     agent = get_agent(showcase_agent_id)
-    goal = agent.scenario_message if agent is not None else f"showcase run {run_id}"
+    if goal is None:
+        goal = agent.scenario_message if agent is not None else f"showcase run {run_id}"
 
     try:
         publish_session(

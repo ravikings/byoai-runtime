@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_888157",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_888157.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_888157"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_603595"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_888157"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_888157",
+            "decision": "clear",
+            "rationale": "3,533 km over 1429 minutes is plausible travel from Pittsburgh; Enterprise Rent-A-Car fits the trip and the card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_888157: 3,533 km over 1429 minutes is plausible travel from Pittsburgh; Enterprise Rent-A-Car fits the trip and the card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_888157: 3,533 km over 1429 minutes is plausible travel from Pittsburgh; Enterprise Rent-A-Car fits the trip and the card was present."
+}

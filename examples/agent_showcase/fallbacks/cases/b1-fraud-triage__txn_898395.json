@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_898395",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_898395.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_898395"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_280551.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_280551"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_898395"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_898395",
+            "decision": "clear",
+            "rationale": "Online purchase in the customer's home city, no geo or velocity anomaly; $614.63 at Best Buy Online is above the $130.77 average but consistent with the category."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_898395: Online purchase in the customer's home city, no geo or velocity anomaly; $614.63 at Best Buy Online is above the $130.77 average but consistent with the category.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_898395: Online purchase in the customer's home city, no geo or velocity anomaly; $614.63 at Best Buy Online is above the $130.77 average but consistent with the category."
+}

@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_668153",
+  "steps": [
+    {
+      "assistant_text": "Screening Adrian Pereira against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Adrian Pereira"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Adrian Pereira' (score 0.96). Spouse of a serving cabinet minister, BR.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Adrian Pereira' (score 0.96). Spouse of a serving cabinet minister, BR."
+}

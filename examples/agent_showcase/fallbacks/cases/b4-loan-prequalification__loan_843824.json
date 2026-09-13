@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_843824",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_843824.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_843824"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 14393.57,
+            "monthly_debt_payments_usd": 1296.03
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.09,
+            "monthly_income_usd": 14393.57
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Within policy. Pre-qualifying.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_843824",
+            "decision": "pre_qualified",
+            "rationale": "DTI 0.09 (9.0%) is under the 0.43 policy max and monthly income $14,393.57 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pre-qualified loan_843824 (Fiona Coleman, $16,000.00 requested): DTI 0.09 (9.0%) is under the 0.43 policy max and monthly income $14,393.57 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Pre-qualified loan_843824 (Fiona Coleman, $16,000.00 requested): DTI 0.09 (9.0%) is under the 0.43 policy max and monthly income $14,393.57 clears the $3,000.00 minimum; 1 overdraft(s) in 3 months."
+}

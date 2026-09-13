@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_818500",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_818500.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_818500"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_659553.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_659553"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_818500"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_818500",
+            "decision": "clear",
+            "rationale": "Online purchase in the customer's home city, no geo or velocity anomaly; $496.29 at Delta Air Lines is above the $55.61 average but consistent with the category."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_818500: Online purchase in the customer's home city, no geo or velocity anomaly; $496.29 at Delta Air Lines is above the $55.61 average but consistent with the category.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_818500: Online purchase in the customer's home city, no geo or velocity anomaly; $496.29 at Delta Air Lines is above the $55.61 average but consistent with the category."
+}

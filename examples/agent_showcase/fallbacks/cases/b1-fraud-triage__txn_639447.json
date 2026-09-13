@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_639447",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_639447.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_639447"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_113925.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_113925"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_639447"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_639447",
+            "decision": "clear",
+            "rationale": "Card-present purchase in San Diego, the customer's home city; $78.43 against a $38.85 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_639447: Card-present purchase in San Diego, the customer's home city; $78.43 against a $38.85 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_639447: Card-present purchase in San Diego, the customer's home city; $78.43 against a $38.85 average with no velocity anomaly."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_870372",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_870372.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_870372"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_643318.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_643318"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_870372"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocking and routing to the fraud desk.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_870372",
+            "decision": "block",
+            "rationale": "Jakarta, ID is 16,063 km from the prior transaction in Indianapolis 115 minutes earlier, which is impossible travel; $2,467.22 at Goldline Watches is 50.7x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_870372: Jakarta, ID is 16,063 km from the prior transaction in Indianapolis 115 minutes earlier, which is impossible travel; $2,467.22 at Goldline Watches is 50.7x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_870372: Jakarta, ID is 16,063 km from the prior transaction in Indianapolis 115 minutes earlier, which is impossible travel; $2,467.22 at Goldline Watches is 50.7x the customer's average."
+}

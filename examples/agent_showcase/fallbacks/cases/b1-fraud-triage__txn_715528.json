@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_715528",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_715528.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_715528"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_464646.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_464646"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_715528"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_715528",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Indianapolis, the customer's home city; $41.14 against a $84.34 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_715528: Card-present purchase in Indianapolis, the customer's home city; $41.14 against a $84.34 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_715528: Card-present purchase in Indianapolis, the customer's home city; $41.14 against a $84.34 average with no velocity anomaly."
+}

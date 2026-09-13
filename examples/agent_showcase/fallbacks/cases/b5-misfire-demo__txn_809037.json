@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_809037",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_809037.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_809037"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_461926.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_461926"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking distance and time since the last transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_809037"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_809037",
+            "decision": "clear",
+            "rationale": "Card-present purchase in San Jose, the customer's home city; $2,737.96 against a $224.91 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_809037: Card-present purchase in San Jose, the customer's home city; $2,737.96 against a $224.91 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_809037: Card-present purchase in San Jose, the customer's home city; $2,737.96 against a $224.91 average with no velocity anomaly."
+}

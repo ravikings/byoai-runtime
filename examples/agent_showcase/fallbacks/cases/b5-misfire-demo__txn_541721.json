@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_541721",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_541721.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_541721"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_704283.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_704283"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_541721"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_541721",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Richmond, the customer's home city; $4,636.10 against a $286.81 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_541721: Card-present purchase in Richmond, the customer's home city; $4,636.10 against a $286.81 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_541721: Card-present purchase in Richmond, the customer's home city; $4,636.10 against a $286.81 average with no velocity anomaly."
+}

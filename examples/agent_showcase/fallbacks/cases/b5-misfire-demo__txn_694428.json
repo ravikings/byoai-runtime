@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_694428",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_694428.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_694428"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_779031.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_779031"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_694428"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Low risk. Clearing the alert.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_694428",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Birmingham, the customer's home city; $3,218.52 against a $238.00 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_694428: Card-present purchase in Birmingham, the customer's home city; $3,218.52 against a $238.00 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_694428: Card-present purchase in Birmingham, the customer's home city; $3,218.52 against a $238.00 average with no velocity anomaly."
+}

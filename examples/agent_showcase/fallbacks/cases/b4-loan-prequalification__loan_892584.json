@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_892584",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_892584.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_892584"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 3680.89,
+            "monthly_debt_payments_usd": 1706.03
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.4635,
+            "monthly_income_usd": 3680.89
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_892584",
+            "decision": "declined",
+            "rationale": "DTI 0.4635 (46.4%) exceeds the 0.43 policy max ($1,706.03 debt on $3,680.89 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_892584 (Gabriel Duarte, $33,000.00 requested): DTI 0.4635 (46.4%) exceeds the 0.43 policy max ($1,706.03 debt on $3,680.89 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_892584 (Gabriel Duarte, $33,000.00 requested): DTI 0.4635 (46.4%) exceeds the 0.43 policy max ($1,706.03 debt on $3,680.89 income)."
+}

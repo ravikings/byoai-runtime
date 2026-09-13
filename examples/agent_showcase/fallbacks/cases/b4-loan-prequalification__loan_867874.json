@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_867874",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_867874.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_867874"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 3532.57,
+            "monthly_debt_payments_usd": 2178.59
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.6167,
+            "monthly_income_usd": 3532.57
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_867874",
+            "decision": "declined",
+            "rationale": "DTI 0.6167 (61.7%) exceeds the 0.43 policy max ($2,178.59 debt on $3,532.57 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_867874 (Thandiwe Mahlangu, $37,500.00 requested): DTI 0.6167 (61.7%) exceeds the 0.43 policy max ($2,178.59 debt on $3,532.57 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_867874 (Thandiwe Mahlangu, $37,500.00 requested): DTI 0.6167 (61.7%) exceeds the 0.43 policy max ($2,178.59 debt on $3,532.57 income)."
+}

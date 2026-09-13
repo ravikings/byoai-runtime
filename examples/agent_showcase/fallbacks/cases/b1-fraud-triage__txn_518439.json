@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_518439",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_518439.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_518439"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_825903.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_825903"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_518439"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_518439",
+            "decision": "block",
+            "rationale": "Istanbul, TR is 9,763 km from the prior transaction in Seattle 121 minutes earlier, which is impossible travel; $2,141.80 at Goldline Watches is 15.3x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_518439: Istanbul, TR is 9,763 km from the prior transaction in Seattle 121 minutes earlier, which is impossible travel; $2,141.80 at Goldline Watches is 15.3x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_518439: Istanbul, TR is 9,763 km from the prior transaction in Seattle 121 minutes earlier, which is impossible travel; $2,141.80 at Goldline Watches is 15.3x the customer's average."
+}

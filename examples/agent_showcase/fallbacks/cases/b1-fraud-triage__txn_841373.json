@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_841373",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_841373.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_841373"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_334154.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_334154"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_841373"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_841373",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Cleveland, the customer's home city; $24.86 against a $80.90 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_841373: Card-present purchase in Cleveland, the customer's home city; $24.86 against a $80.90 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_841373: Card-present purchase in Cleveland, the customer's home city; $24.86 against a $80.90 average with no velocity anomaly."
+}

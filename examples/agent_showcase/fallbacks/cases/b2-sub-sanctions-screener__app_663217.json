@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_663217",
+  "steps": [
+    {
+      "assistant_text": "Screening Hassan Watanabe against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Hassan Watanabe"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: PEP 'Hassan Watanabe' (score 0.9). Spouse of a serving cabinet minister, MX.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: PEP 'Hassan Watanabe' (score 0.9). Spouse of a serving cabinet minister, MX."
+}

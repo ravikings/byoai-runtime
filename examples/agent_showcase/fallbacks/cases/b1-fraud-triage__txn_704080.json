@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_704080",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_704080.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_704080"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_152827.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_152827"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_704080"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Consistent with the customer's normal activity. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_704080",
+            "decision": "clear",
+            "rationale": "Card-present purchase in Portland, the customer's home city; $59.78 against a $78.84 average with no velocity anomaly."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_704080: Card-present purchase in Portland, the customer's home city; $59.78 against a $78.84 average with no velocity anomaly.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_704080: Card-present purchase in Portland, the customer's home city; $59.78 against a $78.84 average with no velocity anomaly."
+}

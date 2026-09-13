@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_672198",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_672198.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_672198"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_470721.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_470721"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_672198"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_672198",
+            "decision": "block",
+            "rationale": "Manila, PH is 13,529 km from the prior transaction in Austin 30 minutes earlier, which is impossible travel; $422.40 at Steam Games is 3.1x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_672198: Manila, PH is 13,529 km from the prior transaction in Austin 30 minutes earlier, which is impossible travel; $422.40 at Steam Games is 3.1x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_672198: Manila, PH is 13,529 km from the prior transaction in Austin 30 minutes earlier, which is impossible travel; $422.40 at Steam Games is 3.1x the customer's average."
+}

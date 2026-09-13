@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_754099",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_754099.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_754099"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Comparing against the customer's normal spend.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_453510"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_754099"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "This matches account takeover or card testing. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_754099",
+            "decision": "block",
+            "rationale": "Bangkok, TH is 14,523 km from the prior transaction in Dallas 133 minutes earlier, which is impossible travel; $134.65 at PlayCredits is 1.9x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_754099: Bangkok, TH is 14,523 km from the prior transaction in Dallas 133 minutes earlier, which is impossible travel; $134.65 at PlayCredits is 1.9x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_754099: Bangkok, TH is 14,523 km from the prior transaction in Dallas 133 minutes earlier, which is impossible travel; $134.65 at PlayCredits is 1.9x the customer's average."
+}

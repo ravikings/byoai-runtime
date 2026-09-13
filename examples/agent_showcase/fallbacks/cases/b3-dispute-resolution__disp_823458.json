@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_823458",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_823458.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_823458"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_823458"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence favors the merchant. Replying without a credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_823458",
+            "message": "We reviewed your dispute about Instacart ($150.32, cancelled recurring). The merchant provided evidence the charge is valid, so we can't issue a credit. Reply within 10 days with any additional documentation."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_823458 (Instacart, cancelled recurring): Signed agreement with the disclosed cancellation terms provided. Prior disputes by customer: 4.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_823458 (Instacart, cancelled recurring): Signed agreement with the disclosed cancellation terms provided. Prior disputes by customer: 4."
+}

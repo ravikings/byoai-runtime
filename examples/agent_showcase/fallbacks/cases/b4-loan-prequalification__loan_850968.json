@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_850968",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_850968.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_850968"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 10237.54,
+            "monthly_debt_payments_usd": 4736.92
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.4627,
+            "monthly_income_usd": 10237.54
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_850968",
+            "decision": "declined",
+            "rationale": "DTI 0.4627 (46.3%) exceeds the 0.43 policy max ($4,736.92 debt on $10,237.54 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_850968 (Dalia Omondi, $31,500.00 requested): DTI 0.4627 (46.3%) exceeds the 0.43 policy max ($4,736.92 debt on $10,237.54 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_850968 (Dalia Omondi, $31,500.00 requested): DTI 0.4627 (46.3%) exceeds the 0.43 policy max ($4,736.92 debt on $10,237.54 income)."
+}

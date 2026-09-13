@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_797348",
+  "steps": [
+    {
+      "assistant_text": "Looking up txn_797348.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_797348"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_734330.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_734330"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_797348"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_797348",
+            "decision": "block",
+            "rationale": "Istanbul, TR is 8,922 km from the prior transaction in Charlotte 118 minutes earlier, which is impossible travel; $98.90 at GameKey Store is 1.2x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_797348: Istanbul, TR is 8,922 km from the prior transaction in Charlotte 118 minutes earlier, which is impossible travel; $98.90 at GameKey Store is 1.2x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_797348: Istanbul, TR is 8,922 km from the prior transaction in Charlotte 118 minutes earlier, which is impossible travel; $98.90 at GameKey Store is 1.2x the customer's average."
+}

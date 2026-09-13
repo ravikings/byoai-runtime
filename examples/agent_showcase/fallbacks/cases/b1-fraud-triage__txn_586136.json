@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_586136",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_586136.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_586136"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_700419.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_700419"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Geo/velocity check next.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_586136"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_586136",
+            "decision": "clear",
+            "rationale": "Online purchase in the customer's home city, no geo or velocity anomaly; $657.70 at Apple.com/US is above the $40.28 average but consistent with the category."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_586136: Online purchase in the customer's home city, no geo or velocity anomaly; $657.70 at Apple.com/US is above the $40.28 average but consistent with the category.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_586136: Online purchase in the customer's home city, no geo or velocity anomaly; $657.70 at Apple.com/US is above the $40.28 average but consistent with the category."
+}

@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_848686",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_848686.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_848686"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 14397.34,
+            "monthly_debt_payments_usd": 7489.34
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.5202,
+            "monthly_income_usd": 14397.34
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_848686",
+            "decision": "declined",
+            "rationale": "DTI 0.5202 (52.0%) exceeds the 0.43 policy max ($7,489.34 debt on $14,397.34 income)."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_848686 (Yuki Campos, $10,000.00 requested): DTI 0.5202 (52.0%) exceeds the 0.43 policy max ($7,489.34 debt on $14,397.34 income).",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_848686 (Yuki Campos, $10,000.00 requested): DTI 0.5202 (52.0%) exceeds the 0.43 policy max ($7,489.34 debt on $14,397.34 income)."
+}

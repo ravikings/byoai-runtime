@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_609408",
+  "steps": [
+    {
+      "assistant_text": "Screening Naomi Katz against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Naomi Katz"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: OFAC-SDN 'Naomi Kate' (score 0.75). Partial match; SDN entry DOB 1959-07-16.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: OFAC-SDN 'Naomi Kate' (score 0.75). Partial match; SDN entry DOB 1959-07-16."
+}

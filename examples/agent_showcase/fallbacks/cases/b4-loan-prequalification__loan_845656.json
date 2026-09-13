@@ -1,0 +1,59 @@
+{
+  "agent_id": "b4-loan-prequalification",
+  "case_id": "loan_845656",
+  "steps": [
+    {
+      "assistant_text": "Pulling extracted income and debt figures for loan_845656.",
+      "tool_calls": [
+        {
+          "name": "get_statements",
+          "input": {
+            "loan_id": "loan_845656"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Computing DTI.",
+      "tool_calls": [
+        {
+          "name": "compute_dti",
+          "input": {
+            "monthly_income_usd": 2795.9,
+            "monthly_debt_payments_usd": 376.28
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking against pre-qualification policy.",
+      "tool_calls": [
+        {
+          "name": "policy_check",
+          "input": {
+            "dti": 0.1346,
+            "monthly_income_usd": 2795.9
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Outside policy. Declining.",
+      "tool_calls": [
+        {
+          "name": "decision",
+          "input": {
+            "loan_id": "loan_845656",
+            "decision": "declined",
+            "rationale": "Monthly income $2,795.90 is below the $3,000.00 policy minimum; DTI 13.5%."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Declined loan_845656 (Ruth Abara, $20,000.00 requested): Monthly income $2,795.90 is below the $3,000.00 policy minimum; DTI 13.5%.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Declined loan_845656 (Ruth Abara, $20,000.00 requested): Monthly income $2,795.90 is below the $3,000.00 policy minimum; DTI 13.5%."
+}

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_745872",
+  "steps": [
+    {
+      "assistant_text": "Starting with the transaction record for txn_745872.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_745872"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Pulling history for cust_630606.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_630606"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_745872"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Too many risk signals together. Blocking the card.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_745872",
+            "decision": "block",
+            "rationale": "Card-not-present $658.04 at CardCart (MCC 5999) 3 minute(s) after the prior transaction, 5.0x the $131.72 average; the category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_745872: Card-not-present $658.04 at CardCart (MCC 5999) 3 minute(s) after the prior transaction, 5.0x the $131.72 average; the category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_745872: Card-not-present $658.04 at CardCart (MCC 5999) 3 minute(s) after the prior transaction, 5.0x the $131.72 average; the category is a common cash-out route."
+}
