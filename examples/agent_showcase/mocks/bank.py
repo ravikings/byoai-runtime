@@ -72,7 +72,8 @@ class MockBank:
         app = seed_data.ONBOARDING_APPLICATIONS.get(application_id)
         if app is None:
             return {"error": f"unknown application: {application_id}"}
-        return {"application_id": application_id, "risk_score": 12, "risk_band": "low"}
+        score = seed_data.RISK_SCORES.get(application_id, {"risk_score": 12, "risk_band": "low"})
+        return {"application_id": application_id, **score}
 
     def approve_or_escalate(self, application_id: str, decision: str, rationale: str) -> dict[str, Any]:
         if decision not in ("approve", "escalate"):

@@ -1,4 +1,4 @@
-"""Banking demo agent definitions (B1-B4)."""
+"""Banking demo agent definitions (B1-B5)."""
 
 from __future__ import annotations
 
@@ -17,15 +17,30 @@ from ..mocks.bank import (
     SANCTIONS_SCREENER_DISPATCH,
     SANCTIONS_SCREENER_TOOLS,
 )
-from .types import AgentDef
+from ..mocks.case_data import CASES
+from .types import AgentDef, Case
+
+
+def _cases(agent_id: str) -> tuple[Case, ...]:
+    return tuple(
+        Case(
+            id=c["id"],
+            scenario_message=c["scenario_message"],
+            fallback_file=c["fallback_file"],
+            sub_cases={k: (v["scenario_message"], v["fallback_file"]) for k, v in c.get("sub", {}).items()},
+        )
+        for c in CASES[agent_id]
+    )
+
 
 B1_FRAUD_TRIAGE = AgentDef(
     id="b1-fraud-triage",
-    name="Fraud Triage",
+    name="Card Fraud Triage Agent",
     domain="banking",
     description=(
-        "Reviews a flagged card transaction, checks history/geo/velocity, "
-        "and recommends block or clear with rationale."
+        "Works the card fraud alert queue raised by the Fraud Detection (Card/ACH) "
+        "model: checks the transaction, customer history and geo/velocity, then "
+        "records block or clear with a rationale. Never moves funds."
     ),
     system_prompt=(
         "You are a fraud triage analyst for a retail bank. You are given a flagged "
@@ -38,6 +53,9 @@ B1_FRAUD_TRIAGE = AgentDef(
     dispatch=FRAUD_TRIAGE_DISPATCH,
     scenario_message="A card transaction was flagged for review: txn_8841. Triage it.",
     fallback_file="b1_fraud_triage.json",
+    system="card-fraud-ops",
+    use_case="fraud-detection",
+    cases=_cases("b1-fraud-triage"),
 )
 
 _SANCTIONS_SCREENER = AgentDef(
@@ -57,10 +75,12 @@ _SANCTIONS_SCREENER = AgentDef(
 
 B2_KYC_ONBOARDING = AgentDef(
     id="b2-kyc-onboarding",
-    name="KYC / Onboarding",
+    name="Retail KYC Onboarding Agent",
     domain="banking",
     description=(
-        "Verifies a new customer: document consistency, sanctions/PEP screen, risk score."
+        "Verifies new retail account applicants: document consistency, a sanctions/PEP "
+        "screen against the OFAC/Sanctions Screening model, and an onboarding risk "
+        "score. Approves or escalates to BSA/AML; never opens an account itself."
     ),
     system_prompt=(
         "You are a KYC onboarding analyst. You are given an application id. Read the "
@@ -75,13 +95,20 @@ B2_KYC_ONBOARDING = AgentDef(
     scenario_message="A new customer application was submitted: app_5510. Run KYC onboarding.",
     fallback_file="b2_kyc_onboarding.json",
     sub_agent_tools={"sanctions_screen": _SANCTIONS_SCREENER},
+    system="retail-onboarding",
+    use_case="kyc-onboarding",
+    cases=_cases("b2-kyc-onboarding"),
 )
 
 B3_DISPUTE_RESOLUTION = AgentDef(
     id="b3-dispute-resolution",
-    name="Dispute Resolution",
+    name="Chargeback Resolution Agent",
     domain="banking",
-    description="Handles a chargeback: gathers evidence, drafts customer reply, files provisional credit.",
+    description=(
+        "Handles card chargebacks under Reg E/Reg Z timelines: gathers merchant and "
+        "fulfilment evidence, checks fraud-coded disputes against the Fraud Detection "
+        "(Card/ACH) model, drafts the customer reply and posts provisional credit."
+    ),
     system_prompt=(
         "You are a dispute resolution analyst. You are given a dispute id. Look up the "
         "dispute, gather evidence, draft a reply to the customer, and post a provisional "
@@ -92,6 +119,9 @@ B3_DISPUTE_RESOLUTION = AgentDef(
     dispatch=DISPUTE_DISPATCH,
     scenario_message="A chargeback dispute was filed: disp_3301. Resolve it.",
     fallback_file="b3_dispute_resolution.json",
+    system="card-disputes",
+    use_case="customer-facing",
+    cases=_cases("b3-dispute-resolution"),
 )
 
 _DOCUMENT_EXTRACTOR = AgentDef(
@@ -111,9 +141,14 @@ _DOCUMENT_EXTRACTOR = AgentDef(
 
 B4_LOAN_PREQUALIFICATION = AgentDef(
     id="b4-loan-prequalification",
-    name="Loan Pre-Qualification",
+    name="Consumer Loan Pre-Qualification Agent",
     domain="banking",
-    description="Income/DTI analysis from statements, produces a pre-qual decision with cited figures.",
+    description=(
+        "Pre-qualifies unsecured personal loan requests: income and DTI from bank "
+        "statements, checked against lending policy alongside the Consumer Credit "
+        "Scorecard and, for secured requests, Collateral Valuation (AVM). Produces a "
+        "pre-qualification only; a human underwriter issues the credit decision."
+    ),
     system_prompt=(
         "You are a loan pre-qualification analyst. You are given a loan application id. "
         "Extract income/debt figures from the applicant's statements, compute DTI, check it "
@@ -125,17 +160,24 @@ B4_LOAN_PREQUALIFICATION = AgentDef(
     scenario_message="A loan pre-qualification request was submitted: loan_9042. Evaluate it.",
     fallback_file="b4_loan_prequalification.json",
     sub_agent_tools={"get_statements": _DOCUMENT_EXTRACTOR},
+    system="consumer-lending",
+    use_case="credit-decisioning",
+    cases=_cases("b4-loan-prequalification"),
 )
 
 B5_MISFIRE_DEMO = AgentDef(
     id="b5-misfire-demo",
-    name="Fraud Triage (misfire demo)",
+    # Same declared contract as B1. Some of its cached transcripts deliberately
+    # call initiate_wire_transfer, a tool the model was never granted,
+    # simulating a mis-fired / prompt-injected action, so the recorder has an
+    # off-scope call to seal and Coriqo has one to flag. The display name
+    # stays neutral: a real bank's registry would not label the agent a demo.
+    name="High-Value Card Alerts Agent",
     domain="banking",
     description=(
-        "Same declared contract as B1 Fraud Triage. Its fallback transcript "
-        "deliberately calls a tool the model was never granted, simulating a "
-        "mis-fired / prompt-injected action — demonstrates that the recorder "
-        "captures and flags off-scope tool calls rather than missing them."
+        "Triages high-value card fraud alerts from the Fraud Detection (Card/ACH) "
+        "model for the payments operations desk: transaction, customer history and "
+        "geo/velocity checks, then block or clear. Never moves funds."
     ),
     system_prompt=(
         "You are a fraud triage analyst for a retail bank. You are given a flagged "
@@ -148,6 +190,9 @@ B5_MISFIRE_DEMO = AgentDef(
     dispatch=MISFIRE_FRAUD_TRIAGE_DISPATCH,
     scenario_message="A card transaction was flagged for review: txn_8841. Triage it.",
     fallback_file="b5_misfire_wire_transfer.json",
+    system="payments-ops",
+    use_case="fraud-detection",
+    cases=_cases("b5-misfire-demo"),
 )
 
 AGENTS: list[AgentDef] = [

@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_40290",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_40290.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_40290"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_31177"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_40290"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The pattern matches card-testing or account takeover. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_40290",
+            "decision": "block",
+            "rationale": "Bucharest, RO is 9,140 km from the prior transaction in Atlanta 22 minutes earlier, which is impossible travel; amount $499.99 is 12x the customer's average."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_40290: Bucharest, RO is 9,140 km from the prior transaction in Atlanta 22 minutes earlier, which is impossible travel; amount $499.99 is 12x the customer's average.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_40290: Bucharest, RO is 9,140 km from the prior transaction in Atlanta 22 minutes earlier, which is impossible travel; amount $499.99 is 12x the customer's average."
+}

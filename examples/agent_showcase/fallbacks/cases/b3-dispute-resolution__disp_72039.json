@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_72039",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_72039.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_72039"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_72039"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_72039",
+            "message": "We reviewed your dispute about StreamPlus Media ($64.99, cancelled recurring). The evidence supports your claim, so we have posted a provisional credit of $64.99 while we finish the chargeback with the merchant."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_72039",
+            "amount_usd": 64.99
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $64.99 posted for disp_72039 (StreamPlus Media, cancelled recurring): No response within 10 days.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $64.99 posted for disp_72039 (StreamPlus Media, cancelled recurring): No response within 10 days."
+}

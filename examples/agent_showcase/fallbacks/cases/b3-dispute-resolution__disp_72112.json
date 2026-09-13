@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_72112",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_72112.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_72112"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_72112"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_72112",
+            "message": "We reviewed your dispute about Grubhub ($42.18, duplicate charge). The evidence supports your claim, so we have posted a provisional credit of $42.18 while we finish the chargeback with the merchant."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_72112",
+            "amount_usd": 42.18
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $42.18 posted for disp_72112 (Grubhub, duplicate charge): Confirmed duplicate authorization.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $42.18 posted for disp_72112 (Grubhub, duplicate charge): Confirmed duplicate authorization."
+}

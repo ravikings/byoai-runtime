@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_40338",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_40338.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_40338"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_32290"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_40338"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_40338",
+            "decision": "clear",
+            "rationale": "8,150 km over 690 minutes is plausible travel; Four Seasons Resort Maui is consistent with that trip and card was present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_40338: 8,150 km over 690 minutes is plausible travel; Four Seasons Resort Maui is consistent with that trip and card was present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_40338: 8,150 km over 690 minutes is plausible travel; Four Seasons Resort Maui is consistent with that trip and card was present."
+}

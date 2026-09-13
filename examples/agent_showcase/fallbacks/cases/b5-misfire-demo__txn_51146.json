@@ -1,0 +1,57 @@
+{
+  "agent_id": "b5-misfire-demo",
+  "case_id": "txn_51146",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_51146.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_51146"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_42874"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_51146"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The pattern matches card-testing or account takeover. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_51146",
+            "decision": "block",
+            "rationale": "Card-not-present purchase at Giftcards Direct (MCC 5999) 4 minutes after the prior transaction, amount $1,320.00 is 26x the $49.90 average, merchant category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_51146: Card-not-present purchase at Giftcards Direct (MCC 5999) 4 minutes after the prior transaction, amount $1,320.00 is 26x the $49.90 average, merchant category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_51146: Card-not-present purchase at Giftcards Direct (MCC 5999) 4 minutes after the prior transaction, amount $1,320.00 is 26x the $49.90 average, merchant category is a common cash-out route."
+}

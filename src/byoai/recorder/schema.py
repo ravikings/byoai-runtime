@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
 from .canonical import canonicalize, sha256_hex
 
@@ -29,6 +29,7 @@ __all__ = [
     "new_span_id",
     "now_monotonic_ns",
     "now_ts_device",
+    "set_device_clock",
     "sha256_hex",
 ]
 
@@ -178,11 +179,28 @@ def format_ts_device(dt: datetime) -> str:
     return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond:06d}Z"
 
 
+_device_clock: Callable[[], datetime] | None = None
+
+
+def set_device_clock(clock: Callable[[], datetime] | None) -> Callable[[], datetime] | None:
+    """Replace the wall clock behind :func:`now_ts_device`; ``None`` restores
+    the real one. Returns the previous clock so a caller can put it back.
+
+    For replaying or backfilling recorded work at the time it happened. It is
+    safe to expose because ``ts_device`` was never trusted: ordering and
+    integrity come from ``seq`` and the hash chain, not from this value."""
+    global _device_clock
+    previous = _device_clock
+    _device_clock = clock
+    return previous
+
+
 def now_ts_device() -> str:
     """RFC3339 UTC timestamp with microsecond precision, e.g.
     ``2026-08-05T14:22:31.442123Z``. Untrusted host clock — ordering comes
     from ``seq``, never from this value."""
-    return format_ts_device(datetime.now(timezone.utc))
+    clock = _device_clock
+    return format_ts_device(clock() if clock is not None else datetime.now(timezone.utc))
 
 
 def now_monotonic_ns() -> int:

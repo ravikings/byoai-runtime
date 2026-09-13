@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_40266",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_40266.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_40266"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_28504"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_40266"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Nothing here points to fraud. Clearing.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_40266",
+            "decision": "clear",
+            "rationale": "14 km over 520 minutes is plausible travel; Delta Air Lines is consistent with that trip and card was not present."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Cleared txn_40266: 14 km over 520 minutes is plausible travel; Delta Air Lines is consistent with that trip and card was not present.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Cleared txn_40266: 14 km over 520 minutes is plausible travel; Delta Air Lines is consistent with that trip and card was not present."
+}

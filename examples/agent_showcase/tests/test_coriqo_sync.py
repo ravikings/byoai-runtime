@@ -96,7 +96,8 @@ def test_every_agent_registers_with_its_real_declared_tools(sync_env, monkeypatc
         body = by_name[agent.name]
         assert body["allowed_tools"] == sorted(agent.declared_tool_names)
         assert body["mandate"] == agent.description
-        assert body["system"] == f"byoai-agent-showcase/{agent.domain}"
+        assert body["system"] == (agent.system or f"byoai-agent-showcase/{agent.domain}")
+        assert body.get("use_case") == agent.use_case
         # The external_id is namespaced so this demo's generic keys can't
         # collide with another publisher's in a shared tenant.
         assert body["external_id"] == f"byoai-agent-showcase:{showcase_id}"

@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_72135",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_72135.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_72135"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_72135"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with the next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_72135",
+            "message": "We reviewed your dispute about Skyline Travel Agency ($890.00, services not rendered). The merchant provided evidence that the charge is valid, so we are unable to issue a credit. You can reply with any additional documentation within 10 days."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_72135 (Skyline Travel Agency, services not rendered): Passenger boarded flight DL1142. Prior disputes by customer: 0.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_72135 (Skyline Travel Agency, services not rendered): Passenger boarded flight DL1142. Prior disputes by customer: 0."
+}

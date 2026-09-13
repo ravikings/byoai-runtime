@@ -1,0 +1,45 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_72180",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_72180.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_72180"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_72180"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The merchant's evidence rebuts the claim. Drafting a denial with the next steps; no credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_72180",
+            "message": "We reviewed your dispute about Gold's Fitness Club ($575.00, cancelled recurring). The merchant provided evidence that the charge is valid, so we are unable to issue a credit. You can reply with any additional documentation within 10 days."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Denied disp_72180 (Gold's Fitness Club, cancelled recurring): Signed contract with ETF clause provided. Prior disputes by customer: 0.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Denied disp_72180 (Gold's Fitness Club, cancelled recurring): Signed contract with ETF clause provided. Prior disputes by customer: 0."
+}

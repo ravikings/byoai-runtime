@@ -1,0 +1,22 @@
+{
+  "agent_id": "b2-sub-sanctions-screener",
+  "case_id": "app_60365",
+  "steps": [
+    {
+      "assistant_text": "Screening Dmitri Volkov against sanctions and PEP watchlists.",
+      "tool_calls": [
+        {
+          "name": "sanctions_screen",
+          "input": {
+            "applicant_name": "Dmitri Volkov"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "1 potential match: OFAC-SDN 'Dmitriy Volkov' (score 0.81). Partial match; SDN entry DOB 1971-06-14.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "1 potential match: OFAC-SDN 'Dmitriy Volkov' (score 0.81). Partial match; SDN entry DOB 1971-06-14."
+}

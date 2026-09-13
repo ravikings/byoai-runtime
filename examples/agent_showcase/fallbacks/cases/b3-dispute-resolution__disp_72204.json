@@ -1,0 +1,52 @@
+{
+  "agent_id": "b3-dispute-resolution",
+  "case_id": "disp_72204",
+  "steps": [
+    {
+      "assistant_text": "Looking up dispute disp_72204.",
+      "tool_calls": [
+        {
+          "name": "get_dispute",
+          "input": {
+            "dispute_id": "disp_72204"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Gathering merchant and fulfilment evidence.",
+      "tool_calls": [
+        {
+          "name": "gather_evidence",
+          "input": {
+            "dispute_id": "disp_72204"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Evidence supports the cardholder. Drafting the reply and posting provisional credit.",
+      "tool_calls": [
+        {
+          "name": "draft_reply",
+          "input": {
+            "dispute_id": "disp_72204",
+            "message": "We reviewed your dispute about Harbor Bistro ($212.50, incorrect amount). The evidence supports your claim, so we have posted a provisional credit of $50.00 while we finish the chargeback with the merchant."
+          }
+        },
+        {
+          "name": "post_credit",
+          "input": {
+            "dispute_id": "disp_72204",
+            "amount_usd": 50.0
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Provisional credit of $50.00 posted for disp_72204 (Harbor Bistro, incorrect amount): Tip entered twice in error; merchant agrees to adjust.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Provisional credit of $50.00 posted for disp_72204 (Harbor Bistro, incorrect amount): Tip entered twice in error; merchant agrees to adjust."
+}

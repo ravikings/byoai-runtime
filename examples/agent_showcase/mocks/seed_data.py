@@ -112,3 +112,25 @@ LOAN_POLICY = {
     "max_dti": 0.43,
     "min_monthly_income_usd": 3000.0,
 }
+
+# --- Case pools ---------------------------------------------------------------
+# The single default scenario above is what the gallery's Run button uses. The
+# pools behind it give each banking agent a varied history (see case_data.py).
+
+from . import case_data as _cases  # noqa: E402
+
+RISK_SCORES: dict[str, dict] = {"app_5510": {"risk_score": 12, "risk_band": "low"}}
+
+for _name in (
+    "TRANSACTIONS",
+    "CUSTOMER_HISTORY",
+    "GEO_VELOCITY",
+    "ONBOARDING_APPLICATIONS",
+    "SANCTIONS_SCREEN_RESULTS",
+    "RISK_SCORES",
+    "DISPUTES",
+    "DISPUTE_EVIDENCE",
+    "LOAN_APPLICATIONS",
+    "LOAN_STATEMENTS",
+):
+    globals()[_name].update(getattr(_cases, _name))

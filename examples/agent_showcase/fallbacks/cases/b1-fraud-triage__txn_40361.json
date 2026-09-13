@@ -1,0 +1,57 @@
+{
+  "agent_id": "b1-fraud-triage",
+  "case_id": "txn_40361",
+  "steps": [
+    {
+      "assistant_text": "Pulling flagged transaction txn_40361.",
+      "tool_calls": [
+        {
+          "name": "get_transaction",
+          "input": {
+            "txn_id": "txn_40361"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Checking the customer's recent activity and home location.",
+      "tool_calls": [
+        {
+          "name": "get_customer_history",
+          "input": {
+            "customer_id": "cust_30018"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Running geo/velocity against the prior transaction.",
+      "tool_calls": [
+        {
+          "name": "geo_velocity_check",
+          "input": {
+            "txn_id": "txn_40361"
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "The pattern matches card-testing or account takeover. Blocking.",
+      "tool_calls": [
+        {
+          "name": "flag_decision",
+          "input": {
+            "txn_id": "txn_40361",
+            "decision": "block",
+            "rationale": "Card-not-present purchase at Coinflux Exchange (MCC 6051) 3 minutes after the prior transaction, amount $1,275.00 is 22x the $58.30 average, merchant category is a common cash-out route."
+          }
+        }
+      ]
+    },
+    {
+      "assistant_text": "Blocked txn_40361: Card-not-present purchase at Coinflux Exchange (MCC 6051) 3 minutes after the prior transaction, amount $1,275.00 is 22x the $58.30 average, merchant category is a common cash-out route.",
+      "tool_calls": []
+    }
+  ],
+  "final_text": "Blocked txn_40361: Card-not-present purchase at Coinflux Exchange (MCC 6051) 3 minutes after the prior transaction, amount $1,275.00 is 22x the $58.30 average, merchant category is a common cash-out route."
+}

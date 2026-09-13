@@ -208,6 +208,7 @@ class AgentRegistration:
     owner_id: str | None = None
     external_id: str | None = None
     mandate_enforcement: str | None = None
+    use_case: str | None = None
 
     def to_body(self) -> dict[str, Any]:
         """Coriqo's request schemas are strict (``extra="forbid"``), so this
@@ -224,6 +225,8 @@ class AgentRegistration:
             body["external_id"] = self.external_id
         if self.mandate_enforcement is not None:
             body["mandate_enforcement"] = self.mandate_enforcement
+        if self.use_case is not None:
+            body["use_case"] = self.use_case
         return body
 
 
@@ -553,8 +556,13 @@ class CoriqoAgentsClient:
         goal: str | None = None,
         use_case: str | None = None,
         parent_trajectory_id: str | None = None,
+        started_at: str | None = None,
     ) -> dict[str, Any]:
         """Opens a run.
+
+        ``started_at`` (ISO-8601 UTC) is when the run actually began, for a run
+        published after the fact; omitted, Coriqo stamps the time it received
+        the call.
 
         ``parent_trajectory_id`` nests this run under another, which Coriqo
         uses to roll a flagged step up through every ancestor. The parent must
@@ -568,17 +576,28 @@ class CoriqoAgentsClient:
             body["use_case"] = use_case
         if parent_trajectory_id is not None:
             body["parent_trajectory_id"] = parent_trajectory_id
+        if started_at is not None:
+            body["started_at"] = started_at
         return self._request("POST", f"/api/v1/agents/{coriqo_agent_id}/trajectories", json=body)
 
     def complete_trajectory(
-        self, coriqo_agent_id: str, trajectory_id: str, *, status: str = "completed"
+        self,
+        coriqo_agent_id: str,
+        trajectory_id: str,
+        *,
+        status: str = "completed",
+        ended_at: str | None = None,
     ) -> dict[str, Any]:
         """Closes a run. Coriqo answers 409 if it still has open sub-runs, so
-        nested children have to be completed first."""
+        nested children have to be completed first. ``ended_at`` is optional,
+        as ``started_at`` is on :meth:`open_trajectory`."""
+        body: dict[str, Any] = {"status": status}
+        if ended_at is not None:
+            body["ended_at"] = ended_at
         return self._request(
             "POST",
             f"/api/v1/agents/{coriqo_agent_id}/trajectories/{trajectory_id}/complete",
-            json={"status": status},
+            json=body,
         )
 
     def list_trajectories(
@@ -857,6 +876,8 @@ def publish_session(
     inputs_extra: Mapping[str, Any] | None = None,
     parent_trajectory_id: str | None = None,
     ground_in_ledger: bool = True,
+    started_at: str | None = None,
+    ended_at: str | None = None,
 ) -> PublishResult | None:
     """Publishes one recorded session as a trajectory plus a trace per step.
 
@@ -897,6 +918,10 @@ def publish_session(
     would sit in Coriqo as permanently in-progress and would block its parent
     from ever completing.
 
+    ``started_at``/``ended_at`` (ISO-8601 UTC) carry the run's real start and
+    end for a session published after the fact; each step already carries its
+    own ``occurred_at`` from the ledger.
+
     With ``ground_in_ledger`` (the default) every trace cites its ledger row's
     ``entry_hash`` as an external grounding anchor, so a Coriqo trace names the
     exact sealed row behind it. Coriqo holds external anchors outside its
@@ -929,6 +954,7 @@ def publish_session(
         goal=goal,
         use_case=use_case,
         parent_trajectory_id=parent_trajectory_id,
+        started_at=started_at,
     )
     trajectory_id = _required(
         trajectory, "trajectory_id", f"/api/v1/agents/{coriqo_agent_id}/trajectories"
@@ -1019,7 +1045,7 @@ def publish_session(
     # control that fired is a control that worked. Coriqo refuses to move the
     # status for these too; agreeing here keeps one answer, not two.
     status = "flagged" if flagged else "completed"
-    client.complete_trajectory(coriqo_agent_id, trajectory_id, status=status)
+    client.complete_trajectory(coriqo_agent_id, trajectory_id, status=status, ended_at=ended_at)
 
     log.info(
         "coriqo: published session %s to agent %s (trajectory %s, %s/%s steps, "

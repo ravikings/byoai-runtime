@@ -3,8 +3,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class Case:
+    """One concrete piece of work from an agent's pool: its own prompt and the
+    cached transcript that replays it. ``sub_cases`` maps a sub-agent id to the
+    (scenario_message, fallback_file) that sub-agent uses for this case."""
+
+    id: str
+    scenario_message: str
+    fallback_file: str
+    sub_cases: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -24,6 +36,27 @@ class AgentDef:
     # The tool's dispatch entry (if any) is ignored for these names; the runner
     # runs a nested AgentRunner instead and its final text becomes the tool result.
     sub_agent_tools: dict[str, "AgentDef"] = field(default_factory=dict)
+    # Business system and regulated use case as a bank's own registry would
+    # name them. Empty system falls back to the showcase namespace.
+    system: str = ""
+    use_case: str | None = None
+    cases: tuple[Case, ...] = ()
+
+    def for_case(self, case: Case) -> "AgentDef":
+        """This agent bound to one case: its prompt and transcript, and its
+        sub-agents' too, so a nested run replays the same case."""
+        subs = {
+            tool: replace(sub, scenario_message=case.sub_cases[sub.id][0], fallback_file=case.sub_cases[sub.id][1])
+            if sub.id in case.sub_cases
+            else sub
+            for tool, sub in self.sub_agent_tools.items()
+        }
+        return replace(
+            self,
+            scenario_message=case.scenario_message,
+            fallback_file=case.fallback_file,
+            sub_agent_tools=subs,
+        )
 
     @property
     def sub_agents(self) -> list[str]:

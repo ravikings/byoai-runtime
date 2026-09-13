@@ -55,7 +55,7 @@ from byoai.recorder.integration import get_recorder
 from byoai.recorder.schema import EventKind, new_span_id, new_trace_id
 from byoai.types import Message
 
-from .agents.types import AgentDef
+from .agents.types import AgentDef, Case
 
 log = logging.getLogger("agent_showcase.runner")
 
@@ -160,18 +160,29 @@ class AgentRunner:
         trace_id: str | None = None,
         parent_span_id: str | None = None,
         run_id: str | None = None,
+        case: Case | None = None,
     ) -> None:
-        self.agent = agent
+        self.agent = agent.for_case(case) if case is not None else agent
+        self.case_id = case.id if case is not None else "default"
+        self._replay = False
         self.trace_id = trace_id or new_trace_id()
         self.span_id = new_span_id()
         self.parent_span_id = parent_span_id
         self._run_id = run_id
 
     async def run(
-        self, *, inject_misfire: bool = False, force_live: bool = False
+        self,
+        *,
+        inject_misfire: bool = False,
+        force_live: bool = False,
+        replay: bool = False,
     ) -> AsyncIterator[RunEvent]:
+        """``replay`` skips any live model call and replays the cached
+        transcript, for bulk history generation where a key in the
+        environment must not turn a backfill into thousands of paid calls."""
         run_id = self._run_id or _new_run_id()
         session_id = run_id
+        self._replay = replay
         recorder = get_recorder()
         _ensure_live_call_state_loaded()
 
@@ -187,7 +198,7 @@ class AgentRunner:
                     ts_monotonic_ns=now_monotonic_ns(),
                     tool_use_id=None,
                     tool_name=None,
-                    payload={"agent_id": self.agent.id, "scenario": "default"},
+                    payload={"agent_id": self.agent.id, "scenario": self.case_id},
                     model=self.agent.model,
                     trace_id=self.trace_id,
                     span_id=self.span_id,
@@ -217,8 +228,9 @@ class AgentRunner:
                 if event.kind == EventKind.MESSAGE.value and event.text:
                     final_text = event.text
                 yield event
-        elif not force_live and self._live_call_on_cooldown():
-            log.info("agent_showcase: %s within live-call TTL, replaying cached transcript", self.agent.id)
+        elif replay or (not force_live and self._live_call_on_cooldown()):
+            if not replay:
+                log.info("agent_showcase: %s within live-call TTL, replaying cached transcript", self.agent.id)
             used_fallback = True
             mode = "cached"
             async for event in self._run_fallback(session_id, recorder):
@@ -275,7 +287,7 @@ class AgentRunner:
         its final text as the last item (str) instead of a RunEvent."""
         sub_runner = AgentRunner(sub_agent, trace_id=self.trace_id, parent_span_id=self.span_id)
         final_text = ""
-        async for event in sub_runner.run():
+        async for event in sub_runner.run(replay=self._replay):
             if event.kind == "run_complete":
                 final_text = event.text or ""
                 continue
@@ -607,7 +619,13 @@ class AgentRunner:
                     ts_monotonic_ns=now_monotonic_ns(),
                     tool_use_id=None,
                     tool_name=None,
-                    payload={"reason": "model API unavailable, using cached fallback transcript"},
+                    # A deliberate replay is not an outage; the ledger should
+                    # not claim one happened.
+                    payload={
+                        "reason": "replay requested, using cached transcript"
+                        if self._replay
+                        else "model API unavailable, using cached fallback transcript"
+                    },
                     model=self.agent.model,
                     trace_id=self.trace_id,
                     span_id=self.span_id,
