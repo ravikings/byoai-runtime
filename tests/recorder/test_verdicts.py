@@ -21,18 +21,20 @@ from byoai.recorder.coriqo_async import (
     AsyncCoriqoAgentsClient,
     RetryPolicy,
 )
+from byoai.recorder.delegation import DelegationPolicy, delegated_gate
 from byoai.recorder.denial_latch import DenialLatch, use_denial_latch
 from byoai.recorder.governed_tool import governed_tool, use_gate
 from byoai.recorder.identity import CoriqoIdentity
 from byoai.recorder.keys import load_or_create_device_key
 from byoai.recorder.ledger import Ledger
 from byoai.recorder.mandate import MandateGate, ProposedAction
-from byoai.recorder.schema import EventKind
+from byoai.recorder.schema import EVENT_SCHEMA_VERSION_V1, AgentEvent, EventKind, event_digest
 from byoai.recorder.verdicts import (
     MAX_VERDICT_BATCH,
     VerdictOutbox,
     VerdictRecorder,
     VerdictShipper,
+    ledger_payload,
     use_verdict_recorder,
 )
 
@@ -583,3 +585,152 @@ async def test_a_batch_the_client_refuses_to_build_does_not_starve_the_queue(
 
     assert len(recorder.outbox.rows(state="rejected")) == 1
     assert recorder.outbox.pending_count() == 1  # the good one is still shippable
+
+
+# -- AIR-7b: resource / on_behalf_of captured at record time -----------------
+
+
+def _delegated_gate(tmp_path, *, tools=("search",)):
+    """A child gate running under a delegated (attenuated) scope."""
+    parent = MandateGate(lambda etag=None: None, agent_id="agent-parent")
+    parent.apply_snapshot(
+        {
+            "allowed_tools": list(tools) + ["extra_tool"],
+            "mandate_version_id": "mv_parent",
+            "mandate_enforcement": "enforce",
+            "enforcement_posture": "fail_closed",
+            "delegation_policy": DelegationPolicy.ATTENUATED,
+        }
+    )
+    child = MandateGate(lambda etag=None: None, agent_id="agent-child")
+    child.apply_snapshot(
+        {
+            "allowed_tools": list(tools),
+            "mandate_version_id": "mv_child",
+            "mandate_enforcement": "enforce",
+            "enforcement_posture": "fail_closed",
+        }
+    )
+    return delegated_gate(parent, child, child_agent_id="agent-child")
+
+
+def test_a_non_delegated_call_has_an_empty_on_behalf_of(tmp_path, recorder):
+    @governed_tool
+    def search(q: str) -> str:
+        return q
+
+    with use_verdict_recorder(recorder), use_gate(_gate(tmp_path)):
+        search("q")
+
+    row = _verdict_events(recorder.ledger)[0]
+    assert row["on_behalf_of"] == []
+    assert row["resource"] == "search"
+
+
+def test_a_delegated_calls_on_behalf_of_matches_the_effective_scope_chain(
+    tmp_path, recorder
+):
+    @governed_tool
+    def search(q: str) -> str:
+        return q
+
+    gate = _delegated_gate(tmp_path)
+    assert gate.scope.chain == ("agent-parent", "agent-child")
+
+    with use_verdict_recorder(recorder), use_gate(gate):
+        search("q")
+
+    row = _verdict_events(recorder.ledger)[0]
+    assert row["on_behalf_of"] == ["agent-parent", "agent-child"]
+    assert row["on_behalf_of"] == list(gate.scope.chain), "delegator first"
+
+
+def test_resource_matches_the_exact_tool_string_checked_against_the_mandate(
+    tmp_path, recorder
+):
+    @governed_tool(name="payments.refund")
+    def refund(amount: int) -> int:
+        return amount
+
+    with use_verdict_recorder(recorder), use_gate(_gate(tmp_path, tools=("payments.refund",))):
+        refund(5)
+
+    row = _verdict_events(recorder.ledger)[0]
+    assert row["resource"] == "payments.refund"
+
+
+def test_an_event_sealed_before_this_packet_still_digests_identically():
+    """A v1 row, with no resource/on_behalf_of keys in its payload, must
+    reproduce the exact digest it was sealed with — this packet adds new keys
+    to *new* payloads only, and never touches an already-written one."""
+    payload = {
+        "tool": "search",
+        "verdict": "allowed",
+        "reason": "in_scope",
+        "mandate_version_id": "mv_1",
+        "snapshot_age_s": 1.0,
+        "trajectory_id": None,
+        "step_index": None,
+        "decided_at": "2026-01-01T00:00:00.000000Z",
+        "agent_id": "agent-1",
+        "posture": "fail_closed",
+        "enforcement": "enforce",
+        "detail": None,
+        "run_id": "run-1",
+        "principal": "agent-1",
+        "attempts": None,
+        "latched": False,
+        "halted": False,
+        "arguments_captured": None,
+        # deliberately no "resource" / "on_behalf_of" keys: this is what a
+        # payload sealed before AIR-7b landed looks like.
+    }
+    event = AgentEvent(
+        schema_version=EVENT_SCHEMA_VERSION_V1,
+        event_id="evt_pin",
+        device_id="dev_1",
+        session_id="mandate",
+        seq=1,
+        kind=EventKind.MANDATE_VERDICT.value,
+        ts_device="2026-01-01T00:00:00.000000Z",
+        ts_monotonic_ns=0,
+        tool_use_id=None,
+        tool_name="search",
+        payload=payload,
+        payload_hash="sha256:" + "0" * 64,  # not recomputed by event_digest
+        model=None,
+        provider="coriqo-mandate",
+        trace_id="",
+        span_id="",
+    )
+    # Pinned expected digest, computed once against the payload shape above
+    # (before AIR-7b existed) and hardcoded here as a regression guard: if this
+    # ever changes, something touched what a pre-existing v1 event hashes to.
+    assert event_digest(event) == (
+        "sha256:82b734d5179f5e156e027ec60c714e608011e61897d8b949d38b4f0603e6b230"
+    )
+
+
+def test_ledger_payload_omits_on_behalf_of_entries_when_scope_is_not_delegated():
+    payload = ledger_payload(
+        _deny_verdict_stub(),
+        agent_id="agent-1",
+        effective_scope=None,
+    )
+    assert payload["on_behalf_of"] == []
+
+
+def _deny_verdict_stub():
+    class _V:
+        reason = "out_of_scope"
+        verdict = "blocked"
+        tool = "wire"
+        mandate_version_id = "mv_1"
+        snapshot_age_s = 0.1
+        trajectory_id = None
+        step_index = None
+        posture = "fail_closed"
+        enforcement = "enforce"
+        detail = None
+
+    return _V()

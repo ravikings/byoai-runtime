@@ -86,6 +86,7 @@ from pathlib import Path
 from typing import Any
 
 from .canonical import canonicalize, sha256_hex
+from .delegation import EffectiveScope
 from .denial_latch import LatchedDenial
 from .ledger import Ledger, LedgerEntry
 from .mandate import Verdict
@@ -182,6 +183,7 @@ def ledger_payload(
     principal: str | None = None,
     argument_count: int | None = None,
     decided_at: str | None = None,
+    effective_scope: EffectiveScope | None = None,
 ) -> dict[str, Any]:
     """The fuller local record: the wire fields plus what only an operator sees.
 
@@ -194,8 +196,31 @@ def ledger_payload(
     which only exists for denials. An allow that did not name its run cannot be
     counted against the denials in that run, and the denominator — "4,120 calls,
     9 of them off-mandate" — is the whole reason allows are recorded.
+
+    ``resource``/``on_behalf_of`` (AIR-7b, CEI shipping client spec §3a) are
+    the two fields the future CEI envelope builder needs and that are not
+    captured anywhere else today:
+
+    - ``resource`` is ``verdict.tool`` — the exact string
+      :class:`~byoai.recorder.mandate.ProposedAction` was checked against the
+      mandate with (``verdict.tool`` is set from ``action.tool`` in
+      ``mandate.py``, so this is the same value the spec calls
+      ``action.tool``, with no separate plumbing needed).
+    - ``on_behalf_of`` is ``list(effective_scope.chain)``, delegator first,
+      when ``effective_scope.delegated`` is true; an empty list otherwise (a
+      call under the agent's own mandate is on nobody's behalf).
+
+    These live inside ``payload`` rather than as new ``AgentEvent`` dataclass
+    fields — see the docstring on ``VerdictRecorder._append`` for why, and for
+    why that choice needs none of ``schema.py``'s v1/v2 field-suppression
+    machinery to keep a pre-existing event's digest unchanged.
     """
     payload = dict(wire_verdict(verdict, decided_at=decided_at))
+    on_behalf_of = (
+        list(effective_scope.chain)
+        if effective_scope is not None and effective_scope.delegated
+        else []
+    )
     payload.update(
         {
             "agent_id": agent_id,
@@ -209,6 +234,8 @@ def ledger_payload(
             "latched": bool(latched is not None and latched.attempts > 1),
             "halted": bool(latched is not None and latched.halted),
             "arguments_captured": argument_count,
+            "resource": verdict.tool,
+            "on_behalf_of": on_behalf_of,
         }
     )
     return payload
@@ -445,6 +472,7 @@ class VerdictRecorder:
         run_id: str | None = None,
         principal: str | None = None,
         argument_count: int | None = None,
+        effective_scope: EffectiveScope | None = None,
     ) -> LedgerEntry | None:
         """Record one verdict. Returns the ledger entry, if one was written.
 
@@ -452,6 +480,11 @@ class VerdictRecorder:
         ``ERROR`` and the call it belongs to proceeds (or is refused) exactly as
         it would have — a governance recorder that breaks the agent it is
         recording gets turned off, and then there is no record at all.
+
+        ``effective_scope`` (AIR-7b) is the delegated scope the call ran
+        under, if any — passed through from ``governed_tool``'s resolved gate
+        so ``ledger_payload`` can capture ``on_behalf_of``. ``None`` for a
+        call under the agent's own mandate.
         """
         try:
             decided_at = now_ts_device()
@@ -463,6 +496,7 @@ class VerdictRecorder:
                 principal=principal,
                 argument_count=argument_count,
                 decided_at=decided_at,
+                effective_scope=effective_scope,
             )
             entry = self._append(verdict, payload)
             self._enqueue(agent_id, verdict, decided_at)
@@ -472,6 +506,31 @@ class VerdictRecorder:
             return None
 
     def _append(self, verdict: Verdict, payload: dict[str, Any]) -> LedgerEntry | None:
+        """Seal the ``AgentEvent`` for one verdict.
+
+        AIR-7b design decision (CEI shipping client spec §3a/§5.3): ``resource``
+        and ``on_behalf_of`` are carried inside ``payload`` (set by
+        ``ledger_payload``) rather than as new ``AgentEvent`` dataclass fields.
+
+        The alternative — real fields, versioned additively the way
+        ``schema.py``'s v1/v2 split handled ``trace_id``/``span_id`` — would
+        need a third schema version (v2 already made those fields required)
+        plus matching columns and migration logic in ``ledger.py``
+        (``_row_to_entry``, ``_with_seq``, the CREATE TABLE). That is real
+        weight for two fields that are naturally payload data: ``payload`` is
+        already hashed into ``payload_hash`` and into ``event_digest()`` via
+        ``AgentEvent.to_dict()``, so putting them there gets the same
+        "captured and covered by the digest" property for free.
+
+        This still satisfies the "must not change the digest of an event
+        sealed before this packet" requirement, for a simpler reason than
+        ``_V2_ONLY_FIELDS`` needs: a pre-existing ledger row's ``payload`` was
+        already written and its digest already computed before this packet
+        existed, so it has no ``resource``/``on_behalf_of`` keys and never
+        will — nothing here rewrites old rows. Only events sealed from now on
+        get the new keys, and their digest is computed once, at write time,
+        over whatever ``payload`` holds then.
+        """
         if self._ledger is None:
             return None
         event = AgentEvent(

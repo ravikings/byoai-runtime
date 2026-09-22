@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import gzip
 import hashlib
 import json
 import logging
@@ -976,6 +977,95 @@ class AsyncCoriqoAgentsClient:
             json_body=body,
             signed=True,
         )
+
+    async def attest_execution(
+        self,
+        coriqo_agent_id: str,
+        envelope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """AIR-7d: ship one CEI v2 attestation envelope
+        (:func:`byoai.recorder.attestation.build_envelope`) for
+        ``coriqo_agent_id``.
+
+        POSTs ``envelope`` verbatim to Coriqo's live contract
+        (``POST {ENFORCEMENT_PREFIX}/attestations`` — CEI shipping client
+        spec §1; unlike its sibling enforcement calls there is no
+        ``/agents/{id}/`` path segment for this endpoint, because the
+        envelope already names its subject agent in ``envelope["subject"]``).
+        ``coriqo_agent_id`` is taken as its own argument, rather than read
+        back out of the envelope, purely so a caller building the envelope
+        and a caller shipping it can't silently drift on which agent this
+        is for — this raises ``ValueError`` if the two disagree instead of
+        sending a mismatched envelope Coriqo would have to notice for us.
+
+        **Signing scheme correction (AIR-7e).** The spec text this method
+        was first built against (CEI shipping client spec §1) says this
+        route is signed with ``device_headers()``, the same tuple-based
+        enforcement scheme ``attest_capability_snapshot``/``record_verdict``
+        use. That is wrong for the route Coriqo actually ships:
+        ``POST {ENFORCEMENT_PREFIX}/attestations`` depends on
+        ``current_ledger_device`` (``api/domains/agents/device_auth.py``),
+        the SECOND, raw signature scheme this codebase's own
+        ``Shipper._post_signed_batch`` already speaks for
+        ``/ingest/batch``/``/checkpoints/batch`` —
+        ``Ed25519(canonicalize(body))`` over four headers
+        (``content-type``, ``content-encoding: gzip``, ``x-coriqo-device``,
+        ``x-coriqo-signature``), no timestamp, no public-key header. Signing
+        this call with ``device_headers()`` instead produces a well-formed
+        but wrong signature that Coriqo 401s with "Device signature did not
+        verify" — caught only by AIR-7e's real round trip against a live
+        server, never by a mock transport that only replays what a client
+        already believes the contract is. ``device_auth.py``'s own
+        docstring on ``current_ledger_device`` explains why an attestation
+        route reasonably shares the no-timestamp ledger scheme rather than
+        the replay-windowed enforcement one: ingest here is idempotent by
+        construction (dedup on ``chain_head``), so a replayed attestation
+        tells Coriqo nothing it was not already told — the same reasoning
+        that scheme was built for. Coriqo's route is the fixed point (CEI
+        shipping client spec: "Target contract … already live — do not
+        change") — this client conforms to it, not the other way round.
+
+        Modeled directly on :meth:`attest_capability_snapshot`: device-signed,
+        never retried. Coriqo's idempotency key for this endpoint is the
+        envelope's own ``chain_head`` (spec §1) — a resend of the exact same
+        envelope comes back ``duplicate`` and reseals nothing, while a client
+        retry that silently reshaped the batch first would produce a
+        different ``chain_head`` under the same window, i.e. a second,
+        divergent attestation. So, like ``attest_capability_snapshot``, this
+        client never retries the call itself; the caller (``shipper.py``)
+        treats a ``duplicate`` response the same as a fresh accept when
+        advancing its own attestation sync watermark, and treats a refused
+        (4xx) envelope as a hard failure it does not resend.
+        """
+        subject_agent_id = envelope.get("subject", {}).get("agent_id")
+        if subject_agent_id is not None and subject_agent_id != coriqo_agent_id:
+            raise ValueError(
+                f"envelope subject.agent_id ({subject_agent_id!r}) does not match "
+                f"coriqo_agent_id ({coriqo_agent_id!r})"
+            )
+        signer = self._identity.require_enforcement()
+        canonical_body = canonicalize(dict(envelope))
+        signature = signer.sign(canonical_body)
+        payload = gzip.compress(canonical_body)
+        headers = {
+            "content-type": "application/json",
+            "content-encoding": "gzip",
+            "x-coriqo-device": signer.device_id,
+            "x-coriqo-signature": signature,
+        }
+        if self._tenant_slug:
+            headers["X-Tenant-Slug"] = self._tenant_slug
+        request = self._client.build_request(
+            "POST", f"{ENFORCEMENT_PREFIX}/attestations", content=payload, headers=headers,
+        )
+        # Same rule `_build` enforces for the tuple-scheme signed calls: a
+        # caller-supplied client's default headers must never carry a
+        # service-account key onto a device-signed request — this route
+        # would refuse it just the same as the enforcement ones do.
+        request.headers.pop("X-API-Key", None)
+        response = await self._client.send(request)
+        body, _status = parse_response(response, path=f"{ENFORCEMENT_PREFIX}/attestations")
+        return body
 
 
 def _default_tenant_slug(identity: CoriqoIdentity) -> str | None:

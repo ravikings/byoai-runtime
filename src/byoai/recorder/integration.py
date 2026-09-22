@@ -126,7 +126,12 @@ class Recorder:
             log.info("recorder: not enrolled, shipper disabled (run byoai-recorder-enroll)")
             return
         try:
-            self._shipper = Shipper(self.ledger, self.key, coriqo_base_url=state.coriqo_base_url)
+            self._shipper = Shipper(
+                self.ledger,
+                self.key,
+                coriqo_base_url=state.coriqo_base_url,
+                tenant_slug=state.tenant_slug,
+            )
             self._shipper_stop = threading.Event()
             self._shipper_thread = threading.Thread(
                 target=self._shipper.run_forever,

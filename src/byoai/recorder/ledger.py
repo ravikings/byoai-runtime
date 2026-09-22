@@ -106,10 +106,11 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 -- Lives in the ledger itself (not shipper-process memory) so "what's been
 -- synced" survives a proxy restart exactly like the chain it describes.
 CREATE TABLE IF NOT EXISTS sync_state (
-    id                          INTEGER PRIMARY KEY CHECK (id = 1),
-    synced_up_to_seq            INTEGER NOT NULL DEFAULT 0,
-    synced_checkpoint_up_to_seq INTEGER NOT NULL DEFAULT 0,
-    updated_at                  TEXT NOT NULL
+    id                           INTEGER PRIMARY KEY CHECK (id = 1),
+    synced_up_to_seq             INTEGER NOT NULL DEFAULT 0,
+    synced_checkpoint_up_to_seq  INTEGER NOT NULL DEFAULT 0,
+    synced_attestation_up_to_seq INTEGER NOT NULL DEFAULT 0,
+    updated_at                   TEXT NOT NULL
 );
 """
 
@@ -179,6 +180,16 @@ class Ledger:
             self._conn.execute(
                 "ALTER TABLE sync_state ADD COLUMN "
                 "synced_checkpoint_up_to_seq INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already present
+        try:
+            # Ledgers created before attestation shipping existed (AIR-7c)
+            # have sync_state without this column either; same migration
+            # shape as synced_checkpoint_up_to_seq above.
+            self._conn.execute(
+                "ALTER TABLE sync_state ADD COLUMN "
+                "synced_attestation_up_to_seq INTEGER NOT NULL DEFAULT 0"
             )
         except sqlite3.OperationalError:
             pass  # column already present
@@ -634,6 +645,77 @@ class Ledger:
                 "updated_at) VALUES (1, 0, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET "
                 "synced_checkpoint_up_to_seq = excluded.synced_checkpoint_up_to_seq, "
+                "updated_at = excluded.updated_at",
+                (seq, now_ts_device()),
+            )
+
+    # --------------------------------------------------------- attestation sync
+
+    def read_checkpoints_pending_attestation(self, limit: int | None = None) -> list[dict]:
+        """Checkpoints after the attestation sync watermark, in seq_end order.
+
+        Mirrors :meth:`read_unsynced_checkpoints`, but against the
+        attestation watermark rather than the checkpoint-ship watermark: a
+        checkpoint already shipped to ``/v1/checkpoints/batch`` can still be
+        pending its CEI attestation, since the two cursors advance
+        independently over the same ``seq_end`` id-space (spec §3c). Does not
+        move the watermark.
+        """
+        with self._lock:
+            self._require_open()
+            sql = "SELECT body FROM checkpoints WHERE seq_end > ? ORDER BY seq_end"
+            params: tuple[Any, ...] = (self._get_synced_attestation_up_to_locked(),)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (*params, limit)
+            rows = self._conn.execute(sql, params).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def get_synced_attestation_up_to(self) -> int:
+        """Highest checkpoint ``seq_end`` sealed as a CEI attestation on
+        Coriqo. 0 if never shipped.
+
+        Mirrors :meth:`get_synced_checkpoint_up_to` exactly: an attestation
+        envelope (AIR-7c, ``recorder/attestation.py::build_envelope``) seals
+        the same ``(seq_start, seq_end)`` window a checkpoint already defines
+        (spec §3c — one windowing scheme, not two), so this watermark lives in
+        the same ``seq_end`` id-space as the checkpoint watermark, as a
+        sibling column, not a second one derived independently.
+        """
+        with self._lock:
+            self._require_open()
+            return self._get_synced_attestation_up_to_locked()
+
+    def _get_synced_attestation_up_to_locked(self) -> int:
+        row = self._conn.execute(
+            "SELECT synced_attestation_up_to_seq FROM sync_state WHERE id = 1"
+        ).fetchone()
+        return row[0] if row is not None else 0
+
+    def set_synced_attestation_up_to(self, seq: int) -> None:
+        """Advance the attestation watermark. Refuses to move it backwards or
+        past the newest checkpoint's ``seq_end``, for the same reasons as
+        :meth:`set_synced_checkpoint_up_to`."""
+        with self._lock:
+            self._require_open()
+            current = self._get_synced_attestation_up_to_locked()
+            if seq < current:
+                raise ValueError(
+                    f"refusing to move attestation sync watermark backwards: {seq} < {current}"
+                )
+            latest = self._conn.execute(
+                "SELECT MAX(seq_end) FROM checkpoints"
+            ).fetchone()[0]
+            if latest is None or seq > latest:
+                raise ValueError(
+                    f"refusing to mark attestation seq_end {seq} synced: "
+                    f"latest checkpoint is at {latest}"
+                )
+            self._conn.execute(
+                "INSERT INTO sync_state (id, synced_up_to_seq, synced_attestation_up_to_seq, "
+                "updated_at) VALUES (1, 0, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "synced_attestation_up_to_seq = excluded.synced_attestation_up_to_seq, "
                 "updated_at = excluded.updated_at",
                 (seq, now_ts_device()),
             )
