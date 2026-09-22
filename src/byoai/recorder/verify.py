@@ -74,6 +74,10 @@ class VerifyReport:
     # distinct from the device_id simply differing across a legitimate
     # rotation boundary.
     stale_key_usage: list[int] = field(default_factory=list)
+    # Present only when verify_ledger was given receipts_path. Receipts ARE
+    # folded into `ok`: a failing receipts section sets ok False. The detail
+    # (findings, reasons, notes) is in here.
+    receipts: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -228,6 +232,11 @@ def verify_ledger(
     *,
     public_key_b64: str | None = None,
     device_public_keys: dict[str, str] | None = None,
+    receipts_path: str | Path | None = None,
+    receipt_overdue_after_seconds: float = 3600.0,
+    receipt_public_key_pem: str | None = None,
+    allow_unchecked_receipts: bool = False,
+    allow_pending_receipts: bool = False,
 ) -> VerifyReport:
     """Re-derive and check every hash, signature and sequence in the ledger.
 
@@ -240,9 +249,224 @@ def verify_ledger(
     """
     conn = _connect(path)
     try:
-        return _verify(conn, public_key_b64, device_public_keys or {})
+        report = _verify(conn, public_key_b64, device_public_keys or {})
     finally:
         conn.close()
+    if receipts_path is not None:
+        section = verify_receipts(
+            receipts_path,
+            overdue_after_seconds=receipt_overdue_after_seconds,
+            public_key_pem=receipt_public_key_pem,
+            allow_unchecked=allow_unchecked_receipts,
+            allow_pending=allow_pending_receipts,
+        )
+        report.receipts = section
+        if not section["ok"]:
+            report.ok = False
+    return report
+
+
+def verify_receipts(
+    store_path: str | Path,
+    *,
+    overdue_after_seconds: float = 3600.0,
+    public_key_pem: str | None = None,
+    allow_unchecked: bool = False,
+    allow_pending: bool = False,
+    now: Any = None,
+) -> dict[str, Any]:
+    """Check the receipt store against what was sent, and every stored bundle.
+
+    Findings (each makes ``ok`` False):
+
+    * ``unacknowledged``: a trace was sent more than ``overdue_after_seconds``
+      ago and Coriqo never returned an ``event_hash`` for it. A server that
+      swallowed the event produces exactly this.
+    * ``receipt_overdue``: acknowledged, but no receipt after the same age.
+      Still listed, but does not fail ``ok`` when ``allow_pending`` is set
+      (tenants with slow or disabled checkpointing).
+    * ``batch_rejected``: the server refused the batch carrying the trace
+      (HTTP error or the POST raising). Not a swallowed event; fails ``ok``
+      with its own reason until the trace is re-sent or the row is forgotten.
+    * ``receipts_unavailable``: the receipts route kept answering 403/404.
+    * ``content_mismatch``: the input/output hash Coriqo echoed differs from
+      the one computed locally from what was sent (checked when acknowledged
+      and again here, along with any hashes or event hash the bundle carries).
+    * ``failed``: the bundle did not verify. ``malformed``: an unusable row.
+    * ``store_error``: the store is corrupt or unreadable (never read as empty).
+    * ``no_receipts_tracked``: nothing in the store, so nothing was checked.
+    * ``unchecked``/``unpinned``: bundles that could not be checked (SDK
+      missing) or were checked only against the bundle's own key. Both make
+      ``ok`` False unless ``allow_unchecked`` is set, because a bundle checked
+      against its own key proves consistency only.
+
+    Bundles are checked with the SDK's offline verifier
+    (``coriqo_agents.receipts``, extra ``coriqo-agents[receipts]``) using the
+    pinned ``public_key_pem``. Never opens a network connection.
+
+    Scope: content_mismatch shows the echoed record matches what was sent, not
+    that the server's sealed event hash covers those fields. The store itself
+    is unsigned, so deleted rows are not detectable.
+    """
+    from byoai.recorder.receipts import (
+        CONTENT_SCOPE_NOTE,
+        STORE_LIMITATION,
+        UNAVAILABLE_AFTER,
+        UNAVAILABLE_STATUSES,
+        ReceiptStore,
+        ReceiptStoreError,
+        _norm_hash,
+        content_mismatches,
+        parse_ts,
+        utc_now,
+    )
+
+    now = now or utc_now()
+    out: dict[str, Any] = {
+        "ok": False,
+        "acknowledged": 0,
+        "tracked": 0,
+        "with_receipt": 0,
+        "unacknowledged": [],
+        "batch_rejected": [],
+        "receipt_overdue": [],
+        "receipts_unavailable": [],
+        "content_mismatch": [],
+        "failed": [],
+        "malformed": [],
+        "not_checked": [],
+        "unpinned": False,
+        "store_error": None,
+        "reasons": [],
+        "results": {},
+        "notes": [STORE_LIMITATION, CONTENT_SCOPE_NOTE],
+    }
+    reasons: list[str] = out["reasons"]
+
+    try:
+        entries = ReceiptStore(store_path).entries()
+    except ReceiptStoreError as exc:
+        out["store_error"] = str(exc)
+        reasons.append(f"receipt store error: {exc}")
+        return out
+    out["tracked"] = len(entries)
+    if not entries:
+        reasons.append(
+            "no receipts tracked: the store has no rows, so nothing was checked "
+            "(only traces sent through publish_session are tracked)"
+        )
+        out["no_receipts_tracked"] = True
+        out["ok"] = allow_unchecked
+        return out
+    out["no_receipts_tracked"] = False
+
+    try:
+        from coriqo_agents.receipts import verify_receipt as _verify_receipt
+    except ImportError:
+        _verify_receipt = None
+    out["unpinned"] = public_key_pem is None
+
+    for i, row in enumerate(entries):
+        if not isinstance(row, dict):
+            out["malformed"].append({"row": i, "reason": "row is not an object"})
+            continue
+        key = row.get("key") or row.get("event_hash") or f"row {i}"
+        try:
+            age = (now - parse_ts(row["sent_at"])).total_seconds()
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            out["malformed"].append(
+                {"key": key, "reason": f"missing or invalid sent_at: {exc!r}"}
+            )
+            continue
+        overdue = age >= overdue_after_seconds
+        event_hash = row.get("event_hash")
+        if not event_hash:
+            if row.get("rejected"):
+                rj = row["rejected"] if isinstance(row["rejected"], dict) else {}
+                out["batch_rejected"].append({"key": key, "status": rj.get("status")})
+            elif overdue:
+                out["unacknowledged"].append(key)
+            continue
+        out["acknowledged"] += 1
+
+        bad = list(row.get("content_mismatch") or [])
+        echoed = {
+            "input_hash": row.get("echoed_input_hash"),
+            "output_hash": row.get("echoed_output_hash"),
+        }
+        for name in content_mismatches(
+            row.get("expected_input_hash"), row.get("expected_output_hash"), echoed
+        ):
+            if name not in bad:
+                bad.append(name)
+        bundle = row.get("bundle")
+        if isinstance(bundle, dict):
+            for name in ("input_hash", "output_hash"):
+                if name in bundle:
+                    if _norm_hash(bundle[name]) != _norm_hash(row.get("expected_" + name)):
+                        if name not in bad:
+                            bad.append(name)
+            if bundle.get("event_hash") not in (None, event_hash):
+                bad.append("event_hash")
+        if bad:
+            out["content_mismatch"].append({"key": key, "fields": bad})
+
+        fe = row.get("fetch_error") or {}
+        if not bundle:
+            if (
+                fe.get("status") in UNAVAILABLE_STATUSES
+                and fe.get("count", 0) >= UNAVAILABLE_AFTER
+            ):
+                out["receipts_unavailable"].append(
+                    {"key": key, "status": fe.get("status"), "attempts": fe.get("count")}
+                )
+            elif overdue:
+                out["receipt_overdue"].append(key)
+            continue
+
+        out["with_receipt"] += 1
+        if _verify_receipt is None:
+            out["not_checked"].append(key)
+            continue
+        # With no pinned key, still run the checks so a tampered bundle shows as
+        # failed rather than hiding behind "unpinned".
+        res = _verify_receipt(
+            bundle, public_key_pem, allow_unpinned=public_key_pem is None
+        )
+        out["results"][key] = res
+        if not res.get("ok"):
+            out["failed"].append(key)
+
+    for name, msg in (
+        ("unacknowledged", "trace(s) sent but never acknowledged with an event_hash"),
+        ("batch_rejected", "trace(s) in a batch the server rejected (not a swallowed event): "
+                           "re-send them, or drop the rows with --forget-rejected"),
+        ("receipt_overdue", "acknowledged event(s) with no receipt after the allowed age"),
+        ("receipts_unavailable", "receipts route kept answering 403/404; receipts cannot be fetched"),
+        ("content_mismatch", "echoed record differs from what was sent"),
+        ("failed", "receipt bundle(s) failed verification"),
+        ("malformed", "malformed store row(s)"),
+    ):
+        if out[name]:
+            if name == "receipt_overdue" and allow_pending:
+                out["notes"].append(
+                    f"{len(out[name])} {msg} (waived by --allow-pending-receipts)"
+                )
+            else:
+                reasons.append(f"{len(out[name])} {msg}")
+    if not allow_unchecked:
+        if out["not_checked"]:
+            reasons.append(
+                f"{len(out['not_checked'])} receipt bundle(s) not checked: install "
+                "coriqo-agents[receipts], or pass --allow-unchecked-receipts"
+            )
+        if out["with_receipt"] and out["unpinned"]:
+            reasons.append(
+                "receipts were checked against the bundle's own key, not a pinned "
+                "one: pass --receipt-pubkey, or --allow-unchecked-receipts"
+            )
+    out["ok"] = not reasons
+    return out
 
 
 @dataclass

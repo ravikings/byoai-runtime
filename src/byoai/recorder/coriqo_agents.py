@@ -73,6 +73,7 @@ import httpx
 from byoai.errors import ByoAIError
 
 from .ledger import Ledger
+from .receipts import ReceiptStore, canonical_hash
 from .redact import PayloadMode, TextRedactor, redact_free_text
 from .schema import EventKind
 
@@ -443,11 +444,15 @@ class CoriqoAgentsClient:
         *,
         http_client: httpx.Client | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
+        device_signer: Any | None = None,
     ) -> None:
-        """Pass ``http_client`` to supply your own transport, retry policy, or
+        """Pass ``device_signer`` (a device key: ``device_id``, ``public_key_b64``,
+        ``sign``) and receipt fetches are device-signed instead of sent with the
+        API key. Pass ``http_client`` to supply your own transport, retry policy, or
         a test double. A caller-supplied client is never closed by
         :meth:`close`, since closing something shared out from under its owner
         would break its next use elsewhere."""
+        self._device_signer = device_signer
         if http_client is not None:
             self._client = http_client
             self._owns_client = False
@@ -482,6 +487,32 @@ class CoriqoAgentsClient:
         """
         try:
             response = self._client.request(method, path, **kwargs)
+        except httpx.HTTPError as exc:
+            raise CoriqoAgentsError(None, f"request to {path} failed: {exc}") from exc
+        return parse_response(response, path=path)
+
+    def _send_device_signed(self, method: str, path: str) -> tuple[Any, int]:
+        """A body-less request carrying the device-signature headers.
+
+        Coriqo refuses a request that carries both an API key and a device
+        signature, so the API key header is removed from this one request. The
+        signature is made over the final URL (path and query) and is fresh per
+        call, because Coriqo accepts a timestamp only ~2 minutes old.
+        """
+        from .coriqo_async import device_headers, request_path
+
+        request = self._client.build_request(method, path)
+        request.headers.pop("X-API-Key", None)
+        request.headers.update(
+            device_headers(
+                self._device_signer,
+                method=method,
+                path=request_path(request.url),
+                body=b"",
+            )
+        )
+        try:
+            response = self._client.send(request)
         except httpx.HTTPError as exc:
             raise CoriqoAgentsError(None, f"request to {path} failed: {exc}") from exc
         return parse_response(response, path=path)
@@ -657,6 +688,21 @@ class CoriqoAgentsClient:
                 occurred_at=occurred_at,
             ),
         )
+
+    def get_receipt(self, event_hash: str) -> dict[str, Any] | None:
+        """The evidence receipt for ``event_hash``, or ``None`` while it is pending (202).
+
+        Raises :class:`CoriqoAgentsError` on 404 (unknown hash or another
+        actor's event), 403 or 409. Does not poll; the caller retries.
+        """
+        path = f"/api/v1/receipts/{event_hash}"
+        if self._device_signer is not None:
+            body, status = self._send_device_signed("GET", path)
+        else:
+            body, status = self._send("GET", path)
+        if status == 202 or not isinstance(body, dict) or body.get("status") == "pending":
+            return None
+        return body
 
     def record_traces(
         self, coriqo_agent_id: str, traces: Sequence[Mapping[str, Any]]
@@ -878,6 +924,7 @@ def publish_session(
     ground_in_ledger: bool = True,
     started_at: str | None = None,
     ended_at: str | None = None,
+    receipt_store: ReceiptStore | None = None,
 ) -> PublishResult | None:
     """Publishes one recorded session as a trajectory plus a trace per step.
 
@@ -934,6 +981,12 @@ def publish_session(
     A trajectory containing a flagged step is completed as ``flagged`` rather
     than ``completed`` — a run that went outside its mandate should not close
     looking clean.
+
+    Every trace sent gets a row in ``receipt_store`` (default: the sidecar next
+    to the ledger) before the request, keyed by session and step. The response
+    then fills in each acknowledged ``event_hash``; a step with none stays
+    unacknowledged and is reported by :mod:`byoai.recorder.receipts` once it is
+    old enough. A store failure never fails the publish.
 
     Raises :class:`CoriqoAgentsError` on any rejection, and
     :class:`AgentSuspendedError` if governance has stopped this agent.
@@ -997,19 +1050,61 @@ def publish_session(
             )
         )
 
+    if receipt_store is None:
+        receipt_store = ReceiptStore.for_ledger(ledger)
+    # One row per trace we are about to send, written BEFORE the request, so a
+    # server that swallows an event (or a request that dies mid-flight) leaves
+    # an unacknowledged row behind instead of nothing.
+    for body in bodies:
+        try:
+            receipt_store.record_sent(
+                session_id,
+                body["step_index"],
+                input_hash=canonical_hash(body.get("inputs")),
+                output_hash=canonical_hash(body.get("output")),
+                trajectory_id=trajectory_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail a publish
+            log.warning("coriqo: could not store receipt row: %s", exc)
     recorded = 0
     flagged = 0
     try:
         for start in range(0, len(bodies), MAX_TRACE_BATCH):
             batch = bodies[start : start + MAX_TRACE_BATCH]
-            response = client.record_traces(coriqo_agent_id, batch)
+            try:
+                response = client.record_traces(coriqo_agent_id, batch)
+            except Exception as exc:
+                # Batch refused outright: this and every unsent later batch
+                # are 'rejected', not 'swallowed'.
+                for body in bodies[start:]:
+                    try:
+                        receipt_store.mark_rejected(
+                            session_id, body["step_index"],
+                            getattr(exc, "status_code", None),
+                            trajectory_id=trajectory_id,
+                        )
+                    except Exception as exc2:  # noqa: BLE001
+                        log.warning("coriqo: could not store receipt row: %s", exc2)
+                raise
             # A 2xx whose counts aren't numbers is a Coriqo-side problem, but a
             # bare ValueError here would escape the except below and strand the
             # trajectory open — the exact outcome that handler exists to
             # prevent. Treat an unusable count as zero and carry on.
             recorded += _as_count(response.get("recorded"))
             flagged += _as_count(response.get("flagged"))
-            for trace in response.get("traces") or []:
+            listed = [t for t in (response.get("traces") or []) if isinstance(t, dict)]
+            by_step = {t.get("step_index"): t for t in listed}
+            for body in batch:
+                trace = by_step.get(body["step_index"])
+                if trace is None:
+                    continue  # stays unacknowledged; verify reports it
+                try:
+                    receipt_store.record_ack(
+                        session_id, body["step_index"], trace, trajectory_id=trajectory_id
+                    )
+                except Exception as exc:  # noqa: BLE001 - never fail a publish
+                    log.warning("coriqo: could not store receipt row: %s", exc)
+            for trace in listed:
                 if trace.get("status") == "flagged":
                     log.warning(
                         "coriqo: flagged step %s of session %s: %s",
