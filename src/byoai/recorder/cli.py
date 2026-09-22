@@ -150,6 +150,50 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit the verification report as machine-readable JSON",
     )
+    parser.add_argument(
+        "--receipts",
+        dest="receipts",
+        default=None,
+        metavar="PATH",
+        help="receipt store written by publish_session; adds a receipts section to the check",
+    )
+    parser.add_argument(
+        "--receipt-overdue-after",
+        dest="receipt_overdue_after",
+        type=float,
+        default=3600.0,
+        metavar="SECONDS",
+        help="flag acknowledged events with no receipt after this many seconds (default 3600)",
+    )
+    parser.add_argument(
+        "--receipt-pubkey",
+        dest="receipt_pubkey",
+        default=None,
+        metavar="PEM_FILE",
+        help="PEM public key file used to verify receipt signatures",
+    )
+    parser.add_argument(
+        "--allow-unchecked-receipts",
+        dest="allow_unchecked_receipts",
+        action="store_true",
+        help="do not fail when receipts are unchecked (SDK missing), unpinned "
+        "(no --receipt-pubkey), or the store tracks nothing",
+    )
+    parser.add_argument(
+        "--allow-pending-receipts",
+        dest="allow_pending_receipts",
+        action="store_true",
+        help="do not fail when acknowledged events are merely still pending a "
+        "receipt past the overdue age (slow or disabled checkpointing); they "
+        "are still listed",
+    )
+    parser.add_argument(
+        "--forget-rejected",
+        dest="forget_rejected",
+        action="store_true",
+        help="before verifying, drop receipt rows whose batch the server "
+        "rejected (use after deciding not to re-send them)",
+    )
     return parser
 
 
@@ -168,9 +212,38 @@ def _parse_device_pubkeys(raw: list[str]) -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     device_public_keys = _parse_device_pubkeys(args.device_pubkeys)
+    receipt_pem = None
+    if args.receipt_pubkey:
+        try:
+            with open(args.receipt_pubkey, encoding="utf-8") as fh:
+                receipt_pem = fh.read()
+        except OSError as exc:
+            print(f"coriqo-verify: cannot read --receipt-pubkey: {exc}", file=sys.stderr)
+            return _EXIT_UNREADABLE
+    if args.forget_rejected:
+        if not args.receipts:
+            print("coriqo-verify: --forget-rejected needs --receipts", file=sys.stderr)
+            return _EXIT_UNREADABLE
+        from byoai.recorder.receipts import ReceiptStore, ReceiptStoreError
+
+        try:
+            st = ReceiptStore(args.receipts)
+            for row in st.entries():
+                if isinstance(row, dict) and row.get("rejected") and not row.get("event_hash"):
+                    st.forget(row["key"])
+        except ReceiptStoreError as exc:
+            print(f"coriqo-verify: {exc}", file=sys.stderr)
+            return _EXIT_UNREADABLE
     try:
         report = verify_ledger(
-            args.ledger, public_key_b64=args.pubkey, device_public_keys=device_public_keys
+            args.ledger,
+            public_key_b64=args.pubkey,
+            device_public_keys=device_public_keys,
+            receipts_path=args.receipts,
+            receipt_overdue_after_seconds=args.receipt_overdue_after,
+            receipt_public_key_pem=receipt_pem,
+            allow_unchecked_receipts=args.allow_unchecked_receipts,
+            allow_pending_receipts=args.allow_pending_receipts,
         )
     except VerifyError as exc:
         print(f"coriqo-verify: {exc}", file=sys.stderr)
@@ -180,6 +253,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
         print(format_report(report))
+        if report.receipts is not None:
+            r = report.receipts
+            print(
+                f"RECEIPTS: {'OK' if r['ok'] else 'FAIL'}: {r['with_receipt']}/{r['acknowledged']} "
+                f"acknowledged events have a receipt; {r['tracked']} traces tracked; "
+                f"{len(r['unacknowledged'])} unacknowledged, {len(r['batch_rejected'])} rejected, "
+                f"{len(r['receipt_overdue'])} overdue, "
+                f"{len(r['content_mismatch'])} content mismatch, {len(r['failed'])} failed, "
+                f"{len(r['not_checked'])} not checked."
+            )
+            for reason in r["reasons"]:
+                print(f"  - {reason}")
+            for note in r["notes"]:
+                print(f"  note: {note}")
     return _EXIT_OK if report.ok else _EXIT_FAILED
 
 

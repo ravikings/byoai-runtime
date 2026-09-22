@@ -78,6 +78,38 @@ class Recorder:
         self._shipper_thread: threading.Thread | None = None
         self._start_shipper(base)
 
+        self._receipt_fetcher = None
+        self._start_receipt_fetcher()
+
+    def _start_receipt_fetcher(self) -> None:
+        """Fetch evidence receipts in the background (R-3).
+
+        OFF by default. Set ``BYOAI_RECORDER_RECEIPTS=1`` to turn it on. It
+        stays off until Coriqo's ``/api/v1/receipts`` route is deployed; flip
+        the default to on after that merge. Needs the Coriqo agents credentials
+        in the environment. Receipt GETs are signed with this recorder's device
+        key, not the API key.
+        """
+        if os.getenv("BYOAI_RECORDER_RECEIPTS", "0") != "1":
+            return
+        client = None
+        try:
+            from .coriqo_agents import CoriqoAgentsClient, CoriqoCredentials
+            from .receipts import ReceiptFetcher, ReceiptStore
+
+            creds = CoriqoCredentials.from_env()
+            if creds is None:
+                return
+            client = CoriqoAgentsClient(creds, device_signer=self.key)
+            self._receipt_fetcher = ReceiptFetcher(
+                client, ReceiptStore.for_ledger(self.ledger), owns_client=True
+            ).start()
+        except Exception:  # noqa: BLE001
+            log.exception("recorder: failed to start receipt fetcher")
+            self._receipt_fetcher = None
+            if client is not None:
+                client.close()
+
     def _start_shipper(self, base: Path) -> None:
         # Shipping requires both an enrolled device (we need a device_id
         # Coriqo recognizes) and a configured Coriqo URL. Either being
@@ -110,6 +142,8 @@ class Recorder:
             self._shipper_thread = None
 
     def close(self) -> None:
+        if self._receipt_fetcher is not None:
+            self._receipt_fetcher.stop()  # closes its client once the thread has exited
         try:
             if self._shipper_stop is not None:
                 self._shipper_stop.set()
