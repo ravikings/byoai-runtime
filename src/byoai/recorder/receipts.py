@@ -256,6 +256,14 @@ class ReceiptStore:
         with self._txn() as rows:
             if key in rows:
                 rows[key].pop("rejected", None)  # a re-send waives an earlier rejection
+                # On re-send with different payload, update the hashes so verify doesn't
+                # report a stale mismatch. Store a note if they changed.
+                old_input = rows[key].get("expected_input_hash")
+                old_output = rows[key].get("expected_output_hash")
+                if old_input != input_hash or old_output != output_hash:
+                    rows[key]["expected_input_hash"] = input_hash
+                    rows[key]["expected_output_hash"] = output_hash
+                    rows[key]["payload_recomputed"] = True
                 return
             rows[key] = {
                 "key": key,
