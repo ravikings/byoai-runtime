@@ -977,6 +977,51 @@ class AsyncCoriqoAgentsClient:
             signed=True,
         )
 
+    async def attest_execution(
+        self,
+        coriqo_agent_id: str,
+        envelope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """AIR-7d: ship one CEI v2 attestation envelope
+        (:func:`byoai.recorder.attestation.build_envelope`) for
+        ``coriqo_agent_id``.
+
+        POSTs ``envelope`` verbatim to Coriqo's live contract
+        (``POST {ENFORCEMENT_PREFIX}/attestations`` — CEI shipping client
+        spec §1; unlike its sibling enforcement calls there is no
+        ``/agents/{id}/`` path segment for this endpoint, because the
+        envelope already names its subject agent in ``envelope["subject"]``).
+        ``coriqo_agent_id`` is taken as its own argument, rather than read
+        back out of the envelope, purely so a caller building the envelope
+        and a caller shipping it can't silently drift on which agent this
+        is for — this raises ``ValueError`` if the two disagree instead of
+        sending a mismatched envelope Coriqo would have to notice for us.
+
+        Modeled directly on :meth:`attest_capability_snapshot`: device-signed,
+        never retried. Coriqo's idempotency key for this endpoint is the
+        envelope's own ``chain_head`` (spec §1) — a resend of the exact same
+        envelope comes back ``duplicate`` and reseals nothing, while a client
+        retry that silently reshaped the batch first would produce a
+        different ``chain_head`` under the same window, i.e. a second,
+        divergent attestation. So, like ``attest_capability_snapshot``, this
+        client never retries the call itself; the caller (``shipper.py``)
+        treats a ``duplicate`` response the same as a fresh accept when
+        advancing its own attestation sync watermark, and treats a refused
+        (4xx) envelope as a hard failure it does not resend.
+        """
+        subject_agent_id = envelope.get("subject", {}).get("agent_id")
+        if subject_agent_id is not None and subject_agent_id != coriqo_agent_id:
+            raise ValueError(
+                f"envelope subject.agent_id ({subject_agent_id!r}) does not match "
+                f"coriqo_agent_id ({coriqo_agent_id!r})"
+            )
+        return await self._request(
+            "POST",
+            f"{ENFORCEMENT_PREFIX}/attestations",
+            json_body=dict(envelope),
+            signed=True,
+        )
+
 
 def _default_tenant_slug(identity: CoriqoIdentity) -> str | None:
     """Tenant for the ``X-Tenant-Slug`` header, when the caller named none.

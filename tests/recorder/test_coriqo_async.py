@@ -564,6 +564,109 @@ async def test_attest_capability_snapshot_digest_matches_local_port(tmp_path):
     assert body["system_prompt_sha256"] == expected_prompt_hash
 
 
+# -- attest_execution (AIR-7d) ----------------------------------------------
+
+
+def _envelope(agent_id: str = _AGENT) -> dict:
+    return {
+        "emitter": {"kind": "proxy", "vendor": "byoai-runtime", "software_version": "0.1.0"},
+        "subject": {"agent_id": agent_id, "agent_version": "1.0.0"},
+        "window": {"started_at": "2026-09-22T10:00:00Z", "ended_at": "2026-09-22T10:00:05Z"},
+        "events": [
+            {
+                "seq": 1,
+                "event_type": "MANDATE_VERDICT",
+                "ts": "2026-09-22T10:00:01Z",
+                "payload_hash": "abc123",
+                "resource": "tool:payments.refund",
+                "on_behalf_of": [],
+            }
+        ],
+        "chain_head": "deadbeef",
+    }
+
+
+async def test_attest_execution_sends_envelope_device_signed(tmp_path):
+    """Request lands on the bare (no `/agents/{id}/`) attestations path,
+    carries the envelope verbatim, and is device-signed — the request
+    signature layer, distinct from the envelope's own chain_head (spec §4)."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"status": "accepted"})
+
+    key = load_or_create_device_key(tmp_path)
+    client = _device_client(handler, tmp_path)
+    envelope = _envelope()
+    try:
+        result = await client.attest_execution(_AGENT, envelope)
+    finally:
+        await client.close()
+
+    assert result == {"status": "accepted"}
+    request = seen[0]
+    assert request.url.path == f"{ENFORCEMENT_PREFIX}/attestations"
+    body = json.loads(request.content)
+    assert body == envelope
+
+    # Re-derive the signature independently of the client's own helper, same
+    # discipline the module docstring calls for: a test that only asks the
+    # client what it signed would pass for any signing scheme at all.
+    expected = device_headers(
+        key, method="POST", path=request.url.path, body=request.content
+    )
+    assert request.headers["X-Coriqo-Signature"] == expected["X-Coriqo-Signature"]
+    assert request.headers["X-Coriqo-Device"] == key.device_id
+
+
+async def test_attest_execution_rejects_mismatched_subject(tmp_path):
+    """Guards the caller against shipping an envelope for a different agent
+    than the one it claims to be attesting — a local bug, not something
+    Coriqo should have to catch for us."""
+    client = _device_client(lambda r: _json({}), tmp_path)
+    try:
+        with pytest.raises(ValueError, match="does not match"):
+            await client.attest_execution("some-other-agent", _envelope(_AGENT))
+    finally:
+        await client.close()
+
+
+async def test_attest_execution_duplicate_response_is_returned_not_raised(tmp_path):
+    """A `duplicate` response is Coriqo's idempotency signal (spec §1), not
+    an error — the client hands it back to the caller (shipper.py) to act
+    on, same as it would a fresh accept."""
+    client = _device_client(
+        lambda r: _json({"status": "duplicate", "duplicate": True}), tmp_path
+    )
+    try:
+        result = await client.attest_execution(_AGENT, _envelope())
+    finally:
+        await client.close()
+
+    assert result["duplicate"] is True
+
+
+async def test_attest_execution_4xx_is_not_retried(tmp_path):
+    """A refused envelope (bad chain, unbound agent, ...) raises immediately
+    and is never resent — a retry after silently reshaping the batch would
+    be a second, divergent attestation, not a retry of the first (spec §3d)."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _json({"detail": "broken internal event chain"}, status=400)
+
+    client = _device_client(handler, tmp_path)
+    try:
+        with pytest.raises(CoriqoAgentsError):
+            await client.attest_execution(_AGENT, _envelope())
+    finally:
+        await client.close()
+
+    assert len(seen) == 1, "a refused attestation must not be retried"
+
+
 async def test_a_default_api_key_header_is_stripped_from_a_signed_request(tmp_path):
     """Coriqo 403s any enforcement request presenting a service-account key, so
     one sitting in a caller-supplied client's default headers must not ride

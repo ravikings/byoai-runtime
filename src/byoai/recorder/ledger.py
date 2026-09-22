@@ -651,6 +651,26 @@ class Ledger:
 
     # --------------------------------------------------------- attestation sync
 
+    def read_checkpoints_pending_attestation(self, limit: int | None = None) -> list[dict]:
+        """Checkpoints after the attestation sync watermark, in seq_end order.
+
+        Mirrors :meth:`read_unsynced_checkpoints`, but against the
+        attestation watermark rather than the checkpoint-ship watermark: a
+        checkpoint already shipped to ``/v1/checkpoints/batch`` can still be
+        pending its CEI attestation, since the two cursors advance
+        independently over the same ``seq_end`` id-space (spec §3c). Does not
+        move the watermark.
+        """
+        with self._lock:
+            self._require_open()
+            sql = "SELECT body FROM checkpoints WHERE seq_end > ? ORDER BY seq_end"
+            params: tuple[Any, ...] = (self._get_synced_attestation_up_to_locked(),)
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = (*params, limit)
+            rows = self._conn.execute(sql, params).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
     def get_synced_attestation_up_to(self) -> int:
         """Highest checkpoint ``seq_end`` sealed as a CEI attestation on
         Coriqo. 0 if never shipped.

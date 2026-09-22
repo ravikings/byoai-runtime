@@ -14,6 +14,7 @@ logged and retried with backoff.
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import logging
 import random
@@ -23,11 +24,18 @@ from dataclasses import dataclass
 
 import httpx
 
+from byoai._version import __version__
+from byoai.recorder.attestation import CEI_ATTESTABLE_KINDS, build_envelope
 from byoai.recorder.canonical import canonicalize
+from byoai.recorder.coriqo_agents import CoriqoAgentsError
+from byoai.recorder.coriqo_async import AsyncCoriqoAgentsClient
+from byoai.recorder.identity import CoriqoIdentity
 from byoai.recorder.keys import DeviceKey
-from byoai.recorder.ledger import Ledger
+from byoai.recorder.ledger import Ledger, LedgerEntry
+from byoai.recorder.schema import EventKind
 
 __all__ = [
+    "AttestationShipResult",
     "CheckpointShipResult",
     "ShipError",
     "ShipResult",
@@ -40,6 +48,12 @@ _INGEST_PATH = "/v1/ingest/batch"
 _CHECKPOINT_INGEST_PATH = "/v1/checkpoints/batch"
 _MAX_BACKOFF_SECONDS = 60.0
 _INITIAL_BACKOFF_SECONDS = 1.0
+
+#: CEI envelope emitter block (spec §1's `emitter` field) for every
+#: attestation this runtime ships. Not per-agent — one runtime kind/vendor
+#: for the whole process, matching what `attest_capability_snapshot`'s
+#: `runtime_version` already reports elsewhere.
+_EMITTER = {"kind": "proxy", "vendor": "byoai-runtime", "software_version": __version__}
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +69,13 @@ class CheckpointShipResult:
     accepted: int
     duplicates: int
     synced_checkpoint_up_to: int
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationShipResult:
+    envelopes_shipped: int
+    duplicates: int
+    synced_attestation_up_to: int
 
 
 class ShipError(RuntimeError):
@@ -86,10 +107,18 @@ class Shipper:
         max_batch_seconds: float = 5.0,
         http_client: httpx.Client | None = None,
         wait: Callable[[float], bool] | None = None,
+        attestation_client: AsyncCoriqoAgentsClient | None = None,
+        tenant_slug: str | None = None,
     ) -> None:
         self._ledger = ledger
         self._key = key
         self._base_url = coriqo_base_url.rstrip("/")
+        # For the attestation client's identity only — entry/checkpoint
+        # shipping's own signed batches (`_post_signed_batch`) carry no
+        # tenant header today and are unaffected by this. `None` falls back
+        # to `BYOAI_CORIQO_TENANT_SLUG` inside `AsyncCoriqoAgentsClient`
+        # itself, same as every other device-signed call in this codebase.
+        self._tenant_slug = tenant_slug
         self._max_batch_events = max_batch_events
         self._max_batch_bytes = max_batch_bytes
         self._max_batch_seconds = max_batch_seconds
@@ -101,10 +130,24 @@ class Shipper:
         # can inject a fake to assert exact backoff durations without a real
         # multi-second sleep.
         self._wait = wait
+        # Attestation shipping (AIR-7d) talks to a different Coriqo API
+        # family (the device-signed `{ENFORCEMENT_PREFIX}` enforcement
+        # routes, via `AsyncCoriqoAgentsClient`) than entry/checkpoint
+        # shipping does (the raw `x-coriqo-signature` ingest routes this
+        # class signs by hand above) — same device key, different signing
+        # convention and transport, so it gets its own client rather than
+        # being bolted onto `self._client`. Built lazily from `self._key` so
+        # a caller that never triggers attestation shipping (nothing
+        # CEI-attestable has landed yet) never constructs it; tests inject
+        # one directly to avoid a real event loop's connection setup.
+        self._attestation_client = attestation_client
+        self._owns_attestation_client = attestation_client is None
 
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
+        if self._owns_attestation_client and self._attestation_client is not None:
+            asyncio.run(self._attestation_client.close())
 
     # -- single batch attempt ------------------------------------------------
 
@@ -215,6 +258,150 @@ class Shipper:
             synced_checkpoint_up_to=synced_checkpoint_up_to,
         )
 
+    def ship_attestations_once(self) -> AttestationShipResult | None:
+        """One attestation-shipping pass over checkpoints not yet CEI-sealed.
+
+        Reuses the checkpoint windowing (spec §3c — no second, independently
+        cadenced window): for each checkpoint after the attestation
+        watermark (oldest first), reads its ``(seq_start, seq_end)`` range
+        off the local ledger, groups the CEI-attestable entries in it
+        (:data:`~byoai.recorder.attestation.CEI_ATTESTABLE_KINDS`) by the
+        agent they belong to (``payload["agent_id"]`` — already stamped by
+        ``verdicts.py::ledger_payload()``, AIR-7b), builds one CEI envelope
+        per agent present via
+        :func:`~byoai.recorder.attestation.build_envelope`, and ships each
+        with :meth:`AsyncCoriqoAgentsClient.attest_execution`.
+        A window with no attestable entries at all (or none carrying an
+        ``agent_id``) still advances the watermark past it — there is
+        nothing to attest there, not a failure to keep retrying.
+
+        A checkpoint's envelopes are all-or-nothing: the watermark only
+        advances past a checkpoint once every envelope built from it has
+        been accepted or reported ``duplicate`` (spec §3e — "advance ...
+        only on success or duplicate", the same posture checkpoint batch
+        sync already has for a rejected checkpoint). A refused (4xx)
+        envelope raises :class:`ShipError` and stops this pass at that
+        checkpoint; nothing after it in this call is shipped, and the
+        watermark is left exactly where it was for every checkpoint from
+        that one on — the run loop backs off and the next pass retries the
+        whole thing, never a lone envelope resent with a reshaped batch.
+
+        Returns ``None`` if there was nothing pending.
+        """
+        checkpoints = self._ledger.read_checkpoints_pending_attestation(
+            limit=self._max_batch_events
+        )
+        if not checkpoints:
+            return None
+
+        envelopes_shipped = 0
+        duplicates = 0
+        synced_attestation_up_to = self._ledger.get_synced_attestation_up_to()
+
+        for checkpoint in checkpoints:
+            seq_start = int(checkpoint["seq_start"])
+            seq_end = int(checkpoint["seq_end"])
+            entries = self._ledger.read_range(seq_start, seq_end)
+            by_agent = self._group_attestable_by_agent(entries)
+
+            window = {
+                "started_at": entries[0].event.ts_device if entries else checkpoint["ts_device"],
+                "ended_at": checkpoint["ts_device"],
+            }
+            for agent_id, agent_entries in by_agent.items():
+                envelope = build_envelope(
+                    agent_entries, agent={"agent_id": agent_id}, device=_EMITTER, window=window,
+                )
+                resp = self._attest(agent_id, envelope)
+                if bool(resp.get("duplicate")):
+                    duplicates += 1
+                else:
+                    envelopes_shipped += 1
+
+            synced_attestation_up_to = seq_end
+            self._ledger.set_synced_attestation_up_to(seq_end)
+
+        return AttestationShipResult(
+            envelopes_shipped=envelopes_shipped,
+            duplicates=duplicates,
+            synced_attestation_up_to=synced_attestation_up_to,
+        )
+
+    @staticmethod
+    def _group_attestable_by_agent(
+        entries: list[LedgerEntry],
+    ) -> dict[str, list[LedgerEntry]]:
+        by_agent: dict[str, list[LedgerEntry]] = {}
+        for entry in entries:
+            if EventKind(entry.event.kind) not in CEI_ATTESTABLE_KINDS:
+                continue
+            agent_id = entry.event.payload.get("agent_id")
+            if not agent_id:
+                # An attestable event with no agent_id can't be attested —
+                # there is no subject to send it to Coriqo as. Not expected
+                # in practice (verdicts.py always stamps one), but a corrupt
+                # or hand-built entry must be skipped, not crash the pass.
+                logger.warning(
+                    "recorder shipper: attestable entry seq=%s has no agent_id, skipping",
+                    entry.seq,
+                )
+                continue
+            by_agent.setdefault(agent_id, []).append(entry)
+        return by_agent
+
+    def _attestation_identity(self) -> CoriqoIdentity:
+        return CoriqoIdentity.from_device(
+            base_url=self._base_url,
+            device_id=self._key.device_id,
+            signer=self._key,
+            tenant_slug=self._tenant_slug,
+        )
+
+    async def _do_attest(self, coriqo_agent_id: str, envelope: dict) -> dict:
+        """The actual coroutine ``_attest`` drives through ``asyncio.run``.
+
+        A test-injected ``self._attestation_client`` is reused across calls
+        (fine under a mock transport, which does no real connection pooling).
+        Otherwise a fresh :class:`AsyncCoriqoAgentsClient` — and the
+        ``httpx.AsyncClient`` it owns — is built and closed *within this one
+        coroutine*, so it never outlives the event loop ``asyncio.run``
+        creates for it. Caching one across separate ``asyncio.run`` calls
+        instead would bind its connection pool to the first call's loop and
+        then hand it to a second, already-closed loop on the next call —
+        this repo's own reason a fresh request is rebuilt per retry attempt
+        in ``coriqo_async.py``'s ``_send``, one level further down the same
+        problem.
+        """
+        if self._attestation_client is not None:
+            return await self._attestation_client.attest_execution(coriqo_agent_id, envelope)
+        client = AsyncCoriqoAgentsClient(self._attestation_identity())
+        try:
+            return await client.attest_execution(coriqo_agent_id, envelope)
+        finally:
+            await client.close()
+
+    def _attest(self, coriqo_agent_id: str, envelope: dict) -> dict:
+        """POST one envelope via :meth:`AsyncCoriqoAgentsClient.attest_execution`.
+
+        Bridges into the async client with :func:`asyncio.run` — this class
+        runs single-threaded, sequentially, off its own background thread
+        (never inside another event loop), so a fresh loop per call is safe
+        here even though it would not be inside a running async application.
+        Never retried, mirroring ``attest_execution``'s own posture: a
+        refused envelope becomes a :class:`ShipError` the caller does not
+        resend with a different batching.
+        """
+        try:
+            return asyncio.run(self._do_attest(coriqo_agent_id, envelope))
+        except CoriqoAgentsError as exc:
+            raise ShipError(
+                f"attestation for agent {coriqo_agent_id} refused: {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ShipError(
+                f"attestation request for agent {coriqo_agent_id} failed: {exc}"
+            ) from exc
+
     def _post_signed_batch(self, path: str, body: dict) -> dict:
         """Canonicalize, sign, gzip, and POST ``body`` to ``path``; return the
         parsed JSON response.
@@ -321,6 +508,7 @@ class Shipper:
             try:
                 self.ship_once()
                 self.ship_checkpoints_once()
+                self.ship_attestations_once()
                 backoff = _INITIAL_BACKOFF_SECONDS
             except ShipError as exc:
                 logger.warning("recorder shipper batch failed: %s", exc)
