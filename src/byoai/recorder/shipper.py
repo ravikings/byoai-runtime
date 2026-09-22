@@ -313,7 +313,7 @@ class Shipper:
                     agent_entries, agent={"agent_id": agent_id}, device=_EMITTER, window=window,
                 )
                 resp = self._attest(agent_id, envelope)
-                if bool(resp.get("duplicate")):
+                if resp.get("status") == "duplicate":
                     duplicates += 1
                 else:
                     envelopes_shipped += 1

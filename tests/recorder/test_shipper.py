@@ -578,7 +578,10 @@ def test_ship_attestations_once_ships_envelope_and_advances_watermark(ledger, ke
 
     request = seen[0]
     assert request.url.path == "/api/v1/agent-runtime/attestations"
-    body = json.loads(request.content)
+    # Body is gzipped, same as every other ledger-shipper request (checkpoints,
+    # ingest batches) — attest_execution() uses the real Coriqo signing scheme,
+    # not a bespoke one, so its body is compressed the same way.
+    body = json.loads(gzip.decompress(request.content))
     assert body["subject"]["agent_id"] == "agent_1"
     assert body["events"][0]["resource"] == "tool:payments.refund"
     # The request itself is device-signed — the HTTP signature layer, kept
@@ -593,7 +596,9 @@ def test_ship_attestations_once_duplicate_advances_watermark_like_success(ledger
     checkpoint = _append_checkpoint_over(ledger, key, [_verdict_event("agent_1")])
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"status": "duplicate", "duplicate": True})
+        # Coriqo's real AttestationIngestOut shape (runtime_router.py) — no
+        # top-level "duplicate" boolean, only "status": "sealed" | "duplicate".
+        return httpx.Response(200, json={"status": "duplicate", "record_id": "rec_1"})
 
     shipper = make_shipper_with_attestation(ledger, key, handler)
     result = shipper.ship_attestations_once()
@@ -649,7 +654,7 @@ def test_ship_attestations_once_groups_by_agent_into_separate_envelopes(ledger, 
     seen_agent_ids: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
+        body = json.loads(gzip.decompress(request.content))
         seen_agent_ids.append(body["subject"]["agent_id"])
         return httpx.Response(200, json={"status": "accepted"})
 
