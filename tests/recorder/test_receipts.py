@@ -731,6 +731,40 @@ def test_rejected_row_is_waived_by_resend(tmp_path):
     assert rep["batch_rejected"] == [] and rep["acknowledged"] == 1
 
 
+def test_republish_rejected_batch_clears_flag_and_updates_hashes(tmp_path):
+    """A batch rejected with 400, then re-published with same session/step but
+    different payload content, should clear the rejected flag and not report a
+    stale mismatch on verify."""
+    store = ReceiptStore(tmp_path / "r.json")
+    # Initial publish with payload A, gets rejected
+    input_hash_a = _h({"a": 1})
+    output_hash_a = _h({"result": "a"})
+    store.record_sent("s", 0, input_hash=input_hash_a, output_hash=output_hash_a, sent_at=OLD)
+    store.mark_rejected("s", 0, 400)
+    rep = verify_receipts(store.path, now=LATER, allow_unchecked=True)
+    assert rep["batch_rejected"] == [{"key": "s#0", "status": 400}]
+    assert rep["acknowledged"] == 0
+
+    # Re-publish with payload B (different hashes), gets acknowledged
+    input_hash_b = _h({"b": 2})
+    output_hash_b = _h({"result": "b"})
+    store.record_sent("s", 0, input_hash=input_hash_b, output_hash=output_hash_b)  # re-send
+    # Server acknowledges with the new hashes
+    store.record_ack("s", 0, {
+        "event_hash": "h0",
+        "input_hash": input_hash_b,
+        "output_hash": output_hash_b,
+    })
+    # Verify: rejected flag is gone, hashes match, no content_mismatch
+    # The row has an event_hash but no bundle yet, so allow_pending waives the
+    # receipt_overdue check. The critical assertion is that the hashes were updated.
+    rep = verify_receipts(store.path, now=LATER, allow_unchecked=True, allow_pending=True)
+    assert rep["batch_rejected"] == []
+    assert rep["acknowledged"] == 1
+    assert rep["content_mismatch"] == []
+    assert rep["ok"] is True
+
+
 def test_swallowed_event_in_a_200_is_unacknowledged_not_rejected(tmp_path):
     led = _ledger(tmp_path)
     _publish(led, _server(swallow=(1,)))
