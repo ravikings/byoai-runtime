@@ -77,6 +77,7 @@ from typing import Any, TypeAlias, TypeVar, overload
 
 from byoai.errors import MandateDeniedError, MandateRunHaltedError
 
+from .delegation import DelegatedGate
 from .denial_latch import (
     LatchedDenial,
     current_run_id,
@@ -234,10 +235,15 @@ def _record(
     and credentials and nothing redacts them yet; a recorder that quietly wrote
     them into a ledger — or shipped them to Coriqo — would be the exact leak the
     default is there to prevent.
+
+    ``gate``'s :class:`~byoai.recorder.delegation.EffectiveScope`, when this is
+    a :class:`~byoai.recorder.delegation.DelegatedGate`, rides along too
+    (AIR-7b) — it is the source of the recorded event's ``on_behalf_of``.
     """
     recorder = verdict_recorder()
     if recorder is None:
         return
+    scope = gate.scope if isinstance(gate, DelegatedGate) else None
     recorder.record(
         verdict,
         agent_id=gate.agent_id,
@@ -245,6 +251,7 @@ def _record(
         run_id=run_id,
         principal=principal,
         argument_count=None if action.arguments is None else len(action.arguments),
+        effective_scope=scope,
     )
 
 
