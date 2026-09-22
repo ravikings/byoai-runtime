@@ -15,6 +15,7 @@ lowercase hex) and ``timestamp``, with a 120s past / 30s future window.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
 
@@ -588,8 +589,20 @@ def _envelope(agent_id: str = _AGENT) -> dict:
 
 async def test_attest_execution_sends_envelope_device_signed(tmp_path):
     """Request lands on the bare (no `/agents/{id}/`) attestations path,
-    carries the envelope verbatim, and is device-signed — the request
-    signature layer, distinct from the envelope's own chain_head (spec §4)."""
+    carries the envelope verbatim (gzipped, canonical), and is signed with
+    the SECOND, raw ledger-shipper scheme — not the tuple-based
+    `device_headers()` enforcement scheme every other signed call in this
+    client uses.
+
+    AIR-7e (a real round trip against a live Coriqo instance) found that
+    `/attestations` depends on `current_ledger_device`
+    (`api/domains/agents/device_auth.py`), the same no-timestamp
+    `Ed25519(canonicalize(body))` scheme `Shipper._post_signed_batch`
+    already speaks for `/ingest/batch`/`/checkpoints/batch` — not
+    `device_headers()`, which the CEI shipping client spec's own text says
+    but which Coriqo's actual live route 401s on ("Device signature did not
+    verify"). See `attest_execution`'s docstring for the full account; this
+    test pins the corrected contract."""
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -607,17 +620,21 @@ async def test_attest_execution_sends_envelope_device_signed(tmp_path):
     assert result == {"status": "accepted"}
     request = seen[0]
     assert request.url.path == f"{ENFORCEMENT_PREFIX}/attestations"
-    body = json.loads(request.content)
-    assert body == envelope
+    assert request.headers["Content-Encoding"] == "gzip"
+    canonical_body = gzip.decompress(request.content)
+    assert json.loads(canonical_body) == envelope
 
     # Re-derive the signature independently of the client's own helper, same
     # discipline the module docstring calls for: a test that only asks the
     # client what it signed would pass for any signing scheme at all.
-    expected = device_headers(
-        key, method="POST", path=request.url.path, body=request.content
-    )
-    assert request.headers["X-Coriqo-Signature"] == expected["X-Coriqo-Signature"]
+    expected_signature = key.sign(canonical_body)
+    assert request.headers["X-Coriqo-Signature"] == expected_signature
     assert request.headers["X-Coriqo-Device"] == key.device_id
+    # The tuple-scheme-only headers must be ABSENT — their presence would
+    # mean this is still signing the wrong way, just with extra headers
+    # current_ledger_device happens to ignore.
+    assert "X-Coriqo-Public-Key" not in request.headers
+    assert "X-Coriqo-Timestamp" not in request.headers
 
 
 async def test_attest_execution_rejects_mismatched_subject(tmp_path):
