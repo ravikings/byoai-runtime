@@ -556,6 +556,108 @@ def test_checkpoint_sync_watermark_independent_of_entry_watermark(ledger_path):
         led.close()
 
 
+def test_attestation_sync_watermark_roundtrip(ledger_path):
+    """Mirrors test_checkpoint_sync_watermark_roundtrip: the attestation
+    watermark (AIR-7c) lives in the same seq_end id-space as the checkpoint
+    watermark, as a sibling column."""
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        assert led.get_synced_attestation_up_to() == 0
+
+        for _ in range(3):
+            led.append(make_event())
+        cp1 = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 3,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp1)
+
+        for _ in range(2):
+            led.append(make_event())
+        cp2 = dict(cp1, seq_start=4, seq_end=5, chain_head=led.head, sig="ed25519:BBBB")
+        led.append_checkpoint(cp2)
+
+        led.set_synced_attestation_up_to(3)
+        assert led.get_synced_attestation_up_to() == 3
+
+        led.set_synced_attestation_up_to(5)
+        assert led.get_synced_attestation_up_to() == 5
+    finally:
+        led.close()
+
+
+def test_attestation_sync_watermark_refuses_to_move_backwards(ledger_path):
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        led.append(make_event())
+        cp = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 1,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp)
+        led.set_synced_attestation_up_to(1)
+        with pytest.raises(ValueError):
+            led.set_synced_attestation_up_to(0)
+    finally:
+        led.close()
+
+
+def test_attestation_sync_watermark_refuses_to_move_past_latest_checkpoint(ledger_path):
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        led.append(make_event())
+        cp = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 1,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp)
+        with pytest.raises(ValueError):
+            led.set_synced_attestation_up_to(2)
+    finally:
+        led.close()
+
+
+def test_attestation_sync_watermark_independent_of_checkpoint_and_entry_watermarks(ledger_path):
+    # Shipping a checkpoint, shipping an attestation over that same window,
+    # and shipping raw entries are three different confirmations against
+    # three different endpoints; confirming one must never move another.
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        led.append(make_event())
+        led.append(make_event())
+        cp = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 2,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:01.000000Z",
+            "sig": "ed25519:AAAA",
+        }
+        led.append_checkpoint(cp)
+
+        led.set_synced_up_to(2)
+        led.set_synced_checkpoint_up_to(2)
+        assert led.get_synced_attestation_up_to() == 0
+
+        led.set_synced_attestation_up_to(2)
+        assert led.get_synced_up_to() == 2
+        assert led.get_synced_checkpoint_up_to() == 2
+    finally:
+        led.close()
+
+
 def test_close_is_idempotent_and_blocks_further_writes(ledger_path):
     led = Ledger(ledger_path, DEVICE, strict_mode=True)
     led.append(make_event())

@@ -34,14 +34,49 @@ module hashes directly with :mod:`hashlib` instead.
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import Any, Mapping
 
 from .canonical import canonicalize
+from .ledger import LedgerEntry
+from .schema import EventKind
 
 __all__ = [
+    "CEI_ATTESTABLE_KINDS",
     "GENESIS_PREV_HASH",
+    "build_envelope",
     "compute_chain_head",
 ]
+
+# --------------------------------------------------------------------------
+# §5 open question 1: which local EventKinds are CEI-attestable.
+#
+# Spec recommendation was TOOL_USE + TOOL_RESULT for the first cut. That is
+# NOT what this packet ships, and the deviation is deliberate, not an
+# oversight: AIR-7b (the packet immediately before this one) already landed
+# and threads `resource`/`on_behalf_of` onto exactly one event kind —
+# MANDATE_VERDICT, inside `verdicts.py::ledger_payload()` — and nowhere else.
+# TOOL_USE/TOOL_RESULT events carry neither field today (governed_tool.py's
+# `_record()` for a raw tool call has no equivalent threading). An envelope
+# builder that tried to attest TOOL_USE/TOOL_RESULT per the spec's literal
+# recommendation would ship `resource`/`on_behalf_of`-less events, defeating
+# the entire point of the CEI v2 fields this program exists to populate.
+#
+# So the call made here: MANDATE_VERDICT is the (only) CEI-attestable kind
+# for this first cut. It is already "an attestable decision" (the spec's own
+# words when floating this as a *future* option), it is the one kind that
+# actually carries `resource`/`on_behalf_of` today, and every governed tool
+# call already produces exactly one MANDATE_VERDICT event by construction
+# (verdicts.py records allow/flag/block alike, not just denials) — so this
+# does not lose tool-call coverage relative to attesting TOOL_USE directly,
+# it reuses the row that already has the richer, mandate-checked shape.
+# TOOL_USE/TOOL_RESULT attestation (and whether a pair collapses to one CEI
+# event, per §5 open question 2 — moot here since neither kind is attested)
+# is left for a follow-up packet, same as the spec already deferred
+# MANDATE_VERDICT-as-attestable to "its own follow-up" — just the other kind
+# turned out to be the one ready first.
+CEI_ATTESTABLE_KINDS: dict[EventKind, str] = {
+    EventKind.MANDATE_VERDICT: "MANDATE_VERDICT",
+}
 
 # Coriqo's api/chain.py::GENESIS_PREV_HASH — the "previous hash" of the
 # first event in a chain. Not to be confused with this repo's own
@@ -72,3 +107,84 @@ def compute_chain_head(events: list[dict[str, Any]]) -> str:
     for event in events:
         prev = _sha256_hex_raw(prev.encode("utf-8") + canonicalize(event))
     return prev
+
+
+def build_envelope(
+    entries: list[LedgerEntry],
+    *,
+    agent: Mapping[str, Any],
+    device: Mapping[str, Any],
+    window: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Map a batch of local ledger entries onto a CEI v2 envelope.
+
+    ``entries`` is expected to already be the same ``(seq_start, seq_end)``
+    window a checkpoint covers (spec §3c — this does not invent its own
+    windowing; the caller reads ``ledger.read_range(seq_start, seq_end)`` and
+    hands the result straight in), in ascending local ``seq`` order, which is
+    how :meth:`Ledger.read_range` already returns them.
+
+    ``agent`` is the CEI envelope's ``subject`` (``agent_id``, optionally
+    ``agent_version``); ``device`` is the ``emitter`` (``kind``, ``vendor``,
+    optionally ``software_version``); ``window`` is ``{started_at, ended_at}``
+    — the caller's job, not this function's, since only the caller knows
+    whether that should be the checkpoint's own timestamps or something else.
+
+    Only entries whose kind is in :data:`CEI_ATTESTABLE_KINDS` are attested;
+    everything else in the window is dropped from the envelope and stays
+    local-only, exactly as before this packet.
+
+    ``seq`` is renumbered starting at 1 within the envelope — CEI's ``seq`` is
+    a per-window sequence, not the local ledger's never-reset one (spec §2) —
+    so an envelope's ``seq`` values say nothing about an event's position in
+    the local chain, only its position in this one attestation.
+
+    ``payload_hash`` is recomputed here with this module's raw-hex
+    :func:`_sha256_hex_raw`, never copied from ``AgentEvent.payload_hash``:
+    the local ledger's hash carries a ``"sha256:"`` prefix (see
+    ``canonical.sha256_hex``) that is this repo's own convention, not
+    Coriqo's — reusing it verbatim would produce a `payload_hash` Coriqo's
+    own recompute (``sha256_hex(canonical_bytes(payload))``, no prefix) can
+    never match, refusing the whole envelope on ingest.
+
+    ``on_behalf_of`` is always present on every event, even as an empty list,
+    which is what makes this envelope self-identify as v2 to Coriqo's
+    ``envelope_schema_version()`` (v2 is detected by *presence* of the key,
+    not by a value) — per spec §3b, this runtime emits v2 always going
+    forward, never v1. ``resource`` is included only when the local payload
+    actually named one; it is optional on both sides.
+    """
+    events: list[dict[str, Any]] = []
+    for seq, entry in enumerate(
+        (e for e in entries if _kind_of(e) in CEI_ATTESTABLE_KINDS), start=1
+    ):
+        payload = entry.event.payload
+        resource = payload.get("resource")
+        on_behalf_of = payload.get("on_behalf_of") or []
+        cei_event: dict[str, Any] = {
+            "seq": seq,
+            "event_type": CEI_ATTESTABLE_KINDS[_kind_of(entry)],
+            "ts": entry.event.ts_device,
+            "payload": payload,
+            "payload_hash": _sha256_hex_raw(canonicalize(payload)),
+            "on_behalf_of": list(on_behalf_of),
+        }
+        if resource is not None:
+            cei_event["resource"] = resource
+        events.append(cei_event)
+
+    return {
+        "emitter": dict(device),
+        "subject": dict(agent),
+        "window": dict(window),
+        "events": events,
+        "chain_head": compute_chain_head(events),
+    }
+
+
+def _kind_of(entry: LedgerEntry) -> EventKind:
+    """``LedgerEntry.event.kind`` is stored/round-tripped as the enum's plain
+    string value (see ``schema.py``/``ledger.py``'s ``_kind_value``), so this
+    normalizes it back to :class:`EventKind` for the ``CEI_ATTESTABLE_KINDS``
+    lookup rather than comparing raw strings at every call site."""
+    return EventKind(entry.event.kind)
