@@ -216,7 +216,11 @@ const PublishResult = z.object({
 /** Ship this Mac's current seal (root + signed checkpoint) to Coriqo. Throws
  * with the server's own explanation when it wasn't shipped. */
 export async function publishSeal() {
-  const res = await fetch('/shield-api/publish', { method: 'POST' })
+  // JSON even with nothing to say: the shield refuses other POSTs (see
+  // request_problem in shield.py).
+  const res = await fetch('/shield-api/publish', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })
   const body = PublishResult.safeParse(await res.json().catch(() => ({})))
   if (!res.ok || !body.success || !body.data.shipped) {
     const d = body.success ? body.data : undefined

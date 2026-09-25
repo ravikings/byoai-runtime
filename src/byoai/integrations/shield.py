@@ -907,6 +907,54 @@ class Feed:
 # --------------------------------------------------------------------- server
 
 
+# ------------------------------------------------------------ request guard
+#
+# The shield listens on localhost, but every web page the user opens can send
+# requests to localhost too. Without these checks a page could POST
+# {"mode": "observe", "acknowledge": "less_private"} and quietly weaken
+# Shield, rewrite the Coriqo connection, or write fake rows into the sealed
+# ledger through /api/browser. A page can't forge Origin or Host, and a
+# cross-site JSON POST needs a CORS preflight this server never approves.
+
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+EXTENSION_SCHEMES = ("chrome-extension://", "moz-extension://")
+
+
+def _host_name(value: str) -> str:
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        return value[: value.find("]") + 1]
+    return value.split(":", 1)[0]
+
+
+def request_problem(method: str, path: str, headers) -> str | None:
+    """Why a request must be refused, or None. ``headers`` is anything with
+    ``.get`` (an HTTP message or a dict)."""
+    import os
+    from urllib.parse import urlsplit
+    if _host_name(headers.get("Host", "")) not in LOCAL_HOSTS:
+        return "Shield only answers requests addressed to localhost."
+    if method != "POST":
+        return None
+    ctype = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if ctype != "application/json":
+        return "Send JSON with Content-Type: application/json."
+    origin = (headers.get("Origin") or "").strip()
+    if path == "/api/browser":
+        if not origin.startswith(EXTENSION_SCHEMES):
+            return "Only the Shield browser extension can send browser rows."
+        pinned = [x.strip() for x in os.environ.get(
+            "BYOAI_SHIELD_EXTENSION_IDS", "").split(",") if x.strip()]
+        if pinned and origin.split("://", 1)[1].rstrip("/") not in pinned:
+            return "This browser extension isn't the one Shield was set up to trust."
+        return None
+    # Settings writes come from Shield's own page (or a local dev server
+    # proxying to it), never from another site.
+    if origin and _host_name(urlsplit(origin).netloc) not in LOCAL_HOSTS:
+        return "Settings can only be changed from Shield's own page."
+    return None
+
+
 def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
           feed: Feed | None = None) -> None:
     """Run the capture shield (API + static UI) until interrupted."""
@@ -1044,8 +1092,18 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                 return
             self._send(404, b'{"error":"not found"}')
 
+        def _refused(self, method: str) -> bool:
+            problem = request_problem(method, self.path.split("?")[0], self.headers)
+            if problem is None:
+                return False
+            self._send(403 if "Content-Type" not in problem else 415,
+                       json.dumps({"error": problem}).encode())
+            return True
+
         def do_GET(self):  # noqa: N802
             self._unprefix()
+            if self._refused("GET"):
+                return
             path = self.path.split("?")[0]
             api = self._api()
             if path == "/api/apps":
@@ -1071,6 +1129,8 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
 
         def do_POST(self):  # noqa: N802
             self._unprefix()
+            if self._refused("POST"):
+                return
             if self.path.split("?")[0] == "/api/coriqo":
                 self._save_coriqo_config()
                 return
