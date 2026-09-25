@@ -11,8 +11,14 @@ Design goals, in order:
 * **No support after setup.** Setup is one enrolment token, pasted once.
   After that the Mac signs every request with its own key; there is no API
   key or password on disk to rotate or leak.
-* **Cheap.** A request only when the chain grew, at most every
-  ``every_hours`` (6 by default), plus "Send now". Often zero a day.
+* **Cheap.** One small request every ``every_hours`` (6 by default), plus
+  "Send now": the new seal if the chain grew, otherwise a heartbeat.
+* **Alive, not just quiet.** With nothing new, Shield resends its last
+  accepted seal byte for byte. Coriqo treats it as a duplicate (no new row, no
+  second entry) but notes that the Mac was heard from, so an idle Mac is not
+  mistaken for a dead one by Coriqo's quiet-device alert. The heartbeat
+  interval is kept between 1 and 6 hours whatever ``every_hours`` says, to stay
+  well inside Coriqo's quiet threshold (24 hours by default).
 * **Never breaks capture.** Publishing runs on its own thread, catches
   everything, and never blocks, slows or stops checking.
 * **Self-healing.** A failure backs off (1 min, doubling, capped at 6 h,
@@ -53,6 +59,8 @@ BACKOFF_FIRST_S = 60
 BACKOFF_CAP_S = 6 * 3600
 TICK_S = 60
 TIMEOUT_S = 15
+HEARTBEAT_MIN_S = 3600
+HEARTBEAT_MAX_S = 6 * 3600
 
 
 @dataclass
@@ -60,7 +68,9 @@ class PublishState:
     last_root: str | None = None  # chain root covered by the last accepted send
     last_height: int = 0          # its entry count, for the status line
     last_seq: int = 0             # number of the last accepted send
-    last_sent_at: float = 0.0     # epoch seconds
+    last_sent_at: float = 0.0     # epoch seconds; last accepted send or heartbeat
+    #: The last entry Coriqo accepted, resent unchanged as the heartbeat.
+    last_entry: dict | None = None
     #: The signed entry waiting for Coriqo's acknowledgement. Resent unchanged
     #: until acknowledged, so a crash between Coriqo storing it and us writing
     #: this file can only ever produce a duplicate, never two different heads
@@ -88,6 +98,7 @@ class Publisher:
         self.key_dir = Path(key_dir)
         self.state_path = Path(state_dir) / STATE_FILE
         self.every_s = max(0.0, every_hours) * 3600
+        self.heartbeat_s = min(HEARTBEAT_MAX_S, max(HEARTBEAT_MIN_S, self.every_s))
         self._now = now
         # trust_env=False: never route through a proxy. On a Mac running
         # Shield, the system proxy IS Shield's capture proxy; going through it
@@ -153,11 +164,14 @@ class Publisher:
         s = self.state
         if self.enrolment() is None:
             return False
-        if s.outbox is None and not self.has_new():
-            return False  # nothing new: never send the same seal twice
         now = self._now()
         if now < s.next_attempt_at:
             return False  # backing off
+        if s.outbox is None and not self.has_new():
+            # Nothing new: a heartbeat, once the interval has passed. Never a
+            # new entry for an unchanged seal, so Coriqo holds no duplicates.
+            return (self.seals.height > 0
+                    and (s.last_sent_at == 0 or now - s.last_sent_at >= self.heartbeat_s))
         return s.last_sent_at == 0 or now - s.last_sent_at >= self.every_s
 
     def tick(self) -> bool:
@@ -205,12 +219,18 @@ class Publisher:
             enrolment = self.enrolment()
             if enrolment is None:
                 raise ValueError("This Mac isn't connected to Coriqo yet")
-            if self.state.outbox is None:
-                if not self.has_new():
-                    return self.status()
-                self.state.outbox = self._build_entry()
-                self._save()  # before sending: see PublishState.outbox
-            entry = self.state.outbox
+            if self.state.outbox is None and not self.has_new() and self.state.last_entry:
+                # Heartbeat: the accepted entry again, byte for byte.
+                entry = self.state.last_entry
+            else:
+                if self.state.outbox is None:
+                    if self.seals.height == 0:
+                        return self.status()
+                    # New seal, or (state from before heartbeats, no
+                    # last_entry kept) the unchanged one numbered once more.
+                    self.state.outbox = self._build_entry()
+                    self._save()  # before sending: see PublishState.outbox
+                entry = self.state.outbox
             body = {"device_id": self.seals._key.device_id, "checkpoints": [entry]}
             try:
                 with self._client_factory() as client:
@@ -228,7 +248,7 @@ class Publisher:
                 return self.status()
             self.state = PublishState(
                 last_root=entry["chain_hash"], last_height=int(entry.get("entries") or 0),
-                last_seq=int(entry["seq_end"]), last_sent_at=state_now,
+                last_seq=int(entry["seq_end"]), last_sent_at=state_now, last_entry=entry,
                 last_error=("Coriqo stored this seal but couldn't verify it."
                             if resp.get("malformed") else None),
             )
@@ -261,7 +281,8 @@ class Publisher:
             if s.next_attempt_at > self._now():
                 next_at = s.next_attempt_at
             elif s.last_sent_at:
-                next_at = s.last_sent_at + self.every_s
+                waiting = s.outbox is not None or self.has_new()
+                next_at = s.last_sent_at + (self.every_s if waiting else self.heartbeat_s)
         return {
             "connected": e is not None,
             "base_url": e.coriqo_base_url if e else None,

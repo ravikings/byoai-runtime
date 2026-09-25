@@ -89,8 +89,8 @@ def test_sends_only_the_signed_seal_once_per_head(setup):
     assert cp["chain_hash"] == cp["checkpoint"]["root_hex"]
     assert cp["session_id"] == "coriqo-shield"
     assert set(batch) == {"device_id", "checkpoints"}   # no ledger rows, no text
-    # same head again: nothing to send, however much time passes
-    clock.t += 10 * 3600
+    # same head again: nothing new to send before the heartbeat is due
+    clock.t += 5 * 3600
     assert pub.tick() is False and len(coriqo.batches) == 1
     s = pub.status()
     assert s["connected"] and s["tenant"] == "acme_bank" and s["has_new"] is False
@@ -161,8 +161,10 @@ def test_state_survives_a_restart(setup, tmp_path):
     pub.tick()
     again = Publisher(seals, cfg.key_dir, tmp_path, now=clock, client_factory=coriqo.client)
     assert again.state.last_height == 2 and again.state.last_seq == 1
+    assert again.tick() is False                    # restart doesn't resend straight away
     clock.t += 7 * 3600
-    assert again.tick() is False                    # restart doesn't resend the same head
+    assert again.tick() is True                     # the heartbeat: same entry, same number
+    assert coriqo.batches[-1] == coriqo.batches[0] and again.state.last_seq == 1
 
 
 def test_a_broken_transport_never_escapes_tick(setup):
@@ -282,3 +284,52 @@ def test_no_proxy_is_used(setup, monkeypatch):
     fresh = Publisher(seals, cfg.key_dir, cfg.key_dir.parent)
     with fresh._client_factory() as client:
         assert client._trust_env is False
+
+
+def test_an_idle_mac_sends_a_heartbeat_that_is_the_same_entry(setup):
+    """Nothing new for hours: Shield resends the accepted seal byte for byte,
+    so Coriqo hears from the Mac without storing a second entry."""
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals, 3)
+    pub.tick()
+    clock.t += 6 * 3600
+    assert pub.tick() is True and len(coriqo.batches) == 2
+    assert coriqo.batches[1] == coriqo.batches[0]
+    assert pub.state.last_seq == 1 and pub.state.last_sent_at == clock.t
+    # and not again until the next interval
+    clock.t += 3600
+    assert pub.tick() is False and len(coriqo.batches) == 2
+
+
+def test_the_heartbeat_stays_between_one_and_six_hours(setup, tmp_path):
+    seals, coriqo, clock, _pub, cfg = setup
+    fast = Publisher(seals, cfg.key_dir, tmp_path, every_hours=0, now=clock,
+                     client_factory=coriqo.client)
+    slow = Publisher(seals, cfg.key_dir, tmp_path, every_hours=48, now=clock,
+                     client_factory=coriqo.client)
+    assert fast.heartbeat_s == 3600 and slow.heartbeat_s == 6 * 3600
+
+
+def test_a_mac_upgraded_from_before_heartbeats_numbers_its_seal_once_more(setup, tmp_path):
+    """State written before heartbeats has no last_entry. The unchanged seal
+    goes out once under a new number; from then on the heartbeat repeats it."""
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals, 2)
+    pub.tick()
+    pub.state.last_entry = None
+    pub._save()
+    clock.t += 6 * 3600
+    assert pub.tick() is True
+    assert coriqo.batches[-1]["checkpoints"][0]["seq_end"] == 2
+    clock.t += 6 * 3600
+    assert pub.tick() is True
+    assert coriqo.batches[-1] == coriqo.batches[-2]
+
+
+def test_nothing_is_sent_for_an_empty_record(setup):
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    clock.t += 24 * 3600
+    assert pub.tick() is False and coriqo.batches == []
