@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import time
 import uuid
 from collections import deque
@@ -45,6 +46,7 @@ from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
 # ships the same default (browser_extension/background.js). Override with
 # BYOAI_SHIELD_PORT and enter the same port in the extension popup.
 import os as _os
+import sys as _sys
 DEFAULT_PORT = int(_os.environ.get("BYOAI_SHIELD_PORT", "17831"))
 
 # What /api/identity signs (prefix + caller's nonce); the extension checks the
@@ -52,6 +54,82 @@ DEFAULT_PORT = int(_os.environ.get("BYOAI_SHIELD_PORT", "17831"))
 IDENTITY_PREFIX = b"byoai-shield-identity:"
 
 MAX_INTERACTIONS = 400
+
+
+# ------------------------------------------------- private files, portable
+#
+# Shield's files hold a usage record, and the seal chain is the evidence. They
+# are private to the user by default (0600 on POSIX; on Windows the user-profile
+# ACL already limits them to the user, SYSTEM and administrators), written
+# atomically so a crash or a reader never sees half a file, and locked with the
+# platform's own primitive so this runs on Windows and Linux as well as macOS.
+
+import contextlib as _contextlib
+
+
+def atomic_write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` via a same-directory temp file: fsync, then
+    replace. Readers see the old file or the new one, never a torn one."""
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")  # 0600
+    try:
+        with _os.fdopen(fd, "w") as fh:
+            fh.write(text)
+            fh.flush()
+            _os.fsync(fh.fileno())
+        _os.replace(tmp, path)
+    except BaseException:
+        with _contextlib.suppress(OSError):
+            _os.unlink(tmp)
+        raise
+
+
+def harden_files(*paths: Path | None) -> None:
+    """Tighten files Shield owns to owner-only. Best effort; POSIX only, since
+    chmod means nothing on Windows."""
+    if _os.name != "posix":
+        return
+    for path in paths:
+        if path is not None and path.exists():
+            with _contextlib.suppress(OSError):
+                path.chmod(0o600)
+    # Shield's own data folder is owner-only too. A folder the user chose (a
+    # repo checkout, say) is left as they made it.
+    with _contextlib.suppress(OSError):
+        if DATA_DIR.is_dir():
+            DATA_DIR.chmod(0o700)
+
+
+@_contextlib.contextmanager
+def file_lock(fh):
+    """Exclusive lock on an open file, restored to its position on release."""
+    if _os.name == "nt":
+        import msvcrt
+        pos = fh.tell()
+        fh.seek(0)
+        while True:
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # retries ~10 s
+                break
+            except OSError:
+                continue
+        fh.seek(pos)
+        try:
+            yield
+        finally:
+            pos = fh.tell()
+            fh.seek(0)
+            with _contextlib.suppress(OSError):
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            fh.seek(pos)
+    else:
+        import fcntl
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 PII_RULES = [
     ("emails",        re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I)),
@@ -285,14 +363,11 @@ def redact_json_body(raw: str) -> tuple[str, list[str]]:
 def append_row(ledger: Path, rec: dict) -> None:
     """Append one ledger row under an exclusive lock, so a scrub rewriting the
     file can't drop a row the proxy writes at the same moment."""
-    import fcntl
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    with ledger.open("a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
+    fd = _os.open(ledger, _os.O_WRONLY | _os.O_APPEND | _os.O_CREAT, 0o600)
+    with _os.fdopen(fd, "a") as fh:
+        with file_lock(fh):
             fh.write(json.dumps(rec, default=str, sort_keys=True) + "\n")
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 class SealChainError(RuntimeError):
@@ -315,6 +390,13 @@ class SealChain:
         self.entries: list[dict] = []
         self.checkpoint: dict | None = None
         self._tree: MerkleTree | None = None
+        # Sealed entries ever, across restarts and the 512-entry window below.
+        # Only goes up, so a chain that comes back shorter than a witness
+        # remembers (the extension keeps one) has been rolled back or wiped.
+        self.total = 0
+        # Things an examiner must be able to see, kept in the chain file itself
+        # (a reset that left no trace would be the easiest way to hide edits).
+        self.incidents: list[dict] = []
         self._load()
 
     # -- persistence ------------------------------------------------------
@@ -324,13 +406,26 @@ class SealChain:
                 state = json.loads(self.cfg.seal_path.read_text())
                 self.entries = state.get("entries", [])[-512:]
                 self.checkpoint = state.get("checkpoint")
-            except Exception:
-                self.entries = []
+                self.total = int(state.get("total", len(self.entries)))
+                self.incidents = list(state.get("incidents", []))
+            except Exception as exc:  # noqa: BLE001
+                # An unreadable chain is never a fresh start. Keep the evidence,
+                # begin a new chain, and record that this happened.
+                moved = self.cfg.seal_path.with_name(
+                    f"{self.cfg.seal_path.name}.unreadable-{int(time.time())}")
+                _os.replace(self.cfg.seal_path, moved)
+                self.entries, self.checkpoint, self.total = [], None, 0
+                self.incidents.append({
+                    "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "what": "chain_unreadable",
+                    "detail": f"{type(exc).__name__}; the old file was kept as {moved.name}"})
+                self._persist()
         self._rebuild_tree()
 
     def _persist(self) -> None:
-        self.cfg.seal_path.write_text(json.dumps({
+        atomic_write_private(self.cfg.seal_path, json.dumps({
             "entries": self.entries[-512:], "checkpoint": self.checkpoint,
+            "total": self.total, "incidents": self.incidents,
         }, indent=1))
 
     def _leaf(self, payload: dict) -> bytes:
@@ -351,6 +446,7 @@ class SealChain:
         entry: dict = {"height": len(self.entries) + 1, "payload": payload,
                        "seal": leaf.hex()[:16], "leaf_hash": leaf.hex()}
         self.entries.append(entry)
+        self.total += 1
         self._tree = None  # lazily rebuilt on demand
         if self.height % self.cfg.sig_every == 0:
             self.sign_checkpoint()
@@ -387,10 +483,22 @@ class SealChain:
                         "reason": "content hash mismatch"}
         cp = self.checkpoint
         sig_ok = None
+        matches: bool | None = None  # None: the entries it covered are gone
         if cp:
             sig_ok = self._sig_valid(cp)
+            # The seal is an unkeyed hash, so someone who edits an entry can
+            # recompute it. What they can't redo is the signed checkpoint, so
+            # its root has to match the entries it claims to cover.
+            n = int(cp.get("height", 0))
+            if self.entries and self.entries[0]["height"] == 1 and 0 < n <= len(self.entries):
+                root = MerkleTree([self._leaf(e["payload"]) for e in self.entries[:n]]).root.hex()
+                matches = root == cp.get("root_hex")
         return {
-            "tamper_evident": cp is None or bool(sig_ok),
+            "tamper_evident": (cp is None or bool(sig_ok)) and matches is not False
+                              and not self.incidents,
+            "checkpoint_matches_entries": matches,
+            "incidents": self.incidents,
+            "sealed_total": self.total,
             "entries": self.height,
             "merkle_root": self._tree.root.hex() if self._tree else None,
             "checkpoint": None if not cp else {
@@ -609,7 +717,6 @@ def scrub_ledger(cfg: ShieldConfig, key_path: Path = FINGERPRINT_KEY, *,
     """Replace stored message text with fingerprint + length, and delete rows
     past retention (``scrub_text=False``: retention only, as at startup). Holds the ledger lock for the whole rewrite so the proxy
     can't append into a file that is about to be replaced."""
-    import fcntl
     import os
     policy = load_policy(cfg)
     cutoff = _cutoff(policy["retention_days"])
@@ -617,8 +724,7 @@ def scrub_ledger(cfg: ShieldConfig, key_path: Path = FINGERPRINT_KEY, *,
     if not cfg.ledger.exists():
         return {"scrubbed": 0, "deleted": 0, "ledger_rows": 0}
     with cfg.ledger.open("r+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
+        with file_lock(fh):
             kept: list[str] = []
             for line in fh.read().splitlines():
                 try:
@@ -648,14 +754,12 @@ def scrub_ledger(cfg: ShieldConfig, key_path: Path = FINGERPRINT_KEY, *,
             fh.truncate()
             fh.flush()
             os.fsync(fh.fileno())
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
     return {"scrubbed": scrubbed, "deleted": deleted, "ledger_rows": len(kept)}
 
 
 def save_policy(cfg: ShieldConfig, p: dict) -> None:
     if cfg.policy_path:
-        cfg.policy_path.write_text(json.dumps(p, indent=1))
+        atomic_write_private(cfg.policy_path, json.dumps(p, indent=1))
 
 
 # --------------------------------------------------------------------- feed
@@ -720,6 +824,7 @@ class Feed:
         self._offset = 0
         self._policy = load_policy(cfg)
         self._scanned = False
+        self._poll_lock = threading.Lock()
         # The browser extension never reads message text, so it can't supply
         # rule hits — it always ships length only. Recorded clean here; if the
         # request also crosses the desktop proxy for the same app, that side
@@ -751,6 +856,10 @@ class Feed:
     def poll(self) -> int:
         # A watcher thread can start before the first scan; reading from
         # offset 0 then would absorb (and seal) every row twice.
+        with self._poll_lock:
+            return self._poll_locked()
+
+    def _poll_locked(self) -> int:
         if not self._scanned:
             return 0
         # Idle is the common case: two stat() calls, no read, no parse.
@@ -1341,9 +1450,14 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                     continue
                 append_row(cfg.ledger, clean)
                 accepted += 1
-            # The watcher thread picks new rows up within ~1.5 s. Polling here
-            # as well would race it and could absorb (and seal) a row twice.
-            self._send(200, json.dumps({"accepted": accepted}).encode())
+            # Seal now, not on the watcher's next tick: the gap between "a row
+            # is on disk" and "a row is sealed" is where an edit costs nothing.
+            # poll() is locked, so this can't race the watcher into sealing a
+            # row twice.
+            if accepted:
+                feed.poll()
+            self._send(200, json.dumps(
+                {"accepted": accepted, "sealed_total": feed.seals.total}).encode())
 
         def _save_coriqo_config(self) -> None:
             """The Settings form writes the app_url/api_key/tenant here instead
@@ -1415,6 +1529,7 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
         def log_message(self, *a):  # per-request rlog silenced
             return
 
+    harden_files(cfg.ledger, cfg.seal_path, cfg.policy_path)
     try:
         server = ThreadingHTTPServer((host, port), Handler)
     except OSError as exc:
@@ -1460,6 +1575,13 @@ def main() -> None:  # console-script entrypoint: byoai-shield
     ap.add_argument("--remove-login-item", action="store_true",
                     help="stop starting Shield at login (macOS), then exit")
     args = ap.parse_args()
+    if _sys.stdout is None or _sys.stderr is None:
+        # Started without a console (Windows pythonw, a service): print() would
+        # raise on a missing stdout, so send output to the log instead.
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        log = open(DATA_DIR / "shield.log", "a", buffering=1)  # noqa: SIM115
+        _sys.stdout = _sys.stdout or log
+        _sys.stderr = _sys.stderr or log
     if args.install_login_item or args.remove_login_item:
         from byoai.integrations import shield_login
         raise SystemExit(shield_login.run(

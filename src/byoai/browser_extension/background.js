@@ -28,6 +28,7 @@ const resolveEndpoint = (saved) =>
 
 const PIN_KEY = 'pinned_shield'
 const LAST_CAPTURE_KEY = 'last_capture'
+const WITNESS_KEY = 'witness'
 const IDENTITY_PREFIX = 'byoai-shield-identity:'
 
 const b64bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -64,9 +65,26 @@ async function checkServer(endpoint, { trustCurrent = false } = {}) {
   const saved = (await chrome.storage.local.get(PIN_KEY))[PIN_KEY]
   if (!saved || trustCurrent) {
     await chrome.storage.local.set({ [PIN_KEY]: identity.public_key })
+    await chrome.storage.local.remove(WITNESS_KEY) // a different Shield has its own count
     return { state: 'paired', deviceId: identity.device_id }
   }
   return { state: saved === identity.public_key ? 'ok' : 'mismatch', deviceId: identity.device_id }
+}
+
+/*
+ * Shield's record lives in files the user's own account can edit. The browser
+ * profile is a second place, so the extension remembers the highest count of
+ * sealed entries Shield has reported (a single number, never content). If
+ * Shield later reports fewer, its record was deleted or rolled back, and the
+ * popup says so. Re-pairing with a different Shield starts a fresh witness.
+ * Returns true when the reported total is lower than what was seen before.
+ */
+async function noteWitness(total) {
+  if (!Number.isInteger(total)) return false
+  const seen = (await chrome.storage.local.get(WITNESS_KEY))[WITNESS_KEY]?.total ?? 0
+  if (total < seen) return true
+  if (total > seen) await chrome.storage.local.set({ [WITNESS_KEY]: { total } })
+  return false
 }
 
 // Even length-only facts are personal data once they accumulate over time
@@ -127,10 +145,12 @@ function setOffline() {
   chrome.action.setTitle({ title: 'Shield is offline on this Mac — start it with byoai-shield. Rows are being dropped after 50 queued.' })
 }
 
-function setRefused() {
+function setRefused(why) {
   chrome.action.setBadgeText({ text: '!' })
   chrome.action.setBadgeBackgroundColor({ color: '#b42318' })
-  chrome.action.setTitle({ title: "The server on Shield's address isn't your Shield. Nothing is being sent. Open this popup." })
+  chrome.action.setTitle({ title: why === 'shorter'
+    ? "Shield's record is shorter than it was. Open this popup."
+    : "The server on Shield's address isn't your Shield. Nothing is being sent. Open this popup." })
 }
 
 function setWorking() {
@@ -276,7 +296,9 @@ async function flush() {
       body: JSON.stringify({ rows: batch }),
     })
     if (!res.ok) throw new Error(String(res.status))
-    setWorking() // synced: green check
+    const reply = await res.json().catch(() => null)
+    if (await noteWitness(reply?.sealed_total)) setRefused('shorter')
+    else setWorking() // synced: green check
     chrome.alarms?.clear('shield-retry')
   } catch (err) {
     // Server not up yet: put the rows back, retry later — inside the same

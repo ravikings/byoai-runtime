@@ -549,3 +549,90 @@ def test_login_item_plist_is_low_priority_and_backs_off(tmp_path):
     assert plist["KeepAlive"] == {"SuccessfulExit": False}   # restart on failure only
     assert plist["ThrottleInterval"] >= 30                   # a taken port is not a busy loop
     assert plist["LowPriorityIO"] is True and plist["Nice"] > 0
+
+
+# ------------------------------------------------------------ hardening
+
+
+def _stamped_chain(tmp_path, n=6):
+    cfg = make_cfg(tmp_path)
+    chain = SealChain(cfg)
+    for i in range(n):
+        chain.stamp({"interaction": f"i{i}", "chars": i})
+    chain.sign_checkpoint()
+    return cfg, chain
+
+
+def test_an_edited_entry_with_a_recomputed_seal_is_still_caught(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path)
+    assert chain.verify_chain()["tamper_evident"] is True
+    state = json.loads(cfg.seal_path.read_text())
+    e = state["entries"][2]
+    e["payload"]["chars"] = 999                       # the edit
+    leaf = chain._leaf(e["payload"])
+    e["leaf_hash"], e["seal"] = leaf.hex(), leaf.hex()[:16]   # the cover-up
+    cfg.seal_path.write_text(json.dumps(state))
+    v = SealChain(cfg).verify_chain()
+    assert v["tamper_evident"] is False
+    assert v["checkpoint_matches_entries"] is False
+
+
+def test_an_unreadable_chain_is_kept_and_recorded_not_silently_reset(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path)
+    cfg.seal_path.write_text("{ not json")
+    reborn = SealChain(cfg)
+    v = reborn.verify_chain()
+    assert v["tamper_evident"] is False
+    assert v["incidents"][0]["what"] == "chain_unreadable"
+    kept = list(tmp_path.glob("sealchain.json.unreadable-*"))
+    assert len(kept) == 1 and kept[0].read_text() == "{ not json"
+    assert SealChain(cfg).incidents                    # and it survives a restart
+
+
+def test_the_sealed_total_only_goes_up_across_restarts_and_the_window(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path, n=5)
+    assert chain.verify_chain()["sealed_total"] == 5
+    for i in range(600):                               # past the 512-entry window
+        chain.stamp({"interaction": f"x{i}"})
+    total = chain.total
+    assert total == 605
+    assert SealChain(cfg).total == total
+
+
+def test_shield_files_are_written_private_and_atomically(tmp_path):
+    import os
+    from byoai.integrations.shield import atomic_write_private
+    target = tmp_path / "state.json"
+    atomic_write_private(target, "one")
+    atomic_write_private(target, "two")
+    assert target.read_text() == "two"
+    assert [p.name for p in tmp_path.iterdir()] == ["state.json"]   # no temp left
+    if os.name == "posix":
+        assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_browser_row_is_sealed_before_the_request_returns(tmp_path):
+    base = _serve(make_cfg(tmp_path))
+    ext = {"Content-Type": "application/json",
+           "Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"}
+    code, out = _post(base + "/api/browser", {"rows": [{
+        "kind": "browser.chat.request", "app": "claude", "chars": 7,
+        "row_id": "r-1"}]}, ext)
+    assert code == 200 and out["accepted"] == 1 and out["sealed_total"] == 1
+    assert json.loads(_get(base + "/api/verify")[2])["sealed_total"] == 1
+
+
+def test_linux_unit_and_windows_task_are_low_priority_and_run_as_the_user(tmp_path):
+    from byoai.integrations.shield_login import (
+        build_unit, windows_command, windows_create_args)
+    ledger = tmp_path / "my ledger" / "captures.jsonl"       # a space in the path
+    unit = build_unit(ledger, 17831, python="/usr/bin/python3", log_dir=tmp_path)
+    assert f'ExecStart="/usr/bin/python3" "-m" "byoai.integrations.shield" "{ledger}" "--port" "17831"' in unit
+    assert "Restart=on-failure" in unit and "RestartSec=30" in unit
+    assert "Nice=5" in unit and "IOSchedulingClass=idle" in unit
+    assert "WantedBy=default.target" in unit                  # user unit, no root
+    cmd = windows_command(Path("C:/data/captures.jsonl"), 17831, python="C:/Py/python.exe")
+    assert cmd.endswith('"--port" "17831"') and '"byoai.integrations.shield"' in cmd
+    args = windows_create_args(Path("C:/data/captures.jsonl"), 17831, python="C:/Py/python.exe")
+    assert args[:2] == ["schtasks", "/Create"]
+    assert "ONLOGON" in args and args[args.index("/RL") + 1] == "LIMITED"   # no elevation

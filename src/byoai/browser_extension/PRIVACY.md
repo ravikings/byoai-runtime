@@ -33,7 +33,7 @@ second, is never stored, never logged, never transmitted.
   (The extension does keep one thing locally, never sent anywhere: Shield's
   public key, saved the first time it pairs so a different program on the same
   port can't pass as Shield. It also keeps one "last message noted" time per
-  app, overwritten on each send, so the popup can show that capture still works.)
+  app, overwritten on each send, so the popup can show that capture still works, and the highest count of sealed entries Shield has reported, one number, so a deleted or reset record is noticed.)
 - No analytics, no telemetry, no third-party requests. The only network
   destination is the local Shield server, and the manifest's
   `host_permissions` is limited to `127.0.0.1`/`localhost` so it cannot be

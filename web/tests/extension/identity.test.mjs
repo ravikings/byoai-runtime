@@ -11,7 +11,7 @@
 import { describe, expect, it, afterAll } from 'vitest'
 import puppeteer from 'puppeteer-core'
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import os from 'node:os'
@@ -31,11 +31,15 @@ describe('extension pairing (real browser)', () => {
   })
 
   it('pairs with the real Shield and refuses an impostor on the same port', { timeout: 90_000 }, async () => {
-    const ledger = path.join(os.tmpdir(), `id-ledger-${Date.now()}.jsonl`)
-    shield = spawn(path.resolve('../.venv/bin/python'),
-      ['-m', 'byoai.integrations.shield', ledger, '--port', String(PORT)],
-      { cwd: path.resolve('..'), stdio: 'ignore' })
-    await sleep(2000)
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), 'id-data-')) // ledger + seal chain live together
+    const ledger = path.join(dataDir, 'captures.jsonl')
+    const startShield = async () => {
+      shield = spawn(path.resolve('../.venv/bin/python'),
+        ['-m', 'byoai.integrations.shield', ledger, '--port', String(PORT)],
+        { cwd: path.resolve('..'), stdio: 'ignore' })
+      await sleep(2000)
+    }
+    await startShield()
 
     browser = await puppeteer.launch({
       executablePath: process.env.CHROMIUM_PATH ?? '/tmp/pptr/chromium/mac_arm-1704762/chrome-mac/Chromium.app/Contents/MacOS/Chromium',
@@ -62,6 +66,15 @@ describe('extension pairing (real browser)', () => {
     await file('real-1')
     await sleep(4500)
     expect(readFileSync(ledger, 'utf8')).toContain('browser.chat.request')
+
+    // Phase 1b: the record is wiped (ledger and chain both) and Shield comes
+    // back. The extension remembers it had 1 sealed entry, so this must show.
+    shield.kill(); await sleep(800)
+    rmSync(ledger, { force: true }); rmSync(path.join(dataDir, 'sealchain.json'), { force: true })
+    await startShield()
+    expect(await open()).toBe("Shield's record is shorter than it was")
+    await popup.click('#accept')
+    await popup.waitForFunction(() => document.getElementById('state-title').textContent === 'Shield is on', { timeout: 8000 })
 
     // Phase 2: an impostor takes the port. Its signature comes from a key the
     // extension never paired with.

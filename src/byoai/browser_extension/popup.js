@@ -36,6 +36,12 @@ async function probe() {
     const res = await withTimeout(fetch(baseOf(endpoint) + '/api/verify', { cache: 'no-store' }), 1500)
     if (!res.ok) throw new Error(String(res.status))
     const verify = await res.json()
+    const seen = (await chrome.storage.local.get('witness')).witness?.total ?? 0
+    const total = verify.sealed_total
+    if (Number.isInteger(total)) {
+      if (total < seen) return { state, endpoint, verify, apps: {}, shorter: { was: seen, now: total } }
+      if (total > seen) await chrome.storage.local.set({ witness: { total } })
+    }
     let apps = {}
     try {
       const policy = await withTimeout(fetch(baseOf(endpoint) + '/api/policy', { cache: 'no-store' }), 1500)
@@ -75,7 +81,7 @@ function ago(ms) {
   return `${Math.round(hours / 24)} days ago`
 }
 
-function render({ state, endpoint, verify, apps }, app) {
+function render({ state, endpoint, verify, apps, shorter }, app) {
   el('endpoint').value = endpoint
   const set = (kind, icon, title, detail) => {
     el('status').className = `status ${kind}`
@@ -86,6 +92,7 @@ function render({ state, endpoint, verify, apps }, app) {
   const primary = el('open-shield')
   el('help').hidden = true
   el('trust').hidden = true
+  el('accept').hidden = true
   primary.hidden = false
   primary.textContent = 'Open Shield'
   el('tab').textContent = ''
@@ -114,8 +121,16 @@ function render({ state, endpoint, verify, apps }, app) {
   delete primary.dataset.retry
   const v = verify || {}
   const n = v.entries
-  if (v.tamper_evident === false) {
-    set('bad', '!', 'The record does not check out', 'Open Shield to see which entry changed.')
+  if (shorter) {
+    set('bad', '!', "Shield's record is shorter than it was",
+      `It held ${shorter.was} sealed entries and now holds ${shorter.now}. Something deleted or reset it.`)
+    el('accept').hidden = false
+  } else if (v.incidents && v.incidents.length) {
+    set('bad', '!', 'The record was reset',
+      `${v.incidents[0].at}: Shield could not read its record file and started a new one. The old file was kept.`)
+  } else if (v.tamper_evident === false) {
+    set('bad', '!', 'The record does not check out',
+      'An entry no longer matches the signed checkpoint. Open Shield to see where.')
   } else {
     set('ok', '✓', state === 'paired' ? 'Paired with your Shield' : 'Shield is on',
       typeof n === 'number'
@@ -149,6 +164,13 @@ function wire() {
   })
   el('trust').addEventListener('click', async () => {
     await send({ type: 'agent.checkServer', trustCurrent: true })
+    await refresh()
+  })
+  el('accept').addEventListener('click', async () => {
+    const check = await withTimeout(fetch(baseOf(el('endpoint').value || FALLBACK_ENDPOINT) + '/api/verify', { cache: 'no-store' }).then((r) => r.json()), 1500).catch(() => null)
+    if (check && Number.isInteger(check.sealed_total)) {
+      await chrome.storage.local.set({ witness: { total: check.sealed_total } })
+    }
     await refresh()
   })
   el('open-privacy').addEventListener('click', (ev) => {
