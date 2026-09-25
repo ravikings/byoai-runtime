@@ -457,6 +457,10 @@ class SealChain:
         }
 
     def root_hex(self) -> str | None:
+        with self._lock:
+            return self._root_hex()
+
+    def _root_hex(self) -> str | None:
         self._rebuild_tree()
         return self._tree.root.hex() if self._tree else None
 

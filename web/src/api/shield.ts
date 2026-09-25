@@ -192,7 +192,8 @@ export const ShieldCoriqo = z.object({
   enrolled_at: z.string().nullish(),
   last_sent_at: z.number().nullish(),
   last_height: z.number().int().nonnegative(),
-  pending_entries: z.number().int().nonnegative(),
+  /** Something was sealed since the last accepted send. */
+  has_new: z.boolean(),
   next_attempt_at: z.number().nullish(),
   every_hours: z.number(),
   last_error: z.string().nullish(),

@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Callable
 
 import httpx
 
+from byoai.recorder.canonical import canonicalize
 from byoai.recorder.enroll import EnrollmentError, enroll, load_enrollment_state
 from byoai.recorder.keys import atomic_write_bytes
 from byoai.recorder.shipper import ShipError, post_signed_batch
@@ -44,6 +45,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from byoai.integrations.shield import SealChain
 
 CHECKPOINT_PATH = "/v1/checkpoints/batch"
+SESSION_ID = "coriqo-shield"  # Coriqo tells a Shield Mac's seals apart by this
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 STATE_FILE = "coriqo_publish.json"
 DEFAULT_EVERY_HOURS = 6
 BACKOFF_FIRST_S = 60
@@ -54,8 +57,15 @@ TIMEOUT_S = 15
 
 @dataclass
 class PublishState:
-    last_height: int = 0          # chain height covered by the last accepted send
+    last_root: str | None = None  # chain root covered by the last accepted send
+    last_height: int = 0          # its entry count, for the status line
+    last_seq: int = 0             # number of the last accepted send
     last_sent_at: float = 0.0     # epoch seconds
+    #: The signed entry waiting for Coriqo's acknowledgement. Resent unchanged
+    #: until acknowledged, so a crash between Coriqo storing it and us writing
+    #: this file can only ever produce a duplicate, never two different heads
+    #: under one number (which Coriqo would rightly treat as a conflict).
+    outbox: dict | None = None
     failures: int = 0             # consecutive failed attempts
     next_attempt_at: float = 0.0  # epoch seconds; 0 = no backoff in force
     last_error: str | None = None
@@ -79,7 +89,11 @@ class Publisher:
         self.state_path = Path(state_dir) / STATE_FILE
         self.every_s = max(0.0, every_hours) * 3600
         self._now = now
-        self._client_factory = client_factory or (lambda: httpx.Client(timeout=TIMEOUT_S))
+        # trust_env=False: never route through a proxy. On a Mac running
+        # Shield, the system proxy IS Shield's capture proxy; going through it
+        # would fail its certificate check on every send.
+        self._client_factory = client_factory or (
+            lambda: httpx.Client(timeout=TIMEOUT_S, trust_env=False))
         self._lock = threading.Lock()
         self.state = self._load()
 
@@ -108,25 +122,38 @@ class Publisher:
         """Exchange a one-time Coriqo enrolment token for this Mac's device
         identity. Uses the Mac's existing Shield key; nothing secret is kept
         afterwards. Re-enrolling replaces the old identity."""
+        from urllib.parse import urlsplit
         base_url = base_url.strip().rstrip("/")
-        if not base_url.startswith(("https://", "http://")):
+        parts = urlsplit(base_url)
+        local = (parts.hostname or "") in ("localhost", "127.0.0.1", "::1")
+        if parts.scheme != "https" and not (parts.scheme == "http" and local):
+            # The token is a one-time credential: it only crosses a network
+            # encrypted. Plain http is allowed for a Coriqo on this machine.
             raise ValueError("Enter the Coriqo address, starting with https://")
         if not token.strip():
             raise ValueError("Paste the enrolment token from Coriqo")
         with self._lock:
-            enroll(coriqo_base_url=base_url, token=token.strip(),
-                   key_dir=self.key_dir, force=True)
-            # A new identity starts clean: send the current seal straight away.
+            with self._client_factory() as client:
+                enroll(coriqo_base_url=base_url, token=token.strip(),
+                       key_dir=self.key_dir, force=True, http_client=client)
+            # A new identity starts clean (its own numbering, empty outbox):
+            # the current seal goes out straight away.
             self.state = PublishState()
             self._save()
         return self.status()
 
     # -- decision ---------------------------------------------------------
+    def has_new(self) -> bool:
+        """Anything sealed since the last accepted send. Compared by root, not
+        entry count: the seal chain keeps a bounded window, so its count stops
+        growing while its root keeps changing."""
+        return self.seals.height > 0 and self.seals.root_hex() != self.state.last_root
+
     def due(self) -> bool:
         s = self.state
-        if self.enrolment() is None or self.seals.height == 0:
+        if self.enrolment() is None:
             return False
-        if self.seals.height <= s.last_height:
+        if s.outbox is None and not self.has_new():
             return False  # nothing new: never send the same seal twice
         now = self._now()
         if now < s.next_attempt_at:
@@ -143,35 +170,47 @@ class Publisher:
         except Exception:  # noqa: BLE001 - the loop must never die
             return True
 
+    def _build_entry(self) -> dict:
+        """A new outbox entry: the current seal, numbered and signed so
+        Coriqo's checkpoint verification accepts it as this device's."""
+        # Signed under the chain's own lock: root, count and signature describe
+        # the same entries even if the watcher seals a new one this instant.
+        cp = self.seals.sign_checkpoint()
+        seq = self.state.last_seq + 1
+        entry = {
+            # One number per send, never reused: two different heads can never
+            # share a range, which Coriqo would read as a conflicting record.
+            "checkpoint_id": f"shield:{seq}:{cp['root_hex'][:32]}",
+            "session_id": SESSION_ID,
+            "kind": cp.get("kind", "byoai.shield.checkpoint.v1"),
+            "seq_start": seq,
+            "seq_end": seq,
+            "chain_hash": cp["root_hex"],
+            "entries": int(cp["height"]),
+            "ts_device": cp["ts"],
+            # The seal as the Mac signed it, kept whole for offline checks.
+            "checkpoint": cp,
+        }
+        # Coriqo verifies Ed25519 over canonical(entry minus "sig"), the same
+        # rule the recorder's checkpoints follow.
+        entry["sig"] = self.seals._key.sign(canonicalize(entry))
+        return entry
+
     def send(self) -> dict:
-        """Send the current seal now (used by tick and by "Send now").
-        Returns the status; failures are recorded, not raised."""
+        """Send now (used by tick and by "Send now"): the waiting outbox entry
+        if there is one, else the current seal. Returns the status; failures
+        are recorded and retried, never raised."""
         with self._lock:
             state_now = self._now()
             enrolment = self.enrolment()
             if enrolment is None:
                 raise ValueError("This Mac isn't connected to Coriqo yet")
-            if self.seals.height == 0:
-                return self.status()
-            # Signed under the chain's own lock, so the root, the height and
-            # the signature describe the same entries even if the watcher
-            # seals a new one this instant. Everything below reads cp only.
-            cp = self.seals.sign_checkpoint()
-            height = int(cp["height"])
-            entry = {
-                # Coriqo stores device checkpoints by id; this one is stable
-                # for a given head, so a resend is a duplicate, not a row.
-                "checkpoint_id": f"shield:{cp['root_hex'][:32]}:{height}",
-                "session_id": "coriqo-shield",
-                "kind": cp.get("kind", "byoai.shield.checkpoint.v1"),
-                "seq_start": 1,
-                "seq_end": height,
-                "chain_hash": cp["root_hex"],
-                "signature": cp["sig"],
-                "ts_device": cp["ts"],
-                # The document the Mac signed, untouched, for later checks.
-                "checkpoint": cp,
-            }
+            if self.state.outbox is None:
+                if not self.has_new():
+                    return self.status()
+                self.state.outbox = self._build_entry()
+                self._save()  # before sending: see PublishState.outbox
+            entry = self.state.outbox
             body = {"device_id": self.seals._key.device_id, "checkpoints": [entry]}
             try:
                 with self._client_factory() as client:
@@ -184,9 +223,15 @@ class Publisher:
                 self._failed(state_now, ShipError(str(exc)))
                 return self.status()
             if resp.get("rejected"):
+                # Coriqo's "send this again later": keep the outbox, back off.
                 self._failed(state_now, ShipError("Coriqo asked for this seal again later"))
                 return self.status()
-            self.state = PublishState(last_height=height, last_sent_at=state_now)
+            self.state = PublishState(
+                last_root=entry["chain_hash"], last_height=int(entry.get("entries") or 0),
+                last_seq=int(entry["seq_end"]), last_sent_at=state_now,
+                last_error=("Coriqo stored this seal but couldn't verify it."
+                            if resp.get("malformed") else None),
+            )
             self._save()
             return self.status()
 
@@ -225,7 +270,7 @@ class Publisher:
             "enrolled_at": e.enrolled_at if e else None,
             "last_sent_at": s.last_sent_at or None,
             "last_height": s.last_height,
-            "pending_entries": max(0, self.seals.height - s.last_height),
+            "has_new": s.outbox is not None or self.has_new(),
             "next_attempt_at": next_at,
             "every_hours": self.every_s / 3600,
             "last_error": s.last_error,

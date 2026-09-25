@@ -270,11 +270,11 @@ function CoriqoLink() {
           </dd>
           <dt>Next</dt>
           <dd>
-            {ci.pending_entries === 0
+            {!ci.has_new
               ? `Nothing new to send. Shield sends at most every ${ci.every_hours} hours, and only when there's something new.`
               : ci.next_attempt_at
-                ? `${plural(ci.pending_entries, 'new entry', 'new entries')}, sending ${whenNext(ci.next_attempt_at)}.`
-                : `${plural(ci.pending_entries, 'new entry', 'new entries')}, sending within a minute.`}
+                ? `New activity, sending ${whenNext(ci.next_attempt_at)}.`
+                : 'New activity, sending within a minute.'}
           </dd>
         </dl>
       )}
@@ -287,7 +287,7 @@ function CoriqoLink() {
 
       {ci?.connected && !showForm && (
         <div className="coriqo-row">
-          <button className="btn" disabled={send.isPending || ci.pending_entries === 0}
+          <button className="btn" disabled={send.isPending || !ci.has_new}
             onClick={() => send.mutate()}>
             {send.isPending ? 'Sending…' : 'Send now'}
           </button>
