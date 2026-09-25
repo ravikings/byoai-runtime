@@ -38,6 +38,10 @@ declare module '@tanstack/react-router' {
 
 async function startMocks(): Promise<void> {
   if (!import.meta.env.DEV) return
+  // The mocks stand in for the admin console's /v1 API. Shield talks to the
+  // real shield on this Mac, and its page sits outside the worker's /console/
+  // scope, where starting the worker hangs the page instead of failing.
+  if (/^\/shield(\/|$)/.test(location.pathname)) return
   let mod: { worker?: { start: (opts?: unknown) => Promise<unknown> } }
   try {
     mod = await import('./mocks/browser')

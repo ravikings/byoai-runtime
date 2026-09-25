@@ -118,6 +118,9 @@ export const ShieldPrivacy = z.object({
   keep_text: z.boolean(),
   retention_days: z.number().int(),
   mode: z.enum(['observe', 'redact', 'block']),
+  ledger_path: z.string().nullish(),
+  seal_path: z.string().nullish(),
+  device_id: z.string().nullish(),
 })
 export type ShieldPrivacy = z.infer<typeof ShieldPrivacy>
 
@@ -185,6 +188,18 @@ export const ShieldCoriqo = z.object({
 
 export function fetchCoriqo() {
   return get('/coriqo', ShieldCoriqo)
+}
+
+/** Save the Coriqo connection for this Mac. Blank fields keep what's saved;
+ * environment variables still win over the file. */
+export function saveCoriqo(next: { app_url?: string; api_key?: string; tenant?: string }) {
+  return post('/coriqo', next, ShieldCoriqo)
+}
+
+/** Which of the known AI apps are installed on this Mac (read from
+ * /Applications on each call). */
+export function fetchInstalledApps() {
+  return get('/apps', z.record(z.boolean()))
 }
 
 const PublishResult = z.object({

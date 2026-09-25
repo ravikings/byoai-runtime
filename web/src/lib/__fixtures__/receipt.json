@@ -1,0 +1,58 @@
+{
+ "kind": "byoai.receipt.v2",
+ "seal": "8a5e24179633b7d5",
+ "height": 3,
+ "payload": {
+  "interaction": "i2",
+  "date": "2026-09-25",
+  "ts": "09:02:00",
+  "surface": "Claude \u00b7 desktop",
+  "status": "answered",
+  "verdict": "redacted(1)",
+  "flags": [
+   "pii:emails"
+  ],
+  "text_hmac": "hmac-sha256:abababababababababababababababababababababababababababababababab",
+  "chars": 42,
+  "identity": {},
+  "usage": {
+   "output_tokens": 12
+  },
+  "latency": 11.25
+ },
+ "merkle": {
+  "proof": {
+   "leaf_index": 2,
+   "leaf_hash": "8a5e24179633b7d54133eb539b99c651fa872f8b80207fc2ca57af012bcc5869",
+   "steps": [
+    {
+     "sibling": "00bd04c836601e4113faab584d241ad414e91b6253bebeb9f606def475a34776",
+     "side": "right"
+    },
+    {
+     "sibling": "b4ee9f5cba9abb1ca74c8e4727e60c6c0b8aab4283d9889e55786923c9ab5472",
+     "side": "left"
+    },
+    {
+     "sibling": "a4192b3cff32debcb50eccd6f22ca8808e5548ea32be5876671b61c4b18fb5a2",
+     "side": "right"
+    }
+   ],
+   "root_hex": "607fbf7ea1092ae632b393e5e20fdb0d184830c9ea2b907bb4b46a97cb64dbb4"
+  },
+  "checkpoint": {
+   "root_hex": "607fbf7ea1092ae632b393e5e20fdb0d184830c9ea2b907bb4b46a97cb64dbb4",
+   "height": 5,
+   "device_id": "dev_J6JLBHEWOXWONABALCDBFXRZEE",
+   "public_key_b64": "8/Ct/Fcjm3unLlTBlWvftA5mCSQIbeMyHgRH/HAvLuw=",
+   "sig": "ed25519:gdcfAICpjrE6tNVmDc+W3pEMmLt7qC5dliuOBkDZxWIOCdVKqnFePqsZeOriy63Cv6Dg3ImsIY2bRM3SBODWAg=="
+  },
+  "note": "Offline verify: sha256(0x00||canonical(payload)) == seal; fold leaf + steps \u2192 root; unwrap Ed25519 sig over the checkpoint (sig excluded) with public_key_b64."
+ },
+ "self_check": {
+  "entry_hash_ok": true,
+  "chain_intact": true,
+  "chain_height": 5,
+  "verified_at": "2026-09-25T13:00:07Z"
+ }
+}

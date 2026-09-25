@@ -263,14 +263,14 @@ Run an unauthenticated MCP surface plus its behavioral-capture sidecar:
 pip install 'byoai-runtime[mcp]' mitmproxy
 python examples/mcp_capture/server.py --http          # MCP over :8800/mcp
 python examples/mcp_capture/client.py                 # real session → ledger
-python examples/ui/live_shield.py                     # shield UI → :8300
+npm --prefix web install && npm --prefix web run build   # once, from a checkout
+byoai-shield examples/mcp_capture/captures.jsonl      # Shield → :8300/shield
 ```
 
 | Example | What it wires |
 |---|---|
 | `examples/mcp_server/` | ByoAI-over-MCP tool server (stdio or streamable HTTP). |
 | `examples/mcp_capture/` | Real MCP session (`client.py`) against an echo-backed `server.py`: tool calls, cache hits, stream deltas, and client identity from the `initialize` handshake land in `captures.jsonl`. |
-| `examples/ui/live_shield.py` | Shield UI over that ledger: flag rules (PII / high-risk / agent intent), local PII redaction, **Merkle-sealed interactions** (recorder's RFC 6962 tree + per-device Ed25519 signed checkpoints via `byoai.recorder.merkle/keys`), portable receipts (`GET /api/receipt/<seal>` returns payload + inclusion proof + signed checkpoint; verifies offline), `observe`/`redact`/`block` policy modes and per-app toggles (`examples/mcp_capture/policy.json`). |
 | `examples/desktop_proxy_capture.py` | Loads the packaged capture proxy (`byoai.integrations.shield_proxy`) against the example ledger: Claude Desktop chat sends and replies go through the same rules → redact → seal path (admin-consented CA + `NODE_EXTRA_CA_CERTS`). |
 | `examples/ui/keepalive.sh` | launchd-friendly supervisor for the three surfaces (MCP gateway, capture proxy, shield): runs them as a group and exits nonzero if any dies, so `com.coriqo.keepalive` (see the script header) restarts what's missing — survives crashes and reboots. |
 
@@ -331,19 +331,35 @@ All of these are keys in `policy.json`, edited from the console's Settings
 tab; a saved `mode` from an older file is kept as the user chose it. The MCP
 capture gateway (`examples/mcp_capture/server.py`) writes rows the same way.
 
-### Console shield — the Ledger model in `web/`
+### The Shield screen — `/shield` in `web/`
 
-The console route `/console/{tenant}/shield` is a native React surface
-(not an iframe) speaking typed, schema-validated JSON straight to the shield
-API through the Vite dev proxy (`/shield-api/*` → `:8300/api/*`). Four pages:
+Shield has one UI: the `/shield` route of the React app in `web/`. It is the
+screen for the person at one Mac, so it renders outside the admin console
+(`/console/{tenant}/…` is the fleet view; `/console/{tenant}/shield` now
+redirects here). It calls the shield API as `/shield-api/*`: Vite rewrites
+that to `:8300/api/*` in dev, and `byoai-shield` answers it directly, so the
+same build works both ways. `byoai-shield` serves the built app
+(`byoai/console_static/`) and sends `/` to `/shield`; from a source checkout,
+build it once with `npm --prefix web run build`.
 
-* **Trust** — status card, live counters, filter pills (all / caught / stopped / tool calls) + search + pagination, and the CTA that names the product plainly: hand someone a receipt that settles what happened, one nobody can rewrite.
-* **Ledger** — sealed-entries table with per-row receipt downloads; the head states the seal status in one sentence.
-* **Timeline** — sent → inspected → sealed steps off the real interaction.
-* **Settings** — Privacy (previews, retention, notice, remove stored text), verdict modes and per-app toggles writing `policy.json`; the capture proxy picks changes up within about two seconds.
+The tab and the focused interaction are in the URL (`?tab=timeline&focus=…`).
 
-The Trust page also carries a "What Shield keeps on this Mac" panel, read
-from `/api/privacy` and the saved policy rather than written as a promise.
+* **Trust** — status card; today's counters (checked, caught, high risk,
+  tool calls), each a filter; the Activity list with show / when filters,
+  search and paging; "What Shield keeps on this Mac" in the rail, read from
+  `/api/privacy` and the saved policy.
+* **Ledger** — sealed entries with per-row receipts, export of the chain
+  state, and **Check a receipt**: paste a receipt and the browser recomputes
+  the seal and the Merkle path with no request (`web/src/lib/receipt.ts`,
+  tested against a receipt the Python seal chain exported).
+* **Timeline** — every record grouped by day; "Open in Timeline" from a row
+  shows how that interaction became a record and highlights it.
+* **Settings** — Privacy (previews, retention, notice, remove stored text),
+  what happens before a message leaves, apps (with which are installed), the
+  optional Coriqo connection (save, ship seal), and where each file lives.
+
+Any row opens a detail drawer: what happened, which rules matched, the seal,
+a receipt download and the record as stored.
 
 The proxy (auth: admin) always enforces; the shield UI only configures — its
 own consent flow is the CA install and the toggles themselves, so nothing can

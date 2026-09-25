@@ -1,6 +1,5 @@
 """BYOAI capture shield — behavioral capture, verdicts, and tamper-evident
-sealing as a first-class integration (promoted from
-``examples/ui/live_shield.py``; the demo keeps working alongside it).
+sealing as a first-class integration.
 
 Schema-contract is intentionally shared with the captures demo
 (``captures.jsonl``): feed rows are ``kind``-tagged records produced by the
@@ -19,10 +18,10 @@ Components:
   checkpoints (same primitives as :mod:`byoai.recorder.merkle` /
   :mod:`byoai.recorder.keys`), receipts that verify offline in the browser
 
-This is the non-jargon half — the UI lives in a sibling ``shield_static/``
-the server reads at request time (or copies to the console's
-``console_static/`` by symlinking) — with the BYOAI module boundary that a
-license proves only here, in source, not copies.
+The UI is the ``/shield`` route of the console app in ``web/``. This server
+serves its build (``byoai/console_static/``) and answers the API both at
+``/api/*`` and at ``/shield-api/*``, the prefix the app calls through the Vite
+dev proxy, so one build works in dev and standalone.
 """
 
 from __future__ import annotations
@@ -103,7 +102,6 @@ class ShieldConfig:
     seal_path: Path
     key_dir: Path
     policy_path: Path | None = None
-    static_dir: Path | None = None
     sig_every: int = 8
     max_interactions: int = 400
 
@@ -551,6 +549,10 @@ def privacy_report(cfg: ShieldConfig, seals: "SealChain | None" = None) -> dict:
         "keep_text": policy["keep_text"],
         "retention_days": policy["retention_days"],
         "mode": policy["mode"],
+        # "Where your data lives": real paths, not a description of them.
+        "ledger_path": str(cfg.ledger.resolve()),
+        "seal_path": str(cfg.seal_path.resolve()),
+        "device_id": seals._key.device_id if seals is not None else None,
     }
 
 
@@ -879,11 +881,12 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
     feed.scan_initial()
 
     class Handler(BaseHTTPRequestHandler):
-        def _send(self, code, body, ctype="application/json"):
+        def _send(self, code, body, ctype="application/json",
+                  cache="no-store"):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache)
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -952,7 +955,51 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                 return privacy_report(cfg, feed.seals)
             return None
 
+        def _unprefix(self) -> None:
+            """The app calls ``/shield-api/*`` (Vite rewrites it in dev);
+            standalone, this server takes the same prefix."""
+            if self.path.startswith("/shield-api/"):
+                self.path = "/api/" + self.path[len("/shield-api/"):]
+
+        def _spa(self, path: str) -> None:
+            """Serve the built console app: a real file under console_static,
+            else index.html so client routes like /shield/timeline load."""
+            import mimetypes
+
+            from byoai.agent_context_cache import console
+            if path == "/":
+                self.send_response(302)
+                self.send_header("Location", "/shield")
+                self.end_headers()
+                return
+            if not console.assets_available():
+                self._send(503, console.MISSING_BUILD_MESSAGE.encode(),
+                           "text/plain; charset=utf-8")
+                return
+            # The build's asset URLs sit under the console base, /console/.
+            rel = path[len("/console"):] if path.startswith("/console/") else path
+            asset = console.resolve_asset(rel)
+            if asset is not None:
+                ctype = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
+                self._send(200, asset.read_bytes(), ctype,
+                           console.cache_headers(rel.lstrip("/"))["Cache-Control"])
+                return
+            # A missing file is a 404, never the app page: HTML served as a
+            # stale script fails in the browser with no sign what went missing.
+            last = path.rsplit("/", 1)[-1]
+            if path.startswith("/console/assets/") or "." in last:
+                self._send(404, b'{"error":"not found"}')
+                return
+            # Client routes: /shield itself, and old /console/<tenant>/shield
+            # links, which the app redirects to /shield.
+            if path.startswith(("/shield", "/console/")):
+                self._send(200, console.INDEX_FILE.read_bytes(),
+                           "text/html; charset=utf-8", "no-cache")
+                return
+            self._send(404, b'{"error":"not found"}')
+
         def do_GET(self):  # noqa: N802
+            self._unprefix()
             path = self.path.split("?")[0]
             api = self._api()
             if path == "/api/apps":
@@ -971,25 +1018,13 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                            (json.dumps(rc, indent=1, default=str) if rc
                             else b'{"error":"unknown seal"}'))
                 return
-            if path in ("/", "/index.html") and cfg.static_dir:
-                self._send(200, (cfg.static_dir / "shield.html").read_bytes(),
-                           "text/html")
+            if path.startswith("/api/"):
+                self._send(404, b'{"error":"not found"}')
                 return
-            if path == "/ui.css" and cfg.static_dir:
-                css = cfg.static_dir / "ui.css"
-                if css.exists():
-                    self._send(200, css.read_bytes(), "text/css")
-                    return
-                design_css = Path(__file__).resolve().parents[3] / \
-                    "internal_doc" / "consumer_design" / "ui.css"
-                if design_css.exists():
-                    self._send(200, design_css.read_bytes(), "text/css")
-                    return
-                self._send(404, b'{"error":"ui.css not found"}')
-                return
-            self._send(404, b'{"error":"not found"}')
+            self._spa(path)
 
         def do_POST(self):  # noqa: N802
+            self._unprefix()
             if self.path.split("?")[0] == "/api/coriqo":
                 self._save_coriqo_config()
                 return
@@ -1095,7 +1130,7 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             return
 
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"BYOAI capture shield → http://{host}:{port}", flush=True)
+    print(f"Coriqo Shield → http://{host}:{port}/shield", flush=True)
     print(f"seal chain: {feed.seals.height} entries, root "
           f"{(feed.seals.root_hex() or '')[:10]}", flush=True)
     print(f"device: {feed.seals._key.device_id}", flush=True)
@@ -1105,9 +1140,6 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
         pass
 
 
-STATIC_DIR = Path(__file__).resolve().parent / "shield_static"
-
-
 def default_paths(ledger: str | Path) -> ShieldConfig:
     ledger = Path(ledger)
     return ShieldConfig(
@@ -1115,8 +1147,6 @@ def default_paths(ledger: str | Path) -> ShieldConfig:
         seal_path=ledger.parent / "sealchain.json",
         key_dir=DATA_DIR / "keys",
         policy_path=ledger.parent / "policy.json",
-        static_dir=STATIC_DIR if STATIC_DIR.exists() else
-                  Path(__file__).resolve().parents[3] / "examples" / "ui" / "static",
         sig_every=8, max_interactions=MAX_INTERACTIONS,
     )
 

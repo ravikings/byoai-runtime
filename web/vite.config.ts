@@ -2,6 +2,25 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
 import path from 'node:path'
+import type { Plugin } from 'vite'
+
+/**
+ * `/shield` is a client route outside the `/console/` base (it is not part of
+ * the admin console). Vite only serves the app's page under the base, so a
+ * reload or bookmark of /shield would 404 in dev; hand those requests the
+ * same page. `byoai-shield` does the equivalent for the built app.
+ */
+function shieldPageInDev(): Plugin {
+  return {
+    name: 'shield-page-in-dev',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        if (req.url && /^\/shield(\/|\?|$)/.test(req.url)) req.url = '/console/'
+        next()
+      })
+    },
+  }
+}
 
 // The console is served by the Python proxy app under /console in production,
 // so the built asset paths must be absolute under that prefix. In dev, Vite
@@ -12,7 +31,7 @@ import path from 'node:path'
 // type-errors the moment anything type-checks this file.
 export default defineConfig({
   base: '/console/',
-  plugins: [TanStackRouterVite({ routesDirectory: 'src/routes', generatedRouteTree: 'src/routeTree.gen.ts' }), react()],
+  plugins: [shieldPageInDev(), TanStackRouterVite({ routesDirectory: 'src/routes', generatedRouteTree: 'src/routeTree.gen.ts' }), react()],
   resolve: { alias: { '@': path.resolve(__dirname, 'src') } },
   server: {
     port: 5173,
@@ -21,7 +40,6 @@ export default defineConfig({
       // Coriqo shield (live capture ledger) — dev-only sidecar; the prod build
       // keeps serving the console build with the Python app.
       '/shield-api': { target: process.env.SHIELD_URL ?? 'http://127.0.0.1:8300', changeOrigin: true, rewrite: p => p.replace(/^\/shield-api/, '/api') },
-      '/shield-ui': { target: process.env.SHIELD_URL ?? 'http://127.0.0.1:8300', changeOrigin: true, rewrite: p => p.replace(/^\/shield-ui/, '') },
     },
   },
   // Build straight into the Python package: hatchling ships whatever is in

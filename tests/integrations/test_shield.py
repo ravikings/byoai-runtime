@@ -306,3 +306,74 @@ def test_chatgpt_and_openai_bodies_are_redacted():
     responses = {"model": "gpt-x", "input": "ssn 123-45-6789"}
     out, _ = redact_json_body(json.dumps(responses))
     assert json.loads(out)["input"] == "ssn [redacted-ssn]"
+
+
+# ------------------------------------------------------ one UI, served here
+
+
+def _serve(cfg):
+    import socket
+    import threading
+    from byoai.integrations.shield import serve
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    threading.Thread(target=serve, args=(cfg, "127.0.0.1", port), daemon=True).start()
+    import urllib.request
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(base + "/api/policy", timeout=0.2)
+            break
+        except Exception:
+            _time.sleep(0.05)
+    return base
+
+
+def _get(url):
+    import urllib.error
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        r = opener.open(url, timeout=2)
+        return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def test_server_serves_the_app_and_both_api_prefixes(tmp_path, monkeypatch):
+    from byoai.agent_context_cache import console
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<div id=root>app</div>")
+    (static / "assets" / "a.js").write_text("console.log(1)")
+    monkeypatch.setattr(console, "STATIC_DIR", static)
+    monkeypatch.setattr(console, "INDEX_FILE", static / "index.html")
+    base = _serve(make_cfg(tmp_path))
+
+    code, headers, _ = _get(base + "/")
+    assert code == 302 and headers["Location"] == "/shield"
+    assert _get(base + "/shield")[2] == b"<div id=root>app</div>"
+    assert _get(base + "/shield/anything")[0] == 200            # client route
+    assert _get(base + "/console/acme/shield")[0] == 200         # old link, redirected in-app
+    code, headers, body = _get(base + "/console/assets/a.js")
+    assert code == 200 and "javascript" in headers["Content-Type"]
+    assert _get(base + "/console/assets/gone-abc123.js")[0] == 404  # not the app page
+    assert json.loads(_get(base + "/shield-api/policy")[2])["mode"] == "redact"
+    assert json.loads(_get(base + "/api/policy")[2])["mode"] == "redact"
+    assert _get(base + "/api/nope")[0] == 404
+    assert _get(base + "/../../etc/passwd")[0] == 404
+
+
+def test_server_says_how_to_build_when_the_app_is_missing(tmp_path, monkeypatch):
+    from byoai.agent_context_cache import console
+    monkeypatch.setattr(console, "STATIC_DIR", tmp_path / "none")
+    monkeypatch.setattr(console, "INDEX_FILE", tmp_path / "none" / "index.html")
+    base = _serve(make_cfg(tmp_path))
+    code, _, body = _get(base + "/shield")
+    assert code == 503 and b"npm" in body

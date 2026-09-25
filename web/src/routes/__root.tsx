@@ -39,7 +39,7 @@ import {
 } from '../app/scope'
 
 export const Route = createRootRoute({
-  component: Shell,
+  component: Root,
   // A wrong URL still gets the shell, the rail and a way out — a 404 that
   // strands you with no navigation is the dead end §4.4 exists to forbid.
   notFoundComponent: NotFound,
@@ -73,6 +73,17 @@ const SETTINGS: Section = {
 /** `⌘K` and the top-bar search box both raise this. The command palette
  *  listens for it; until one exists, nothing happens and nothing breaks. */
 export const PALETTE_EVENT = 'byoai:open-palette'
+
+/** `/shield` is the per-Mac screen for whoever uses the machine, not part of
+ * the admin console, so it gets no fleet rail and no scope chip. Split here
+ * rather than inside Shell so Shell's hooks always run in the same order. */
+function Root() {
+  const { pathname } = useLocation()
+  // Only the Shield page itself: an unmatched /shield/… path falls through to
+  // the shell, whose not-found page has a way out.
+  if (pathname === '/shield' || pathname === '/shield/') return <Outlet />
+  return <Shell />
+}
 
 function Shell() {
   const router = useRouter()

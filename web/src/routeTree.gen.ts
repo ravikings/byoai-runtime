@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ShieldRouteImport } from './routes/shield'
 import { Route as ConsoleIndexRouteImport } from './routes/console.index'
 import { Route as ConsoleTenantRouteImport } from './routes/console.$tenant'
 import { Route as ConsoleTenantIndexRouteImport } from './routes/console.$tenant.index'
@@ -22,6 +23,11 @@ import { Route as ConsoleTenantFleetCoverageRouteImport } from './routes/console
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShieldRoute = ShieldRouteImport.update({
+  id: '/shield',
+  path: '/shield',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConsoleIndexRoute = ConsoleIndexRouteImport.update({
@@ -68,6 +74,7 @@ const ConsoleTenantFleetCoverageRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/shield': typeof ShieldRoute
   '/console/$tenant': typeof ConsoleTenantRouteWithChildren
   '/console/': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
@@ -79,6 +86,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/shield': typeof ShieldRoute
   '/console': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
   '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
@@ -89,6 +97,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/shield': typeof ShieldRoute
   '/console/$tenant': typeof ConsoleTenantRouteWithChildren
   '/console/': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
@@ -102,6 +111,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/shield'
     | '/console/$tenant'
     | '/console/'
     | '/console/$tenant/$'
@@ -113,6 +123,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/shield'
     | '/console'
     | '/console/$tenant/$'
     | '/console/$tenant/shield'
@@ -122,6 +133,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/shield'
     | '/console/$tenant'
     | '/console/'
     | '/console/$tenant/$'
@@ -134,6 +146,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ShieldRoute: typeof ShieldRoute
   ConsoleTenantRoute: typeof ConsoleTenantRouteWithChildren
   ConsoleIndexRoute: typeof ConsoleIndexRoute
 }
@@ -145,6 +158,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/shield': {
+      id: '/shield'
+      path: '/shield'
+      fullPath: '/shield'
+      preLoaderRoute: typeof ShieldRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/console/': {
@@ -239,6 +259,7 @@ const ConsoleTenantRouteWithChildren = ConsoleTenantRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ShieldRoute: ShieldRoute,
   ConsoleTenantRoute: ConsoleTenantRouteWithChildren,
   ConsoleIndexRoute: ConsoleIndexRoute,
 }
