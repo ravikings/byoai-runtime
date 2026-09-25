@@ -205,4 +205,5 @@ src/byoai/console_static/
 examples/mcp_capture/captures*.jsonl
 examples/mcp_capture/sealchain.json
 examples/mcp_capture/policy.json
+examples/mcp_capture/shield_proxy.alive
 examples/mcp_capture/corioqo.json

@@ -88,7 +88,8 @@ def test_sends_only_the_signed_seal_once_per_head(setup):
     assert cp["seq_start"] == cp["seq_end"] == 1 and cp["entries"] == 3
     assert cp["chain_hash"] == cp["checkpoint"]["root_hex"]
     assert cp["session_id"] == "coriqo-shield"
-    assert set(batch) == {"device_id", "checkpoints"}   # no ledger rows, no text
+    # no ledger rows, no text: the seal, when it left, and the protection state
+    assert set(batch) == {"device_id", "checkpoints", "sent_at", "shield"}
     # same head again: nothing new to send before the heartbeat is due
     clock.t += 5 * 3600
     assert pub.tick() is False and len(coriqo.batches) == 1
@@ -164,7 +165,8 @@ def test_state_survives_a_restart(setup, tmp_path):
     assert again.tick() is False                    # restart doesn't resend straight away
     clock.t += 7 * 3600
     assert again.tick() is True                     # the heartbeat: same entry, same number
-    assert coriqo.batches[-1] == coriqo.batches[0] and again.state.last_seq == 1
+    assert coriqo.batches[-1]["checkpoints"] == coriqo.batches[0]["checkpoints"]
+    assert again.state.last_seq == 1
 
 
 def test_a_broken_transport_never_escapes_tick(setup):
@@ -295,7 +297,7 @@ def test_an_idle_mac_sends_a_heartbeat_that_is_the_same_entry(setup):
     pub.tick()
     clock.t += 6 * 3600
     assert pub.tick() is True and len(coriqo.batches) == 2
-    assert coriqo.batches[1] == coriqo.batches[0]
+    assert coriqo.batches[1]["checkpoints"] == coriqo.batches[0]["checkpoints"]
     assert pub.state.last_seq == 1 and pub.state.last_sent_at == clock.t
     # and not again until the next interval
     clock.t += 3600
@@ -325,7 +327,7 @@ def test_a_mac_upgraded_from_before_heartbeats_numbers_its_seal_once_more(setup,
     assert coriqo.batches[-1]["checkpoints"][0]["seq_end"] == 2
     clock.t += 6 * 3600
     assert pub.tick() is True
-    assert coriqo.batches[-1] == coriqo.batches[-2]
+    assert coriqo.batches[-1]["checkpoints"] == coriqo.batches[-2]["checkpoints"]
 
 
 def test_nothing_is_sent_for_an_empty_record(setup):
@@ -333,3 +335,270 @@ def test_nothing_is_sent_for_an_empty_record(setup):
     _enrol(cfg, coriqo)
     clock.t += 24 * 3600
     assert pub.tick() is False and coriqo.batches == []
+
+
+# ------------------------------------ freshness, protection, record identity
+
+
+def test_every_request_says_when_it_left_and_whether_shield_protects(setup, tmp_path):
+    seals, coriqo, clock, _pub, cfg = setup
+    state = {"protecting": True, "reasons": [], "mode": "redact"}
+    pub = Publisher(seals, cfg.key_dir, tmp_path, now=clock,
+                    client_factory=coriqo.client, protection=lambda: dict(state))
+    _enrol(cfg, coriqo)
+    _grow(seals, 2)
+    pub.tick()
+    first = coriqo.batches[0]
+    assert first["sent_at"] == "1970-01-12T13:46:40Z"   # the injected clock, RFC3339 UTC
+    assert first["shield"] == {"protecting": True, "reasons": [], "mode": "redact"}
+    state.update(protecting=False, reasons=["capture_stopped"])
+    clock.t += 6 * 3600
+    assert pub.tick() is True                       # heartbeat
+    second = coriqo.batches[1]
+    assert second["shield"] == {"protecting": False, "reasons": ["capture_stopped"],
+                                "mode": "redact"}
+    assert second["sent_at"] != first["sent_at"]
+    # the entry is byte for byte the one Coriqo already holds
+    assert json.dumps(second["checkpoints"], sort_keys=True) == \
+        json.dumps(first["checkpoints"], sort_keys=True)
+
+
+def test_a_body_is_signed_with_its_top_level_fields(setup):
+    """sent_at and shield sit inside what the Mac signs, so neither can be
+    swapped on the way."""
+    from byoai.recorder.canonical import canonicalize
+    from byoai.recorder.keys import DeviceKey
+    seals, coriqo, clock, pub, cfg = setup
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/v1/checkpoints/batch":
+            seen["raw"] = gzip.decompress(request.content)
+            seen["headers"] = dict(request.headers)
+        return coriqo.handler(request)
+    pub._client_factory = lambda: httpx.Client(transport=httpx.MockTransport(handler))
+    _enrol(cfg, coriqo)
+    _grow(seals)
+    pub.tick()
+    body = json.loads(seen["raw"])
+    assert "sent_at" in body and "shield" in body
+    assert seen["raw"] == canonicalize(body)        # the signed bytes are the whole body
+    assert DeviceKey.verify(seals._key.public_key_b64, seen["raw"],
+                            seen["headers"]["x-coriqo-signature"])
+
+
+def test_without_a_protection_check_shield_never_claims_protection(setup):
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals)
+    pub.tick()
+    assert coriqo.batches[0]["shield"] == {"protecting": False,
+                                          "reasons": ["state_unknown"], "mode": None}
+
+
+def test_a_failing_protection_check_does_not_stop_the_send(setup, tmp_path):
+    seals, coriqo, clock, _pub, cfg = setup
+
+    def broken():
+        raise RuntimeError("scutil exploded")
+    pub = Publisher(seals, cfg.key_dir, tmp_path, now=clock,
+                    client_factory=coriqo.client, protection=broken)
+    _enrol(cfg, coriqo)
+    _grow(seals)
+    assert pub.tick() is True and len(coriqo.batches) == 1
+    assert coriqo.batches[0]["shield"]["protecting"] is False
+
+
+def test_record_id_is_stable_across_restart_and_trim(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals, 520)
+    rid = seals.record_id
+    assert rid
+    pub.tick()
+    assert coriqo.batches[0]["checkpoints"][0]["record_id"] == rid
+    reloaded = SealChain(cfg)                       # restart, trimmed to 512
+    assert reloaded.height == 512 and reloaded.record_id == rid
+    again = Publisher(reloaded, cfg.key_dir, tmp_path, now=clock, client_factory=coriqo.client)
+    _grow(reloaded)
+    clock.t += 7 * 3600
+    again.tick()
+    assert coriqo.batches[-1]["checkpoints"][0]["record_id"] == rid
+
+
+def test_record_id_changes_when_the_record_is_wiped(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    _grow(seals)
+    rid = seals.record_id
+    cfg.seal_path.unlink()                          # the local record is deleted
+    fresh = SealChain(cfg)
+    assert fresh.record_id and fresh.record_id != rid
+    _grow(fresh)
+    assert SealChain(cfg).record_id == fresh.record_id   # and the new one is kept
+
+
+def test_a_seal_file_from_before_record_ids_gets_one_and_keeps_it(setup):
+    seals, coriqo, clock, pub, cfg = setup
+    _grow(seals, 2)
+    old = json.loads(cfg.seal_path.read_text())
+    del old["record_id"]
+    cfg.seal_path.write_text(json.dumps(old))
+    first = SealChain(cfg)
+    assert first.record_id and SealChain(cfg).record_id == first.record_id
+
+
+def test_prev_chain_hash_links_each_new_entry_to_the_last_accepted(setup):
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals, 2)
+    pub.tick()
+    first = coriqo.batches[0]["checkpoints"][0]
+    assert first["prev_chain_hash"] is None         # first entry after enrolment
+    _grow(seals)
+    clock.t += 7 * 3600
+    pub.tick()
+    second = coriqo.batches[1]["checkpoints"][0]
+    assert second["prev_chain_hash"] == first["chain_hash"]
+    assert second["chain_hash"] != first["chain_hash"]
+
+
+def test_prev_chain_hash_skips_a_send_coriqo_never_accepted(setup):
+    """A failed send is retried unchanged, so the next new entry still points
+    at the last one Coriqo actually stored."""
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals)
+    pub.tick()
+    accepted = coriqo.batches[0]["checkpoints"][0]["chain_hash"]
+    _grow(seals)
+    clock.t += 7 * 3600
+    coriqo.fail_with = 503
+    pub.tick()
+    assert pub.state.outbox["prev_chain_hash"] == accepted
+
+
+def test_reenrolling_starts_the_link_again(setup):
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals)
+    pub.tick()
+    pub.enrol("https://coriqo.test", "cik_live_y")
+    assert coriqo.batches[-1]["checkpoints"][0]["prev_chain_hash"] is None
+    pub.tick()
+    assert coriqo.batches[-1]["checkpoints"][0]["prev_chain_hash"] is None
+
+
+def test_a_clock_refusal_says_fix_the_clock_and_keeps_retrying(setup):
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals)
+
+    def stale(request):
+        if request.url.path == "/v1/checkpoints/batch":
+            return httpx.Response(401, json={"detail": "Request is stale or dated in "
+                                             "the future; check this Mac's clock."})
+        return coriqo.handler(request)
+    pub._client_factory = lambda: httpx.Client(transport=httpx.MockTransport(stale))
+    pub.tick()
+    s = pub.status()
+    assert s["last_error"] == ("This Mac's clock is wrong. Fix the date and time, "
+                               "and Shield will send again on its own.")
+    assert s["needs_attention"] is False and "enrolment token" not in s["last_error"]
+    assert pub.state.failures == 1 and pub.state.next_attempt_at > clock.t
+    # backs off like any transient failure, then recovers on its own
+    pub.tick()
+    assert pub.state.failures == 1                  # still waiting
+    clock.t = pub.state.next_attempt_at + 1
+    pub._client_factory = coriqo.client
+    pub.tick()
+    assert pub.state.failures == 0 and pub.status()["last_error"] is None
+    assert len(coriqo.batches) == 1
+
+
+def test_a_401_without_the_clock_is_still_a_refusal(setup):
+    seals, coriqo, clock, pub, cfg = setup
+    _enrol(cfg, coriqo)
+    _grow(seals)
+    coriqo.fail_with = 401
+    pub.tick()
+    assert pub.status()["needs_attention"] is True
+
+
+# ------------------------------------------- what "protecting" means on a Mac
+
+
+@pytest.fixture(autouse=True)
+def _proxy_port_answers(monkeypatch):
+    """Protection tests fake the proxy's process; its port is faked as open
+    too, except where a test says otherwise."""
+    import byoai.integrations.shield as shield
+    monkeypatch.setattr(shield, "_port_open", lambda port: True)
+
+
+def test_a_reused_pid_with_nothing_on_the_port_does_not_count(tmp_path, monkeypatch):
+    import byoai.integrations.shield as shield
+    from byoai.integrations.shield import protection_state
+    cfg = _protection_cfg(tmp_path)
+    _proxy_running(cfg)
+    monkeypatch.setattr(shield, "_port_open", lambda port: False)
+    assert protection_state(cfg, system_proxy=lambda: None)["reasons"] == ["capture_stopped"]
+
+
+def _protection_cfg(tmp_path, policy=None):
+    cfg = ShieldConfig(ledger=tmp_path / "c.jsonl", seal_path=tmp_path / "s.json",
+                       key_dir=tmp_path / "keys", policy_path=tmp_path / "policy.json")
+    if policy is not None:
+        (tmp_path / "policy.json").write_text(json.dumps({"policy_version": 2, **policy}))
+    return cfg
+
+
+def _proxy_running(cfg, port=8080):
+    import os
+
+    from byoai.integrations.shield import proxy_alive_path
+    proxy_alive_path(cfg.ledger).write_text(json.dumps({"pid": os.getpid(), "port": port}))
+
+
+def test_protecting_when_the_proxy_runs_and_redacts(tmp_path):
+    from byoai.integrations.shield import protection_state
+    cfg = _protection_cfg(tmp_path)
+    _proxy_running(cfg)
+    got = protection_state(cfg, system_proxy=lambda: (True, 8080))
+    assert got == {"protecting": True, "reasons": [], "mode": "redact"}
+
+
+def test_not_protecting_names_each_reason(tmp_path):
+    from byoai.integrations.shield import protection_state
+    cfg = _protection_cfg(tmp_path, {"mode": "observe",
+                                     "apps": {"claude": False, "chatgpt": False}})
+    got = protection_state(cfg, system_proxy=lambda: (True, 8080))
+    assert got["protecting"] is False and got["mode"] == "observe"
+    assert got["reasons"] == ["capture_stopped", "policy_monitor_only", "no_apps_enabled"]
+
+
+def test_system_proxy_off_or_elsewhere_is_not_protecting(tmp_path):
+    from byoai.integrations.shield import protection_state
+    cfg = _protection_cfg(tmp_path)
+    _proxy_running(cfg, port=8080)
+    assert protection_state(cfg, system_proxy=lambda: (False, None))["reasons"] == ["proxy_off"]
+    assert protection_state(cfg, system_proxy=lambda: (True, 9999))["reasons"] == ["proxy_off"]
+    # not a Mac, or scutil unreadable: no claim either way about the system proxy
+    assert protection_state(cfg, system_proxy=lambda: None)["protecting"] is True
+
+
+def test_a_crashed_proxy_leaves_a_marker_that_does_not_count(tmp_path):
+    from byoai.integrations.shield import protection_state, proxy_alive_path
+    cfg = _protection_cfg(tmp_path)
+    proxy_alive_path(cfg.ledger).write_text(json.dumps({"pid": 2 ** 22 + 12345, "port": 8080}))
+    assert protection_state(cfg, system_proxy=lambda: None)["reasons"] == ["capture_stopped"]
+
+
+def test_the_proxy_marks_itself_running_and_clears_on_stop(tmp_path):
+    from byoai.integrations.shield import proxy_alive_path, read_proxy_alive
+    from byoai.integrations.shield_proxy import ShieldProxy
+    ledger = tmp_path / "c.jsonl"
+    proxy = ShieldProxy(ledger=ledger, policy_path=tmp_path / "policy.json")
+    proxy.running()
+    assert read_proxy_alive(ledger) is not None
+    proxy.done()
+    assert not proxy_alive_path(ledger).exists() and read_proxy_alive(ledger) is None

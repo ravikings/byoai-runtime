@@ -46,7 +46,7 @@ export function Sheet({ item, onClose, onOpenTimeline }: {
           <button ref={closeRef} className="btn ghost sm" onClick={onClose} aria-label="Close">✕</button>
         </header>
         <p className="muted sheet-meta">
-          {item.date} {item.ts} · {item.source === 'mcp' ? 'MCP tool call' : 'Chat message'}
+          {item.date} {item.ts} · {item.source === 'mcp' ? 'MCP tool call' : item.source === 'browser' ? 'Browser message' : 'Chat message'}
           {item.chars != null && ` · ${item.chars.toLocaleString()} characters`}
         </p>
         <p className="sheet-line">{verb}</p>

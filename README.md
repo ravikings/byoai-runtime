@@ -272,6 +272,7 @@ byoai-shield examples/mcp_capture/captures.jsonl      # Shield → :8300/shield
 | `examples/mcp_server/` | ByoAI-over-MCP tool server (stdio or streamable HTTP). |
 | `examples/mcp_capture/` | Real MCP session (`client.py`) against an echo-backed `server.py`: tool calls, cache hits, stream deltas, and client identity from the `initialize` handshake land in `captures.jsonl`. |
 | `examples/desktop_proxy_capture.py` | Loads the packaged capture proxy (`byoai.integrations.shield_proxy`) against the example ledger: Claude Desktop chat sends and replies go through the same rules → redact → seal path (admin-consented CA + `NODE_EXTRA_CA_CERTS`). |
+| `src/byoai/browser_extension/` | Chrome (MV3) extension that records agent chat sends in the browser (claude.ai, chatgpt.com, gemini.google.com, copilot.microsoft.com) into the same ledger. Load it unpacked from `chrome://extensions` → Developer mode → Load unpacked; it ships length-only facts to `POST /api/browser` on `127.0.0.1:8300` (endpoint configurable, enforced local-only, in the popup). The extension never reads message text — rule evaluation happens server-side, and what lands in the ledger is "a message was sent, N characters", sealed like every other row. Rows obey the per-app policy toggles, the queue survives service-worker restarts (session storage, 50-row cap), and retries are deduped by row id. Its popup shows reachability, the seal chain height, the id to pin trust (`BYOAI_SHIELD_EXTENSION_IDS`), and a direct link to the Shield UI (`/shield`), which is where the full experience lives (the extension itself has no timeline by design — the local server already has one). See its data-protection record in `src/byoai/browser_extension/PRIVACY.md`; a real-browser end-to-end test lives in `web/tests/extension/live.test.mjs`. |
 | `examples/ui/keepalive.sh` | launchd-friendly supervisor for the three surfaces (MCP gateway, capture proxy, shield): runs them as a group and exits nonzero if any dies, so `com.coriqo.keepalive` (see the script header) restarts what's missing — survives crashes and reboots. |
 
 ### `byoai-shield` — packaged capture shield (source promotion)
@@ -287,7 +288,8 @@ byoai-shield ./examples/mcp_capture/captures.jsonl --host 127.0.0.1 --port 8300
 API: `/api/feed` (limit/offset pagination), `/api/verify`, `/api/policy`
 GET+POST (validated; a bad value is a 400 that names the field),
 `/api/privacy` (what the ledger holds right now), `POST /api/privacy/scrub`,
-and `/api/receipt/<seal>`, driven by
+and `/api/receipt/<seal>`, plus `POST /api/browser` for the Chrome
+extension (bulk rows, length-only), driven by
 recorder-core primitives: RFC 6962 MerkleTree, device Ed25519 keys in
 `~/.byoai/shield/keys` (mode 0600 — see `byoai.recorder.keys`), and
 `policy.json` verdict modes (`observe`/`redact`/`block`) + per-app toggles
@@ -354,9 +356,9 @@ build it once with `npm --prefix web run build`.
 The tab and the focused interaction are in the URL (`?tab=timeline&focus=…`).
 
 * **Trust** — status card; today's counters (checked, caught, high risk,
-  tool calls), each a filter; the Activity list with show / when filters,
-  search and paging; "What Shield keeps on this Mac" in the rail, read from
-  `/api/privacy` and the saved policy.
+  tool calls, in browser), each a filter; the Activity list with show / when
+  filters, search and paging; "What Shield keeps on this Mac" in the rail,
+  read from `/api/privacy` and the saved policy.
 * **Ledger** — sealed entries with per-row receipts, export of the chain
   state, and **Check a receipt**: paste a receipt and the browser recomputes
   the seal and the Merkle path with no request (`web/src/lib/receipt.ts`,
@@ -403,8 +405,45 @@ by the Mac's key. (`POST /api/coriqo/enrol` does the same without the UI.)
 * never blocks, slows or stops checking.
 
 The only state that needs a person is Coriqo refusing the Mac (HTTP 401/403,
-e.g. the device was revoked): Settings says so and asks for a new token.
+e.g. the device was revoked): Settings says so and asks for a new token. One
+401 is different: when Coriqo says the request is stale or dated in the
+future, the Mac's clock is wrong. Settings then reads "This Mac's clock is
+wrong. Fix the date and time, and Shield will send again on its own.", and
+Shield keeps retrying with the usual backoff.
 `GET /api/coriqo` reports the connection, last and next send, and any error.
+
+**What each send tells Coriqo.** Besides the checkpoint, every request body
+(signed as a whole by the Mac's key) carries:
+
+* `sent_at`: when this request left, in UTC. Coriqo refuses one older than
+  10 minutes or more than 5 minutes ahead, so a captured request can't be
+  replayed later.
+* `shield`: `{"protecting", "reasons", "mode"}`, whether Shield is checking
+  traffic right now. It is protecting when the capture proxy is running, the
+  Mac's system HTTPS proxy points at it (checked with `scutil --proxy`; if
+  that can't be read, it isn't counted against), the policy redacts or blocks,
+  and at least one app Shield can read is switched on. Otherwise `reasons`
+  names what is missing: `capture_stopped`, `proxy_off`,
+  `policy_monitor_only`, `no_apps_enabled`. The browser extension doesn't
+  count towards protection: it records that a chat happened and never reads
+  or changes what is sent. Coriqo alerts on a Mac that reports it is not
+  protecting. Shield knows the proxy is running from
+  `shield_proxy.alive`, a small file (pid and listen port) the proxy writes
+  next to the ledger on start and removes on a clean stop. A file left by a
+  crashed proxy is ignored.
+
+A heartbeat changes only those two fields; its checkpoint entry is the one
+Coriqo already holds, byte for byte. Each new entry also carries:
+
+* `record_id`: a random id for this Mac's local record, stored in the seal
+  file when it is first created and kept across restarts and the 512-entry
+  window trim. A different id means the record was deleted and started again.
+* `prev_chain_hash`: the chain hash of the last entry Coriqo accepted from
+  this Mac (`null` for the first one after connecting).
+
+With these Coriqo can tell a record that grew from one that was wiped or
+skipped, and raises its record-contradicted alert on the latter. Older Shield
+versions send none of these fields and are accepted as before.
 
 ### 5. Semantic (intent) caching
 

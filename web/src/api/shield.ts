@@ -15,9 +15,11 @@ export const ShieldFlag = z.object({
   rule: z.string().min(1),
 })
 
+export const SHIELD_SOURCES = ['mcp', 'desktop', 'browser'] as const
+
 export const ShieldItem = z.object({
   id: z.string().min(1),
-  source: z.enum(['mcp', 'desktop']),
+  source: z.enum(['mcp', 'desktop', 'browser']),
   surface: z.string().min(1),
   ts: z.string(),
   date: z.string(),

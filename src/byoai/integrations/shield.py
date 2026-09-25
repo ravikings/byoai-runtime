@@ -309,24 +309,39 @@ class SealChain:
         self.entries: list[dict] = []
         self.checkpoint: dict | None = None
         self._tree: MerkleTree | None = None
+        #: Stable random id of this local record, made once with the seal file
+        #: and kept across restarts and window trims. A new id means the record
+        #: was wiped or recreated; Coriqo compares it between sends.
+        self.record_id: str = ""
         self._load()
 
     # -- persistence ------------------------------------------------------
     def _load(self) -> None:
+        stored_id = None
         if self.cfg.seal_path.exists():
             try:
                 state = json.loads(self.cfg.seal_path.read_text())
                 self.entries = state.get("entries", [])[-512:]
                 self.checkpoint = state.get("checkpoint")
+                stored_id = state.get("record_id")
             except Exception:
                 self.entries = []
         self._rebuild_tree()
+        if isinstance(stored_id, str) and stored_id:
+            self.record_id = stored_id
+        else:
+            self.record_id = uuid.uuid4().hex
+            if self.entries:
+                # A seal file from before record ids: give it one now and keep
+                # it, so the next restart does not look like a new record.
+                self._persist()
 
     def _persist(self) -> None:
         # Atomic (temp file + fsync + rename): a crash or a full disk mid-write
         # can't leave a half-written chain for the next start to misread as
         # tampering.
         atomic_write_bytes(self.cfg.seal_path, json.dumps({
+            "record_id": self.record_id,
             "entries": self.entries[-512:], "checkpoint": self.checkpoint,
         }, indent=1).encode(), mode=0o644, prefix=".sealchain-")
 
@@ -528,6 +543,106 @@ def is_less_private(policy: dict) -> bool:
     return policy.get("mode") == "observe" or bool(policy.get("keep_text"))
 
 
+# The capture proxy writes this next to the ledger while it runs (pid and
+# listen port) and removes it on a clean stop. Shield reads it to know whether
+# anything is checking traffic right now.
+PROXY_ALIVE_FILE = "shield_proxy.alive"
+
+
+def proxy_alive_path(ledger: Path) -> Path:
+    return Path(ledger).parent / PROXY_ALIVE_FILE
+
+
+def _pid_running(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+def _port_open(port: int) -> bool:
+    """Something is listening on 127.0.0.1:port."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def read_proxy_alive(ledger: Path) -> dict | None:
+    """The running proxy's marker, or None when no proxy is running (no file,
+    unreadable, its process is gone after a crash, or nothing listens on its
+    port). The port check matters: after a crash macOS can hand the old pid to
+    another process, and a pid check alone would then claim protection."""
+    try:
+        data = json.loads(proxy_alive_path(ledger).read_text())
+        pid = int(data.get("pid"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if pid <= 0 or not _pid_running(pid):
+        return None
+    port = data.get("port")
+    if isinstance(port, int) and not _port_open(port):
+        return None
+    return data
+
+
+def macos_https_proxy() -> tuple[bool, int | None] | None:
+    """(enabled, port) of this Mac's system HTTPS proxy from ``scutil
+    --proxy``, or None when that can't be read (not a Mac, scutil missing)."""
+    import subprocess
+    import sys
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(["scutil", "--proxy"], capture_output=True,
+                             text=True, timeout=3, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = dict(m.groups() for m in re.finditer(r"(\w+)\s*:\s*(\S+)", out))
+    port = fields.get("HTTPSPort")
+    return (fields.get("HTTPSEnable") == "1",
+            int(port) if port and port.isdigit() else None)
+
+
+def protection_state(cfg: ShieldConfig, *, system_proxy=macos_https_proxy) -> dict:
+    """Is Shield checking traffic right now? Read from what is running, not
+    from what was configured.
+
+    Protecting means all of: the capture proxy is running; this Mac's system
+    HTTPS proxy points at it (when that can be read); the policy redacts or
+    blocks (record-only watches but checks nothing); and at least one app it
+    can read is switched on. The browser extension does not count: it records
+    that a chat happened, it never reads or changes what is sent.
+
+    ``reasons`` are short machine codes for Coriqo, empty when protecting."""
+    policy = load_policy(cfg)
+    reasons: list[str] = []
+    alive = read_proxy_alive(cfg.ledger)
+    if alive is None:
+        reasons.append("capture_stopped")
+    else:
+        sysproxy = system_proxy()
+        if sysproxy is not None:
+            enabled, port = sysproxy
+            want = alive.get("port")
+            if not enabled or (want and port and int(want) != port):
+                reasons.append("proxy_off")
+    if policy.get("mode") == "observe":
+        reasons.append("policy_monitor_only")
+    if not any(policy["apps"].get(app) for app in COVERED_APPS):
+        reasons.append("no_apps_enabled")
+    return {"protecting": not reasons, "reasons": reasons,
+            "mode": policy.get("mode")}
+
+
 def apply_policy_update(policy: dict, payload: dict) -> dict:
     """Validated merge of a Settings write. Raises ValueError naming the first
     bad field; nothing is saved in that case.
@@ -723,6 +838,11 @@ class Feed:
         self._offset = 0
         self._policy = load_policy(cfg)
         self._scanned = False
+        # The browser extension never reads message text, so it can't supply
+        # rule hits — it always ships length only. Recorded clean here; if the
+        # request also crosses the desktop proxy for the same app, that side
+        # (with the wire body) does the flagging.
+        self.BROWSER_FLAGS: list[tuple[str, str, str]] = []
 
     def scan_initial(self) -> int:
         self._scanned = True
@@ -803,6 +923,41 @@ class Feed:
                       chars=chars, redactions=r.get("redactions"))
         elif kind == "desktop.chat.response":
             self._attach_reply(r)
+        elif kind in ("browser.chat.request", "browser.chat.status"):
+            app = r.get("app") or "claude"
+            label = APP_LABEL.get(app, app)
+            wire = r.get("wire") if isinstance(r.get("wire"), str) else None
+            ts_raw = r.get("sent_at") or ""
+            # Extension rows carry their own ISO timestamp; fall back to now.
+            try:
+                when = ts_raw.replace("Z", "+00:00")
+                import datetime as _dt
+                parsed = _dt.datetime.fromisoformat(when)
+                ts = parsed.strftime("%H:%M:%S.%f")
+                ts = ts[:ts.index('.')] if '.' in ts else ts
+                date = parsed.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+            status = ("answered" if r.get("ok") else "failed"
+                      if kind == "browser.chat.status" and "ok" in r
+                      else "answered")
+            # Browser sends stop here only for a fetch that failed; statuses
+            # attach to the latest browser request from the same app.
+            if kind == "browser.chat.status":
+                for it in reversed(list(self.items)):
+                    if it["source"] == "browser" and it["surface"].startswith(label):
+                        if status == "failed":
+                            it["status"] = "failed"
+                            it["tier"] = _tier(it)
+                        break
+                return
+            first = self._is_first_browser_send(label)
+            verb = (f"First message to {label} in this browser"
+                    if first else f"Message to {label}")
+            self._add(source="browser", surface=f"{label} · browser", ts=ts,
+                      verb=verb, date=date, flags_box=self.BROWSER_FLAGS,
+                      status=status, text_hmac=r.get("text_hmac"),
+                      chars=r.get("chars"))
         elif kind == "tool.call":
             ident = r.get("identity") or {}
             tool = r.get("tool") or "execute"
@@ -828,6 +983,11 @@ class Feed:
                             r.get("usage") or {}, r.get("latency_ms"),
                             call_id=r.get("call_id"),
                             status="failed" if kind == "tool.error" else "answered")
+
+    def _is_first_browser_send(self, label: str) -> bool:
+        return not any(
+            it["source"] == "browser" and it["surface"].startswith(label)
+            for it in self.items)
 
     def _add(self, *, source, surface, ts, verb, date, status="answered",
              tool=None, identity=None, flags_box, verdict=None, text_hmac=None,
@@ -942,6 +1102,18 @@ class Feed:
 
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 EXTENSION_SCHEMES = ("chrome-extension://", "moz-extension://")
+BROWSER_KINDS = ("browser.chat.request", "browser.chat.status")
+
+# Hosts the browser extension watches. The relay covers the whole page even
+# when the send itself bypassed fetch, so a bare host must classify like the
+# tagged capture does.
+_APP_TAG_FOR_HOST = {
+    "claude.ai": "claude",
+    "chatgpt.com": "chatgpt",
+    "chat.openai.com": "chatgpt",
+    "gemini.google.com": "gemini",
+    "copilot.microsoft.com": "copilot",
+}
 
 
 def _host_name(value: str) -> str:
@@ -973,10 +1145,47 @@ def request_problem(method: str, path: str, headers) -> str | None:
             return "This browser extension isn't the one Shield was set up to trust."
         return None
     # Settings writes come from Shield's own page (or a local dev server
-    # proxying to it), never from another site.
-    if origin and _host_name(urlsplit(origin).netloc) not in LOCAL_HOSTS:
-        return "Settings can only be changed from Shield's own page."
+    # proxying to it), never from another site. "Localhost" alone is not the
+    # rule: anything else on this Mac (a dev server, a daemon) is also a
+    # localhost origin, and letting localhost:* write policy hands every
+    # local process the keys. The Origin must name the same host:port this
+    # request was addressed to — Shield's own page in production, the Vite
+    # dev server proxying in dev.
+    if origin:
+        if urlsplit(origin).netloc.lower() != (headers.get("Host") or "").strip().lower():
+            return "Settings can only be changed from Shield's own page."
     return None
+
+
+def clean_browser_row(row: object) -> dict | None:
+    """Keep only the fields a browser row is allowed to carry. Anything else,
+    message text included, is dropped before it can reach the ledger."""
+    if not isinstance(row, dict) or row.get("kind") not in BROWSER_KINDS:
+        return None
+    out: dict = {"kind": row["kind"],
+                 "wall_clock": time.strftime("%Y-%m-%d %H:%M:%S")}
+    app = row.get("app")
+    # The relay publishes the host (`location.host`) because only it knows it
+    # reliably; the fetch-patch path sends the app tag directly. Map known
+    # hosts to apps so every path lands under the right surface.
+    app = _APP_TAG_FOR_HOST.get(app) or app
+    if app in APP_LABEL:
+        out["app"] = app
+    chars = row.get("chars")
+    if isinstance(chars, int) and not isinstance(chars, bool) and 0 <= chars < 10_000_000:
+        out["chars"] = chars
+    for key, limit in (("wire", 60), ("sent_at", 40)):
+        if isinstance(row.get(key), str):
+            out[key] = row[key][:limit]
+    # Dedupe key for the extension's retry batches. It's an opaque id —
+    # random at the source, carries nothing about the user.
+    if isinstance(row.get("row_id"), str) and 8 <= len(row["row_id"]) <= 64:
+        out["row_id"] = row["row_id"]
+    if isinstance(row.get("ok"), bool):
+        out["ok"] = row["ok"]
+    if isinstance(row.get("status"), int) and not isinstance(row.get("status"), bool):
+        out["status"] = row["status"]
+    return out
 
 
 def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
@@ -993,13 +1202,17 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             print("policy: upgraded to privacy-first defaults (redact, no stored "
                   "text); app choices kept", flush=True)
     from byoai.integrations.shield_publish import Publisher
-    publisher = Publisher(feed.seals, cfg.key_dir, cfg.key_dir.parent)
+    publisher = Publisher(feed.seals, cfg.key_dir, cfg.key_dir.parent,
+                          protection=lambda: protection_state(cfg))
     publisher.start()  # background; sends only when enrolled and due
     pruned = scrub_ledger(cfg, scrub_text=False)["deleted"]
     if pruned:
         print(f"retention: deleted {pruned} ledger rows past "
               f"{load_policy(cfg)['retention_days']} days", flush=True)
     feed.scan_initial()
+
+    # Dedupe across the extension's batch retries; shared by all requests.
+    browser_dedupe = {"ids": set(), "order": []}
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype="application/json",
@@ -1141,6 +1354,9 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             self._unprefix()
             if self._refused("POST"):
                 return
+            if self.path.split("?")[0] == "/api/browser":
+                self._browser_ingest()
+                return
             if self.path.split("?")[0] == "/api/coriqo/enrol":
                 self._enrol()
                 return
@@ -1174,6 +1390,50 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             save_policy(cfg, policy)
             self._send(200, json.dumps(
                 {**policy, "covered_apps": list(COVERED_APPS)}).encode())
+
+        def _browser_ingest(self) -> None:
+            """Rows from the browser extension: same ledger, same seal chain,
+            same privacy-first stance as the desktop proxy. The extension was
+            told the endpoint at install; an unconfigured one is not an error
+            here — it is recorded, subject to the same policy as everything
+            else."""
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                payload = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                self._send(400, b'{"error":"invalid json"}')
+                return
+            rows = payload.get("rows") if isinstance(payload, dict) else None
+            if not isinstance(rows, list) or not rows:
+                self._send(400, b'{"error":"expected {rows: [...]}"}')
+                return
+            policy = load_policy(cfg)
+            accepted = 0
+            for row in rows[:200]:
+                clean = clean_browser_row(row)
+                if clean is None:
+                    continue
+                # The extension retries its batch after network trouble; a
+                # row sealed twice reads as two chats. row_id (a uuid from
+                # the extension) is the dedupe key, kept for the last 1000 —
+                # far beyond any retry window the extension has.
+                rid = clean.get("row_id")
+                if rid:
+                    if rid in browser_dedupe["ids"]:
+                        continue
+                    browser_dedupe["ids"].add(rid)
+                    browser_dedupe["order"].append(rid)
+                    if len(browser_dedupe["order"]) > 1000:
+                        for old in browser_dedupe["order"][:-500]:
+                            browser_dedupe["ids"].discard(old)
+                        del browser_dedupe["order"][:-500]
+                if not policy["apps"].get(clean.get("app") or "claude"):
+                    continue
+                append_row(cfg.ledger, clean)
+                accepted += 1
+            # The watcher thread picks new rows up within ~1.5 s. Polling here
+            # as well would race it and could absorb (and seal) a row twice.
+            self._send(200, json.dumps({"accepted": accepted}).encode())
 
         def _enrol(self) -> None:
             """One-time setup: exchange a Coriqo enrolment token for this

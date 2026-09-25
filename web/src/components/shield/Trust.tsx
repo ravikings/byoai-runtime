@@ -32,6 +32,7 @@ export function Trust({ verify, policy, onOpen, goSettings }: {
     caught: todays.filter(it => it.tier === 'warn').length,
     bad: todays.filter(it => it.tier === 'bad').length,
     mcp: todays.filter(it => it.source === 'mcp').length,
+    browser: todays.filter(it => it.source === 'browser').length,
   }
   const q = search.trim().toLowerCase()
   const visible = all.filter(it => matchesNeed(it, need) && inWhen(it.date, when) && (!q
@@ -69,6 +70,7 @@ export function Trust({ verify, policy, onOpen, goSettings }: {
           <StatButton label="caught" value={counts.caught} tone="warn" on={need === 'warn'} onClick={() => pick('warn')} />
           <StatButton label="high risk" value={counts.bad} tone="bad" on={need === 'bad'} onClick={() => pick('bad')} />
           <StatButton label="tool calls" value={counts.mcp} on={need === 'mcp'} onClick={() => pick('mcp')} />
+          <StatButton label="in browser" value={counts.browser} on={need === 'browser'} onClick={() => pick('browser')} />
         </div>
 
         <section aria-labelledby="activity-h">
@@ -140,6 +142,7 @@ export function Row({ item, onOpen }: { item: Item; onOpen: () => void }) {
         <span className="what">{item.verb}</span>
         <span className="row-meta">
           {item.source === 'mcp' && <span className="tag info">Tool call</span>}
+          {item.source === 'browser' && <span className="tag info">In browser</span>}
           {item.status === 'blocked' && <span className="tag bad">Stopped on this Mac</span>}
           {n > 0 && <span className="tag ok">{n === 1 ? '1 detail replaced' : `${n} details replaced`}</span>}
           {item.flags.map(f => (

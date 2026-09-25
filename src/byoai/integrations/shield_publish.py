@@ -27,7 +27,17 @@ Design goals, in order:
   resend after a crash is harmless.
 * **One human-actionable state.** If Coriqo refuses this Mac (401/403: the
   device was revoked or the tenant moved), the status says so and what to do.
-  Everything else fixes itself.
+  Everything else fixes itself. A 401 that names the clock is not a refusal:
+  the Mac's date is wrong, the status says so, and sending resumes on its own
+  once it is fixed.
+
+Every request also carries, at the top level of the signed body, ``sent_at``
+(when this request left, so Coriqo can refuse a replayed one) and ``shield``
+(is Shield checking traffic right now, and if not, why). The checkpoint entry
+inside stays byte for byte the same on a heartbeat. A new entry also names
+``record_id`` (this Mac's local record; a new id means it was wiped) and
+``prev_chain_hash`` (the chain hash of the last entry Coriqo accepted), so
+Coriqo can tell a record that restarted or skipped from one that grew.
 """
 
 from __future__ import annotations
@@ -49,6 +59,12 @@ from byoai.recorder.shipper import ShipError, post_signed_batch
 
 if TYPE_CHECKING:  # pragma: no cover
     from byoai.integrations.shield import SealChain
+
+#: Used when no protection check was wired in: say "can't tell", never claim
+#: protection nobody checked.
+UNKNOWN_PROTECTION = {"protecting": False, "reasons": ["state_unknown"], "mode": None}
+CLOCK_MESSAGE = ("This Mac's clock is wrong. Fix the date and time, and Shield "
+                 "will send again on its own.")
 
 CHECKPOINT_PATH = "/v1/checkpoints/batch"
 SESSION_ID = "coriqo-shield"  # Coriqo tells a Shield Mac's seals apart by this
@@ -93,7 +109,8 @@ class Publisher:
     def __init__(self, seals: "SealChain", key_dir: Path, state_dir: Path, *,
                  every_hours: float = DEFAULT_EVERY_HOURS,
                  now: Callable[[], float] = time.time,
-                 client_factory: Callable[[], httpx.Client] | None = None) -> None:
+                 client_factory: Callable[[], httpx.Client] | None = None,
+                 protection: Callable[[], dict] | None = None) -> None:
         self.seals = seals
         self.key_dir = Path(key_dir)
         self.state_path = Path(state_dir) / STATE_FILE
@@ -105,6 +122,8 @@ class Publisher:
         # would fail its certificate check on every send.
         self._client_factory = client_factory or (
             lambda: httpx.Client(timeout=TIMEOUT_S, trust_env=False))
+        #: Returns {"protecting", "reasons", "mode"}; see shield.protection_state.
+        self._protection = protection or (lambda: dict(UNKNOWN_PROTECTION))
         self._lock = threading.Lock()
         self.state = self._load()
 
@@ -204,6 +223,11 @@ class Publisher:
             "ts_device": cp["ts"],
             # The seal as the Mac signed it, kept whole for offline checks.
             "checkpoint": cp,
+            # This Mac's local record, and the entry this one follows: a new
+            # record_id or a prev_chain_hash Coriqo doesn't hold means the
+            # record was wiped or skipped, not grown. None after enrolment.
+            "record_id": self.seals.record_id,
+            "prev_chain_hash": self.state.last_root,
         }
         # Coriqo verifies Ed25519 over canonical(entry minus "sig"), the same
         # rule the recorder's checkpoints follow.
@@ -231,7 +255,12 @@ class Publisher:
                     self.state.outbox = self._build_entry()
                     self._save()  # before sending: see PublishState.outbox
                 entry = self.state.outbox
-            body = {"device_id": self.seals._key.device_id, "checkpoints": [entry]}
+            body = {"device_id": self.seals._key.device_id, "checkpoints": [entry],
+                    # Fresh on every request (the entry may be a resend):
+                    # signed with the body, so a replay reads as stale.
+                    "sent_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                             time.gmtime(state_now)),
+                    "shield": self._shield_block()}
             try:
                 with self._client_factory() as client:
                     resp = post_signed_batch(client, enrolment.coriqo_base_url,
@@ -255,6 +284,19 @@ class Publisher:
             self._save()
             return self.status()
 
+    def _shield_block(self) -> dict:
+        """The protection state for this request. A failing check never stops
+        a send: it reports that the state is unknown."""
+        try:
+            p = self._protection()
+            reasons = [str(r) for r in (p.get("reasons") or [])]
+            mode = p.get("mode")
+            return {"protecting": bool(p.get("protecting")) and not reasons,
+                    "reasons": reasons,
+                    "mode": str(mode) if mode is not None else None}
+        except Exception:  # noqa: BLE001
+            return dict(UNKNOWN_PROTECTION)
+
     def _failed(self, now: float, exc: ShipError) -> None:
         s = self.state
         s.failures += 1
@@ -263,13 +305,18 @@ class Publisher:
         if exc.retry_after:
             delay = max(delay, float(exc.retry_after))
         s.next_attempt_at = now + delay
-        s.needs_attention = exc.status_code in (401, 403)
-        s.last_error = (
-            "Coriqo no longer accepts this Mac. Ask your Coriqo admin for a new "
-            "enrolment token and connect again."
-            if s.needs_attention else
-            "Couldn't reach Coriqo; Shield will try again on its own."
-        )
+        # Coriqo refuses a request dated too far from its own clock with a 401
+        # that says so. That is this Mac's clock, not a revoked device: keep
+        # retrying, and tell the person what to fix.
+        clock = exc.status_code == 401 and "clock" in str(exc).lower()
+        s.needs_attention = exc.status_code in (401, 403) and not clock
+        if clock:
+            s.last_error = CLOCK_MESSAGE
+        elif s.needs_attention:
+            s.last_error = ("Coriqo no longer accepts this Mac. Ask your Coriqo "
+                            "admin for a new enrolment token and connect again.")
+        else:
+            s.last_error = "Couldn't reach Coriqo; Shield will try again on its own."
         self._save()
 
     # -- reporting ----------------------------------------------------------

@@ -416,7 +416,7 @@ def test_server_says_how_to_build_when_the_app_is_missing(tmp_path, monkeypatch)
 
 # ------------------------------------------- other sites can't drive Shield
 
-from byoai.integrations.shield import request_problem
+from byoai.integrations.shield import clean_browser_row, request_problem
 
 
 def _post(url, body, headers):
@@ -451,10 +451,49 @@ def test_a_web_page_cannot_weaken_shield(tmp_path):
     assert code == 200 and body["mode"] == "observe"
 
 
+def test_only_the_extension_can_send_browser_rows(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    base = _serve(cfg)
+    rows = {"rows": [{"kind": "browser.chat.request", "app": "claude", "chars": 12,
+                      "prompt": "email j.rivers@gmail.com", "wire": "/api/x"}]}
+    json_h = {"Content-Type": "application/json"}
+    assert _post(base + "/api/browser", rows, {**json_h, "Origin": "https://claude.ai"})[0] == 403
+    assert _post(base + "/api/browser", rows, json_h)[0] == 403
+    code, body = _post(base + "/api/browser", rows,
+                       {**json_h, "Origin": "chrome-extension://abcdef"})
+    assert code == 200 and body["accepted"] == 1
+    stored = cfg.ledger.read_text()
+    assert "j.rivers" not in stored and '"chars": 12' in stored
+    # pinned to one extension id
+    monkeypatch.setenv("BYOAI_SHIELD_EXTENSION_IDS", "trusted-id")
+    assert _post(base + "/api/browser", rows,
+                 {**json_h, "Origin": "chrome-extension://abcdef"})[0] == 403
+    assert _post(base + "/api/browser", rows,
+                 {**json_h, "Origin": "chrome-extension://trusted-id"})[0] == 200
+
+
+def test_browser_rows_keep_only_known_fields():
+    row = clean_browser_row({"kind": "browser.chat.request", "app": "claude",
+                             "chars": 5, "prompt": "secret", "preview": "x",
+                             "wire": "w" * 500, "ok": True})
+    assert row is not None and set(row) == {"kind", "wall_clock", "app", "chars", "wire", "ok"}
+    assert len(row["wire"]) == 60
+    assert clean_browser_row({"kind": "desktop.chat.request"}) is None
+    assert clean_browser_row({"kind": "browser.chat.request", "app": "evil",
+                              "chars": True})["kind"] == "browser.chat.request"
+
+
 def test_request_problem_allows_local_pages_and_get():
     ok_host = {"Host": "127.0.0.1:8300"}
     assert request_problem("GET", "/api/feed", ok_host) is None
     assert request_problem("GET", "/api/feed", {"Host": "attacker.test"}) is not None
+    # Same-origin write: the origin must name the very host:port the request
+    # was addressed to — Shield's own page — not merely "some localhost port".
     assert request_problem("POST", "/api/policy", {
         **ok_host, "Content-Type": "application/json; charset=utf-8",
-        "Origin": "http://localhost:5173"}) is None
+        "Origin": "http://127.0.0.1:8300"}) is None
+    # A different localhost port is another process, not Shield's page —
+    # anything running there can't weaken Shield.
+    assert request_problem("POST", "/api/policy", {
+        **ok_host, "Content-Type": "application/json",
+        "Origin": "http://localhost:9999"}) is not None
