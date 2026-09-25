@@ -28,8 +28,12 @@ second, is never stored, never logged, never transmitted.
 - Message content or previews (see `clean_browser_row` on the server side:
   any unexpected field, text included, is dropped before the ledger).
 - Browsing history, tabs, or keystrokes outside the two chat surfaces.
-- Identifiers of any kind. No account, device, or user ID is attached;
-  identification happens at the Shield server by localhost origin only.
+- Identifiers of any kind. No account, device, or user ID is attached to
+  rows; identification happens at the Shield server by localhost origin only.
+  (The extension does keep one thing locally, never sent anywhere: Shield's
+  public key, saved the first time it pairs so a different program on the same
+  port can't pass as Shield. It also keeps one "last message noted" time per
+  app, overwritten on each send, so the popup can show that capture still works.)
 - No analytics, no telemetry, no third-party requests. The only network
   destination is the local Shield server, and the manifest's
   `host_permissions` is limited to `127.0.0.1`/`localhost` so it cannot be

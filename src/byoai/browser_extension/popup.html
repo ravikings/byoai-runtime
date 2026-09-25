@@ -18,6 +18,7 @@
       }
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body { width: 340px; margin: 0; padding: 16px; background: var(--bg); color: var(--text);
       font: 13px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif; }
     .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
@@ -49,6 +50,7 @@
       background: var(--bg); color: var(--text); font: 12px ui-monospace, monospace; }
     button.small { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
       color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+    #trust { margin: 0 0 12px; }
     .msg { min-height: 16px; margin: 6px 0 0; font-size: 12px; }
     .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
     .mono { font: 11px/1.4 ui-monospace, monospace; word-break: break-all; margin: 4px 0 6px; }
@@ -69,9 +71,10 @@
   </div>
 
   <p class="tab" id="tab"></p>
+  <button class="small" id="trust" hidden>I reinstalled Shield. Trust this one.</button>
 
   <button class="primary" id="open-shield">Open Shield</button>
-  <p class="help" id="help" hidden>Start it on this Mac with <code>byoai-shield</code>, then reopen this window.</p>
+  <p class="help" id="help" hidden>Start it with <code>byoai-shield</code>. To have it start every time you log in, run <code>byoai-shield --install-login-item</code>.</p>
 
   <p class="promise">
     Shield notes that you sent a message, to which app, when, and how long it was. It does not read what you wrote.

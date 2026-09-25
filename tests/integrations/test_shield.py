@@ -519,3 +519,33 @@ def test_request_problem_allows_local_pages_and_get():
     assert request_problem("POST", "/api/policy", {
         **ok_host, "Content-Type": "application/json",
         "Origin": "http://localhost:9999"}) is not None
+
+
+# ------------------------------------------- identity + login item
+
+
+def test_identity_proves_the_device_key_over_the_callers_nonce(tmp_path):
+    from byoai.integrations.shield import IDENTITY_PREFIX
+    from byoai.recorder.keys import DeviceKey
+    base = _serve(make_cfg(tmp_path))
+    nonce = "ab" * 16
+    code, _, body = _get(f"{base}/api/identity?nonce={nonce}")
+    doc = json.loads(body)
+    assert code == 200
+    assert DeviceKey.verify(doc["public_key"], IDENTITY_PREFIX + nonce.encode(), doc["sig"])
+    # a recorded answer does not verify against a different nonce
+    assert not DeviceKey.verify(doc["public_key"], IDENTITY_PREFIX + b"cd" * 16, doc["sig"])
+    # no nonce, or a malformed one, is refused rather than signed
+    assert _get(f"{base}/api/identity")[0] == 404
+    assert _get(f"{base}/api/identity?nonce=zz")[0] == 404
+
+
+def test_login_item_plist_is_low_priority_and_backs_off(tmp_path):
+    from byoai.integrations.shield_login import build_plist
+    plist = build_plist(tmp_path / "captures.jsonl", 17831, python="/usr/bin/python3",
+                        log_dir=tmp_path)
+    assert plist["ProgramArguments"][-2:] == ["--port", "17831"]
+    assert plist["RunAtLoad"] is True
+    assert plist["KeepAlive"] == {"SuccessfulExit": False}   # restart on failure only
+    assert plist["ThrottleInterval"] >= 30                   # a taken port is not a busy loop
+    assert plist["LowPriorityIO"] is True and plist["Nice"] > 0

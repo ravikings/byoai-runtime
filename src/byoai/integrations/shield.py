@@ -47,6 +47,10 @@ from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
 import os as _os
 DEFAULT_PORT = int(_os.environ.get("BYOAI_SHIELD_PORT", "17831"))
 
+# What /api/identity signs (prefix + caller's nonce); the extension checks the
+# same bytes. Changing it breaks pairing with installed extensions.
+IDENTITY_PREFIX = b"byoai-shield-identity:"
+
 MAX_INTERACTIONS = 400
 
 PII_RULES = [
@@ -1162,6 +1166,16 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                         "items": page}
             if path == "/api/verify":
                 return feed.seals.verify_chain()
+            if path == "/api/identity":
+                # Proof that this is the Shield holding this device's key, not
+                # another process that got to the port first. The caller picks
+                # the nonce, so a recorded answer can't be replayed.
+                nonce = parse_qs(urlparse(self.path).query).get("nonce", [""])[0]
+                if not re.fullmatch(r"[0-9a-f]{16,64}", nonce):
+                    return None
+                key = feed.seals._key
+                return {"device_id": key.device_id, "public_key": key.public_key_b64,
+                        "sig": key.sign(IDENTITY_PREFIX + nonce.encode())}
             if path == "/api/policy":
                 return {**load_policy(cfg), "covered_apps": list(COVERED_APPS)}
             if path == "/api/privacy":
@@ -1232,7 +1246,7 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                 self._send(200, json.dumps(self._coriqo()).encode())
                 return
             if path in ("/api/feed", "/api/verify", "/api/policy",
-                        "/api/privacy"):
+                        "/api/privacy") or (path == "/api/identity" and api):
                 self._send(200, json.dumps(api).encode())
                 return
             if path.startswith("/api/receipt/"):
@@ -1441,7 +1455,15 @@ def main() -> None:  # console-script entrypoint: byoai-shield
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--daemonize-watch", action="store_true", default=True)
+    ap.add_argument("--install-login-item", action="store_true",
+                    help="start Shield when you log in (macOS), then exit")
+    ap.add_argument("--remove-login-item", action="store_true",
+                    help="stop starting Shield at login (macOS), then exit")
     args = ap.parse_args()
+    if args.install_login_item or args.remove_login_item:
+        from byoai.integrations import shield_login
+        raise SystemExit(shield_login.run(
+            install=args.install_login_item, ledger=args.ledger, port=args.port))
     cfg = default_paths(args.ledger)
     feed = Feed(cfg)
 
