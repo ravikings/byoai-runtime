@@ -255,6 +255,126 @@ async def ask_stream(body: dict, rt: Runtime = Depends(get_runtime)):
 
 See `examples/fastapi_app/` for a runnable app with events, caching, and fallback.
 
+### 4b. MCP connector + capture shield (demo layer)
+
+Run an unauthenticated MCP surface plus its behavioral-capture sidecar:
+
+```bash
+pip install 'byoai-runtime[mcp]' mitmproxy
+python examples/mcp_capture/server.py --http          # MCP over :8800/mcp
+python examples/mcp_capture/client.py                 # real session → ledger
+python examples/ui/live_shield.py                     # shield UI → :8300
+```
+
+| Example | What it wires |
+|---|---|
+| `examples/mcp_server/` | ByoAI-over-MCP tool server (stdio or streamable HTTP). |
+| `examples/mcp_capture/` | Real MCP session (`client.py`) against an echo-backed `server.py`: tool calls, cache hits, stream deltas, and client identity from the `initialize` handshake land in `captures.jsonl`. |
+| `examples/ui/live_shield.py` | Shield UI over that ledger: flag rules (PII / high-risk / agent intent), local PII redaction, **Merkle-sealed interactions** (recorder's RFC 6962 tree + per-device Ed25519 signed checkpoints via `byoai.recorder.merkle/keys`), portable receipts (`GET /api/receipt/<seal>` returns payload + inclusion proof + signed checkpoint; verifies offline), `observe`/`redact`/`block` policy modes and per-app toggles (`examples/mcp_capture/policy.json`). |
+| `examples/desktop_proxy_capture.py` | Loads the packaged capture proxy (`byoai.integrations.shield_proxy`) against the example ledger: Claude Desktop chat sends and replies go through the same rules → redact → seal path (admin-consented CA + `NODE_EXTRA_CA_CERTS`). |
+| `examples/ui/keepalive.sh` | launchd-friendly supervisor for the three surfaces (MCP gateway, capture proxy, shield): runs them as a group and exits nonzero if any dies, so `com.coriqo.keepalive` (see the script header) restarts what's missing — survives crashes and reboots. |
+
+### `byoai-shield` — packaged capture shield (source promotion)
+
+The demo's analyzer, seal chain, and UI backend are promoted into the package
+as `byoai.integrations.shield` with a console script (see `pyproject.toml`):
+
+```bash
+pip install 'byoai-runtime[mcp]'   # includes the mcp extra
+byoai-shield ./examples/mcp_capture/captures.jsonl --host 127.0.0.1 --port 8300
+```
+
+API: `/api/feed` (limit/offset pagination), `/api/verify`, `/api/policy`
+GET+POST (validated; a bad value is a 400 that names the field),
+`/api/privacy` (what the ledger holds right now), `POST /api/privacy/scrub`,
+and `/api/receipt/<seal>`, driven by
+recorder-core primitives: RFC 6962 MerkleTree, device Ed25519 keys in
+`~/.byoai/shield/keys` (mode 0600 — see `byoai.recorder.keys`), and
+`policy.json` verdict modes (`observe`/`redact`/`block`) + per-app toggles
+that the capture proxy reads live.
+
+### Privacy-first by default
+
+Shield polices what goes to AI apps, so it keeps **what happened, not what
+was said**. With no settings changed:
+
+* **`redact` is the default mode.** Emails, card numbers, phone numbers,
+  SSN-like numbers, wallet addresses and API keys inside the message fields
+  of the outgoing JSON (`prompt`, `messages[].content`) become labels such as
+  `[redacted-email]` before the request leaves the Mac. `block` also stops
+  credential and executable-file sends locally (the app gets a 403);
+  `observe` only records.
+* **No message text on disk.** Ledger rows and seal payloads hold the app,
+  verdict, rule ids, message length and an HMAC-SHA256 fingerprint keyed by
+  a per-device secret (`~/.byoai/shield/fingerprint.key`, mode 0600), so a
+  short message can't be recovered by hashing guesses. Replies get the same
+  treatment.
+* **Opt-in previews.** `keep_text: true` stores up to 200 characters with
+  personal details removed.
+* **Retention.** `retention_days` (7 / 30 / 90 / 365, default 30): older
+  ledger rows are deleted at startup and on cleanup. Sealed entries stay, so
+  receipts keep verifying.
+* **Notice.** `notice: true` shows a strip in the console telling whoever
+  uses the Mac what Shield checks and keeps.
+* **Cleanup.** `POST /api/privacy/scrub` (Settings → Privacy → Remove now)
+  replaces text in rows written before these defaults with the fingerprint
+  and applies retention. Existing sealed entries are not rewritten: that is
+  the change the seal exists to detect.
+
+**Which apps.** The proxy reads Claude (claude.ai, the Claude desktop app,
+the Anthropic API) and ChatGPT (chatgpt.com, the OpenAI Chat Completions and
+Responses APIs; off until turned on). Gemini and Copilot are listed but not
+covered: their clients don't send JSON the proxy can read, so their toggles
+can't be turned on and say so.
+
+All of these are keys in `policy.json`, edited from the console's Settings
+tab; a saved `mode` from an older file is kept as the user chose it. The MCP
+capture gateway (`examples/mcp_capture/server.py`) writes rows the same way.
+
+### Console shield — the Ledger model in `web/`
+
+The console route `/console/{tenant}/shield` is a native React surface
+(not an iframe) speaking typed, schema-validated JSON straight to the shield
+API through the Vite dev proxy (`/shield-api/*` → `:8300/api/*`). Four pages:
+
+* **Trust** — status card, live counters, filter pills (all / caught / stopped / tool calls) + search + pagination, and the CTA that names the product plainly: hand someone a receipt that settles what happened, one nobody can rewrite.
+* **Ledger** — sealed-entries table with per-row receipt downloads; the head states the seal status in one sentence.
+* **Timeline** — sent → inspected → sealed steps off the real interaction.
+* **Settings** — Privacy (previews, retention, notice, remove stored text), verdict modes and per-app toggles writing `policy.json`; the capture proxy picks changes up within about two seconds.
+
+The Trust page also carries a "What Shield keeps on this Mac" panel, read
+from `/api/privacy` and the saved policy rather than written as a promise.
+
+The proxy (auth: admin) always enforces; the shield UI only configures — its
+own consent flow is the CA install and the toggles themselves, so nothing can
+block traffic it didn't see the user place it inline on. The consequence for
+copy: Coriqo never asks the user to take its word for anything. The receipt
+math (`byoai.receipt.v2`, sha256 + Merkle proof + device checkpoint) is what
+settles it.
+
+### Publishing the shield seal to the Coriqo app
+
+The shield can publish its current signed seal to the Coriqo main app — the
+same online account the recorder feeds. Configure either way:
+
+```bash
+# shell env (matches the recorder's publish triple)
+export BYOAI_CORIQO_URL=https://app.coriqo.com
+export BYOAI_CORIQO_API_KEY=...
+export BYOAI_CORIQO_TENANT_SLUG=acme
+
+# or in the shield Settings form (per-Mac, written to corioqo.json next to
+# the ledger — env takes precedence)
+```
+
+`POST /api/coriqo` saves the triple without a shell; `POST /api/publish`
+ships `{kind: byoai.shield.publish.v1, height, root_hex, checkpoint}` and
+answers `{"shipped": true, "root": ...}`. Unconfigured requests get a typed
+503 the UI renders as setup instructions. `GET /api/coriqo` also returns
+`marketing_url` (`BYOAI_CORIQO_MARKETING_URL`, default `https://coriqo.com`)
+for the "what longer plans offer" link; realtime org-wide sync is the admin's
+enrollment step within the Coriqo app.
+
 ### 5. Semantic (intent) caching
 
 Serve *similar* questions from cache — not just identical ones. One embedding

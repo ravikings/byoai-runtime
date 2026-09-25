@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
 import './styles/tokens.css'
+import './styles/shield.css'
 import './styles/components.css'
 
 const queryClient = new QueryClient({

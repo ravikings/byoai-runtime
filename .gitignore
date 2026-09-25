@@ -199,3 +199,10 @@ web/dist/
 web/.tanstack/
 *.tsbuildinfo
 src/byoai/console_static/
+
+# Coriqo Shield runtime state — captured traffic, seal chain, per-Mac config.
+# These hold real user activity (and, from before privacy-first, prompt text).
+examples/mcp_capture/captures*.jsonl
+examples/mcp_capture/sealchain.json
+examples/mcp_capture/policy.json
+examples/mcp_capture/corioqo.json
