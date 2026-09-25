@@ -9,6 +9,7 @@ const el = (id) => document.getElementById(id)
 document.addEventListener('DOMContentLoaded', async () => {
   render(await probe())
   wire()
+  el('ext-id').textContent = chrome.runtime.id
 })
 
 async function probe() {
@@ -54,6 +55,11 @@ function render({ up, endpoint, verify }) {
 }
 
 function wire() {
+  el('copy-id').addEventListener('click', () => {
+    navigator.clipboard.writeText(chrome.runtime.id)
+    el('copy-id').textContent = 'Copied'
+    setTimeout(() => { el('copy-id').textContent = 'Copy id' }, 1200)
+  })
   el('save').addEventListener('click', async () => {
     const msg = el('msg')
     const r = await send({ type: 'agent.setEndpoint', endpoint: el('endpoint').value.trim() })

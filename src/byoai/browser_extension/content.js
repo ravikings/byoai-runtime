@@ -20,6 +20,8 @@
     'claude.ai': 'claude',
     'chatgpt.com': 'chatgpt',
     'chat.openai.com': 'chatgpt',
+    'gemini.google.com': 'gemini',
+    'copilot.microsoft.com': 'copilot',
   }
   const app = APP_FOR_HOST[location.host]
   if (!app) return

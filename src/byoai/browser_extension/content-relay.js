@@ -27,6 +27,12 @@
   }
 
   let disabled = false
+  function onCapture(ev) {
+    const row = ev.detail
+    if (row && row.kind && !disabled) {
+      send(row)
+    }
+  }
   function disable() {
     disabled = true
     window.removeEventListener('shield-agent-capture', onCapture)
@@ -34,12 +40,7 @@
     document.removeEventListener('click', onClick, true)
   }
 
-  window.addEventListener('shield-agent-capture', (ev) => {
-    const row = ev.detail
-    if (row && row.kind && !disabled) {
-      send(row)
-    }
-  })
+  window.addEventListener('shield-agent-capture', onCapture)
 
   // Fallback for sends that don't go over fetch: watch the send control so a
   // websocket-only send is still recorded as data-free activity.

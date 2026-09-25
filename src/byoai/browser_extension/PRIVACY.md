@@ -2,7 +2,7 @@
 
 This extension records *that* you sent a message to an AI chat, never *what
 you said*. This file is the data-protection record for reviewers ( GDPR
-Art. 30 register entry equivalents noted inline ) and for anyone auditing the
+Art. 30 register entry equivalents noted inline) and for anyone auditing the
 code — it is short on purpose, and every claim links to the line that makes
 it true.
 
@@ -46,9 +46,12 @@ against web pages. If Shield is not running, rows wait in memory (capped at
 
 ## Retention
 
-- In the extension: memory only, ≤ 50 rows, lost on browser restart. No
-  capture data touches `chrome.storage` — that permission stores only the
-  endpoint URL string.
+- In the extension: memory as the working set, mirrored to
+  `chrome.storage.session` (cleared when the browser closes) so a service-
+  worker restart doesn't drop rows mid-flight; ≤ 50 rows, and when the
+  local server stays off, older rows are dropped rather than kept. No
+  capture data touches `chrome.storage.local` — that permission stores
+  only the endpoint URL string.
 - On the Shield server: the ledger's existing privacy-first rules apply
   (retention days, scrub pass, sealed-but-text-free payloads — see
   `README.md` § Privacy-first by default).
@@ -57,7 +60,7 @@ against web pages. If Shield is not running, rows wait in memory (capped at
 
 The Shield server's user-facing notice strip (web UI, Trust tab) states what
 is checked and kept, and is not dismissible by design. Because the shield is
-an-local tool operated by the same person whose machine it runs on (household
+a local tool operated by the same person whose machine it runs on (household
 admin setting it up for the Mac's users), the transparency duty is met by
 that strip plus this file; there's no controller-processor split and no
 third-country transfer — data never leaves the machine.

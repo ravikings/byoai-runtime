@@ -972,6 +972,8 @@ _APP_TAG_FOR_HOST = {
     "claude.ai": "claude",
     "chatgpt.com": "chatgpt",
     "chat.openai.com": "chatgpt",
+    "gemini.google.com": "gemini",
+    "copilot.microsoft.com": "copilot",
 }
 
 
@@ -1004,9 +1006,15 @@ def request_problem(method: str, path: str, headers) -> str | None:
             return "This browser extension isn't the one Shield was set up to trust."
         return None
     # Settings writes come from Shield's own page (or a local dev server
-    # proxying to it), never from another site.
-    if origin and _host_name(urlsplit(origin).netloc) not in LOCAL_HOSTS:
-        return "Settings can only be changed from Shield's own page."
+    # proxying to it), never from another site. "Localhost" alone is not the
+    # rule: anything else on this Mac (a dev server, a daemon) is also a
+    # localhost origin, and letting localhost:* write policy hands every
+    # local process the keys. The Origin must name the same host:port this
+    # request was addressed to — Shield's own page in production, the Vite
+    # dev server proxying in dev.
+    if origin:
+        if urlsplit(origin).netloc.lower() != (headers.get("Host") or "").strip().lower():
+            return "Settings can only be changed from Shield's own page."
     return None
 
 
@@ -1030,6 +1038,10 @@ def clean_browser_row(row: object) -> dict | None:
     for key, limit in (("wire", 60), ("sent_at", 40)):
         if isinstance(row.get(key), str):
             out[key] = row[key][:limit]
+    # Dedupe key for the extension's retry batches. It's an opaque id —
+    # random at the source, carries nothing about the user.
+    if isinstance(row.get("row_id"), str) and 8 <= len(row["row_id"]) <= 64:
+        out["row_id"] = row["row_id"]
     if isinstance(row.get("ok"), bool):
         out["ok"] = row["ok"]
     if isinstance(row.get("status"), int) and not isinstance(row.get("status"), bool):
@@ -1055,6 +1067,9 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
         print(f"retention: deleted {pruned} ledger rows past "
               f"{load_policy(cfg)['retention_days']} days", flush=True)
     feed.scan_initial()
+
+    # Dedupe across the extension's batch retries; shared by all requests.
+    browser_dedupe = {"ids": set(), "order": []}
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype="application/json",
@@ -1270,14 +1285,26 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             accepted = 0
             for row in rows[:200]:
                 clean = clean_browser_row(row)
-                if clean is not None:
-                    # The per-app toggles are policy, not display state: a
-                    # surface the user turned off is not recorded, whatever
-                    # the extension ships. Same rule the desktop proxy obeys.
-                    if not policy["apps"].get(clean.get("app") or "claude"):
+                if clean is None:
+                    continue
+                # The extension retries its batch after network trouble; a
+                # row sealed twice reads as two chats. row_id (a uuid from
+                # the extension) is the dedupe key, kept for the last 1000 —
+                # far beyond any retry window the extension has.
+                rid = clean.get("row_id")
+                if rid:
+                    if rid in browser_dedupe["ids"]:
                         continue
-                    append_row(cfg.ledger, clean)
-                    accepted += 1
+                    browser_dedupe["ids"].add(rid)
+                    browser_dedupe["order"].append(rid)
+                    if len(browser_dedupe["order"]) > 1000:
+                        for old in browser_dedupe["order"][:-500]:
+                            browser_dedupe["ids"].discard(old)
+                        del browser_dedupe["order"][:-500]
+                if not policy["apps"].get(clean.get("app") or "claude"):
+                    continue
+                append_row(cfg.ledger, clean)
+                accepted += 1
             # The watcher thread picks new rows up within ~1.5 s. Polling here
             # as well would race it and could absorb (and seal) a row twice.
             self._send(200, json.dumps({"accepted": accepted}).encode())

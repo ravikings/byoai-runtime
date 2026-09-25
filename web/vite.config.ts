@@ -42,8 +42,25 @@ export default defineConfig({
     proxy: {
       '/v1': { target: process.env.BYOAI_PROXY_URL ?? 'http://127.0.0.1:8787', changeOrigin: true },
       // Coriqo shield (live capture ledger) — dev-only sidecar; the prod build
-      // keeps serving the console build with the Python app.
-      '/shield-api': { target: process.env.SHIELD_URL ?? 'http://127.0.0.1:8300', changeOrigin: true, rewrite: p => p.replace(/^\/shield-api/, '/api') },
+      // keeps serving the console build with the Python app. The proxy
+      // rewrites Origin to the target so the shield's same-origin write rule
+      // (Settings POSTs must come from the service's own page) holds in dev
+      // too — Vite's changeOrigin only fixes Host, not Origin.
+      '/shield-api': {
+        target: process.env.SHIELD_URL ?? 'http://127.0.0.1:8300',
+        changeOrigin: true,
+        rewrite: p => p.replace(/^\/shield-api/, '/api'),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            const origin = proxyReq.getHeader('origin')
+            if (origin && String(origin).startsWith('http://localhost:')) {
+              // The request path is already rewritten too, so Shield sees a
+              // request that looks exactly like one from its own page.
+              proxyReq.setHeader('origin', process.env.SHIELD_URL ?? 'http://127.0.0.1:8300')
+            }
+          })
+        },
+      },
     },
   },
   // Build straight into the Python package: hatchling ships whatever is in

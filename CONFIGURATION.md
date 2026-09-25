@@ -71,6 +71,20 @@ the recorder's shipped evidence; it never writes to a ledger.
 | `VITE_API_BASE` | build/runtime | `/v1/console` | Base path the console calls. Change only if the console API is mounted somewhere other than the proxy's `/v1/console`. |
 | `VITE_BYOAI_TENANT` | build time | `acme-prod` | Tenant the console lands on when a URL names none (`/` and `/console` redirect to `/console/{tenant}/fleet`). Baked in at build time, so a deployment serving one tenant should set it rather than rely on the placeholder default. |
 
+### Shield extra origins (extension + dev server)
+
+| Variable | Where | Default | Meaning |
+|---|---|---|---|
+| `BYOAI_SHIELD_EXTENSION_IDS` | shield (shell) | *(unset = any extension)* | Comma-separated list of extension IDs `POST /api/browser` accepts. With it set, every other `chrome-extension://` origin is refused — the popup shows the id to pin (Trust only this extension → Copy id). |
+| `SHIELD_URL` | dev server (shell) | `http://127.0.0.1:8300` | Where the Vite dev proxy finds the shield; also the Origin the proxy claims on its forwarded writes, so Shield's same-origin policy rule holds in dev without extra config. |
+
+The shield hardens every write: `POST /api/browser` requires a
+`chrome-extension://` origin (optionally pinned as above; the extension
+stamps a `row_id` the server dedupes on, so batch retries can't double-seal),
+and `POST /api/policy` requires the request's Origin to name the very
+`host:port` the request was addressed to — Shield's own page — so no other
+local process can weaken the policy.
+
 Commands, run from `web/`:
 
 | Command | Does |

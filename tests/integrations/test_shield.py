@@ -487,6 +487,13 @@ def test_request_problem_allows_local_pages_and_get():
     ok_host = {"Host": "127.0.0.1:8300"}
     assert request_problem("GET", "/api/feed", ok_host) is None
     assert request_problem("GET", "/api/feed", {"Host": "attacker.test"}) is not None
+    # Same-origin write: the origin must name the very host:port the request
+    # was addressed to — Shield's own page — not merely "some localhost port".
     assert request_problem("POST", "/api/policy", {
         **ok_host, "Content-Type": "application/json; charset=utf-8",
-        "Origin": "http://localhost:5173"}) is None
+        "Origin": "http://127.0.0.1:8300"}) is None
+    # A different localhost port is another process, not Shield's page —
+    # anything running there can't weaken Shield.
+    assert request_problem("POST", "/api/policy", {
+        **ok_host, "Content-Type": "application/json",
+        "Origin": "http://localhost:9999"}) is not None

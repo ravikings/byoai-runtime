@@ -34,6 +34,10 @@
     li { margin-bottom: 3px; font-size: 12px; }
     a { color: inherit; }
     .foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #6b7280; }
+    details.pin { margin-top: 12px; font-size: 12px; }
+    details.pin summary { cursor: pointer; }
+    details.pin .mono { font: 11px/1.4 ui-monospace, monospace; word-break: break-all; margin: 6px 0; }
+    details.pin .hint { color: #6b7280; font-size: 11px; margin: 4px 0 8px; }
     @media (prefers-color-scheme: dark) {
       body { background: #111827; color: #e5e7eb; }
       .state, input[type=text], button { border-color: #374151; }
@@ -66,6 +70,14 @@
     <li><a id="open-shield" href="#" target="_blank">Open Shield timeline</a> — today's counters, full activity, receipts</li>
     <li><a id="open-privacy" href="#" target="_blank">What this extension records</a> — the privacy record</li>
   </ul>
+
+  <details class="pin">
+    <summary>Trust only this extension</summary>
+    <p class="mono" id="ext-id"></p>
+    <p class="hint">To make Shield accept rows only from this install, run
+    <span class="mono">BYOAI_SHIELD_EXTENSION_IDS=&lt;this id&gt; byoai-shield …</span> with the id above.</p>
+    <button id="copy-id">Copy id</button>
+  </details>
 
   <p class="foot">
     This extension sends facts (app, time, length) to your local Shield server only.

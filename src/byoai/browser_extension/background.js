@@ -4,9 +4,17 @@
  * Buffers rows from the content scripts and ships them to the local Shield
  * server's /api/browser endpoint, which runs the SAME shared ruleset and
  * seals the interaction into the same Merkle chain as the desktop proxy and
- * the MCP gateway. Offline and shut-downs are fine: unsent rows retry and
- * the ledger dedupes nothing — the row carries what happened, not what was
- * said, so a lost row is a blind spot, never a leak.
+ * the MCP gateway.
+ *
+ * MV3 kills the worker ~30s after it goes idle, and with it any timer it
+ * scheduled and any in-memory state. That turns "queued for 50 rows"
+ * silently into "lost on the next coffee break" — think a 4-hour server
+ * outage while the worker restarted 400 times — a misleading failure mode.
+ * Mitigation, being honest about blind spots: the queue and the fields of
+ * a pending retry live in chrome.storage.session (cleared with the browser
+ * session, ~RAM semantics), and chrome.alarms drives a re-flush so a
+ * worker restart still delivers — within the same cap: if the server
+ * stays off, old rows are dropped, never stored forever.
  */
 const ENDPOINT_KEY = 'endpoint'
 
@@ -19,8 +27,14 @@ const DEFAULT_ENDPOINT = 'http://127.0.0.1:8300/api/browser'
 // send rate of a normal day; anything older is dropped, not retried forever.
 const MAX_QUEUED = 50
 
+const QUEUE_KEY = 'queue'
+const RETRY_AT_KEY = 'retry_at'
+
 let queue = []
 let timer = null
+let restored = false
+
+const WATCHED_HOST = ['claude.ai', 'chatgpt.com', 'chat.openai.com', 'gemini.google.com', 'copilot.microsoft.com']
 
 /*
  * Badge on the Shield-covered surfaces: while a Shield page (claude.ai,
@@ -46,7 +60,7 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 function isPageWatched(url) {
   try {
     const host = new URL(url).host
-    return host === 'claude.ai' || host === 'chatgpt.com' || host === 'chat.openai.com'
+    return WATCHED_HOST.includes(host)
   } catch {
     return false
   }
@@ -70,9 +84,47 @@ function setWorking() {
   chrome.action.setTitle({ title: WORKING_TITLE })
 }
 
+function setOfflineIfQueued() {
+  if (queue.length) setOffline()
+  else setWorking()
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeText({ text: '' })
 })
+
+// A worker that starts fresh (cold start, after termination, after browser
+// restart) resumes from what it persisted — or, finding nothing, honestly
+// reports the gap.
+chrome.runtime.onStartup.addListener(restore)
+restore()
+
+async function restore() {
+  if (restored) return
+  restored = true
+  const store = chrome.storage?.session
+  if (!store) return // test harness or older Chrome; memory-only mode
+  const data = await store.get([QUEUE_KEY, RETRY_AT_KEY])
+  if (Array.isArray(data[QUEUE_KEY])) {
+    queue = data[QUEUE_KEY].slice(-MAX_QUEUED)
+  }
+  const retry_at = data[RETRY_AT_KEY]
+  if (retry_at && Date.now() < retry_at) {
+    timer = setTimeout(flush, retry_at - Date.now())
+  } else if (retry_at) {
+    // A retry was due while the worker was dead — deliver now.
+    flush()
+  }
+  setOfflineIfQueued()
+}
+
+async function persist() {
+  const store = chrome.storage?.session
+  if (!store) return
+  const data = { [QUEUE_KEY]: queue }
+  if (timer) data[RETRY_AT_KEY] = Date.now() + 10_000
+  await store.set(data)
+}
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg?.type === 'agent.capture' && msg.row) {
@@ -84,8 +136,9 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       reply?.({ error: 'not the Shield capture relay' })
       return false
     }
-    queue.push({ ...msg.row, sent_at: new Date().toISOString() })
+    queue.push({ ...msg.row, sent_at: new Date().toISOString(), row_id: crypto.randomUUID() })
     if (queue.length > MAX_QUEUED) queue = queue.slice(-MAX_QUEUED)
+    persist()
     scheduleFlush()
     reply?.({ queued: queue.length })
   } else if (msg?.type === 'agent.getEndpoint') {
@@ -120,12 +173,21 @@ function scheduleFlush() {
   setWorking()
   if (timer) return
   timer = setTimeout(flush, 2000)
+  // The in-page timer dies with the worker; the alarm survives restarts and
+  // re-flushes whatever the worker comes back to find (or missed).
+  chrome.alarms?.create('shield-retry', { delayInMinutes: 1.1 })
+  persist()
 }
+
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm.name === 'shield-retry') flush()
+})
 
 async function flush() {
   timer = null
   const batch = queue
   queue = []
+  persist()
   if (!batch.length) { return }
   try {
     const endpoint = await getEndpoint()
@@ -136,13 +198,16 @@ async function flush() {
     })
     if (!res.ok) throw new Error(String(res.status))
     setWorking() // synced: green check
+    chrome.alarms?.clear('shield-retry')
   } catch {
     // Server not up yet: put the rows back, retry later — inside the same
     // cap, so an off-again server days out still means dropped rows, not
     // an ever-growing local record.
     queue = [...batch, ...queue].slice(-MAX_QUEUED)
     timer = setTimeout(flush, 10000)
+    chrome.alarms?.create('shield-retry', { delayInMinutes: 1.1 })
     setOffline() // red dash: server unreachable
+    persist()
   }
 }
 
