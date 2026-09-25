@@ -75,7 +75,7 @@ state, not an error.
 ```bash
 cd web
 npm install
-npm run dev      # http://localhost:5173/console/
+npm run dev      # http://localhost:5174/console/ (Shield: http://localhost:5174/shield)
 ```
 
 `npm run dev` proxies `/v1` to a running context-cache proxy

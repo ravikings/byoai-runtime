@@ -75,7 +75,7 @@ Commands, run from `web/`:
 
 | Command | Does |
 |---|---|
-| `npm run dev` | Dev server on `http://localhost:5173/console/`, with the MSW mock API enabled. |
+| `npm run dev` | Dev server on `http://localhost:5174/console/` (Shield at `/shield`), with the MSW mock API enabled. |
 | `npm run build` | Type-checks and builds to `src/byoai/console_static/`, served by the proxy under the `/console/` base path and shipped inside the wheel. |
 | `npm run typecheck` | TypeScript only. |
 | `npm test` | Vitest — includes tests asserting the API contract in `web/src/api/schemas.ts` is enforced rather than coerced. |
