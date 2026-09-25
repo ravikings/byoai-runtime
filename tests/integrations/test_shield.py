@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from byoai.integrations.shield import (
     ShieldConfig, Feed, flags_for, redact, default_policy, load_policy,
@@ -283,6 +284,27 @@ def test_poll_before_first_scan_does_not_double_absorb(tmp_path):
     assert feed.counts()["checked"] == 1 and feed.seals.height == 1
 
 
+def test_idle_poll_skips_the_read_and_still_sees_new_rows(tmp_path):
+    cfg = make_cfg(tmp_path)
+    row = {"wall_clock": "2026-09-25 09:00:00", "kind": "desktop.chat.request",
+           "app": "claude", "chars": 5}
+    cfg.ledger.write_text(json.dumps(row) + "\n")
+    feed = Feed(cfg)
+    feed.scan_initial()
+    assert feed.poll() == 0
+    reads = []
+    real = Path.read_text
+    Path.read_text = lambda self, *a, **k: (reads.append(self), real(self, *a, **k))[1]
+    try:
+        assert feed.poll() == 0 and feed.poll() == 0
+        assert [r for r in reads if r == cfg.ledger] == []   # nothing changed: no read
+    finally:
+        Path.read_text = real
+    with cfg.ledger.open("a") as f:
+        f.write(json.dumps(row) + "\n")
+    assert feed.poll() == 1
+
+
 # -------------------------------------------------------- review follow-ups
 
 
@@ -442,7 +464,7 @@ def test_a_web_page_cannot_weaken_shield(tmp_path):
     assert code == 403
     # DNS rebinding: the page's own hostname pointed at 127.0.0.1
     code, _ = _post(base + "/api/policy", weaken, {
-        "Content-Type": "application/json", "Host": "evil.example:8300"})
+        "Content-Type": "application/json", "Host": "evil.example:17831"})
     assert code == 403
     assert json.loads(_get(base + "/api/policy")[2])["mode"] == "redact"
     # Shield's own page still can
@@ -484,14 +506,14 @@ def test_browser_rows_keep_only_known_fields():
 
 
 def test_request_problem_allows_local_pages_and_get():
-    ok_host = {"Host": "127.0.0.1:8300"}
+    ok_host = {"Host": "127.0.0.1:17831"}
     assert request_problem("GET", "/api/feed", ok_host) is None
     assert request_problem("GET", "/api/feed", {"Host": "attacker.test"}) is not None
     # Same-origin write: the origin must name the very host:port the request
     # was addressed to — Shield's own page — not merely "some localhost port".
     assert request_problem("POST", "/api/policy", {
         **ok_host, "Content-Type": "application/json; charset=utf-8",
-        "Origin": "http://127.0.0.1:8300"}) is None
+        "Origin": "http://127.0.0.1:17831"}) is None
     # A different localhost port is another process, not Shield's page —
     # anything running there can't weaken Shield.
     assert request_problem("POST", "/api/policy", {

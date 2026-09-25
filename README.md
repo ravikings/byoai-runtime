@@ -264,7 +264,7 @@ pip install 'byoai-runtime[mcp]' mitmproxy
 python examples/mcp_capture/server.py --http          # MCP over :8800/mcp
 python examples/mcp_capture/client.py                 # real session → ledger
 npm --prefix web install && npm --prefix web run build   # once, from a checkout
-byoai-shield examples/mcp_capture/captures.jsonl      # Shield → :8300/shield
+byoai-shield examples/mcp_capture/captures.jsonl      # Shield → :17831/shield
 ```
 
 | Example | What it wires |
@@ -272,7 +272,7 @@ byoai-shield examples/mcp_capture/captures.jsonl      # Shield → :8300/shield
 | `examples/mcp_server/` | ByoAI-over-MCP tool server (stdio or streamable HTTP). |
 | `examples/mcp_capture/` | Real MCP session (`client.py`) against an echo-backed `server.py`: tool calls, cache hits, stream deltas, and client identity from the `initialize` handshake land in `captures.jsonl`. |
 | `examples/desktop_proxy_capture.py` | Loads the packaged capture proxy (`byoai.integrations.shield_proxy`) against the example ledger: Claude Desktop chat sends and replies go through the same rules → redact → seal path (admin-consented CA + `NODE_EXTRA_CA_CERTS`). |
-| `src/byoai/browser_extension/` | Chrome (MV3) extension that records agent chat sends in the browser (claude.ai, chatgpt.com, gemini.google.com, copilot.microsoft.com) into the same ledger. Load it unpacked from `chrome://extensions` → Developer mode → Load unpacked; it ships length-only facts to `POST /api/browser` on `127.0.0.1:8300` (endpoint configurable, enforced local-only, in the popup). The extension never reads message text — rule evaluation happens server-side, and what lands in the ledger is "a message was sent, N characters", sealed like every other row. Rows obey the per-app policy toggles, the queue survives service-worker restarts (session storage, 50-row cap), and retries are deduped by row id. Its popup shows reachability, the seal chain height, the id to pin trust (`BYOAI_SHIELD_EXTENSION_IDS`), and a direct link to the Shield UI (`/shield`), which is where the full experience lives (the extension itself has no timeline by design — the local server already has one). See its data-protection record in `src/byoai/browser_extension/PRIVACY.md`; a real-browser end-to-end test lives in `web/tests/extension/live.test.mjs`. |
+| `src/byoai/browser_extension/` | Chrome (MV3) extension that records agent chat sends in the browser (claude.ai, chatgpt.com, gemini.google.com, copilot.microsoft.com) into the same ledger. Load it unpacked from `chrome://extensions` → Developer mode → Load unpacked; it ships length-only facts to `POST /api/browser` on `127.0.0.1:17831` (endpoint configurable, enforced local-only, in the popup). The extension never reads message text — rule evaluation happens server-side, and what lands in the ledger is "a message was sent, N characters", sealed like every other row. Rows obey the per-app policy toggles, the queue survives service-worker restarts (session storage, 50-row cap), and retries are deduped by row id. Its popup shows reachability, the seal chain height, the id to pin trust (`BYOAI_SHIELD_EXTENSION_IDS`), and a direct link to the Shield UI (`/shield`), which is where the full experience lives (the extension itself has no timeline by design — the local server already has one). See its data-protection record in `src/byoai/browser_extension/PRIVACY.md`; a real-browser end-to-end test lives in `web/tests/extension/live.test.mjs`. |
 | `examples/ui/keepalive.sh` | launchd-friendly supervisor for the three surfaces (MCP gateway, capture proxy, shield): runs them as a group and exits nonzero if any dies, so `com.coriqo.keepalive` (see the script header) restarts what's missing — survives crashes and reboots. |
 
 ### `byoai-shield` — packaged capture shield (source promotion)
@@ -282,7 +282,7 @@ as `byoai.integrations.shield` with a console script (see `pyproject.toml`):
 
 ```bash
 pip install 'byoai-runtime[mcp]'   # includes the mcp extra
-byoai-shield ./examples/mcp_capture/captures.jsonl --host 127.0.0.1 --port 8300
+byoai-shield ./examples/mcp_capture/captures.jsonl --host 127.0.0.1 --port 17831
 ```
 
 API: `/api/feed` (limit/offset pagination), `/api/verify`, `/api/policy`
@@ -348,7 +348,7 @@ Shield has one UI: the `/shield` route of the React app in `web/`. It is the
 screen for the person at one Mac, so it renders outside the admin console
 (`/console/{tenant}/…` is the fleet view; `/console/{tenant}/shield` now
 redirects here). It calls the shield API as `/shield-api/*`: Vite rewrites
-that to `:8300/api/*` in dev, and `byoai-shield` answers it directly, so the
+that to `:17831/api/*` in dev, and `byoai-shield` answers it directly, so the
 same build works both ways. `byoai-shield` serves the built app
 (`byoai/console_static/`) and sends `/` to `/shield`; from a source checkout,
 build it once with `npm --prefix web run build`.

@@ -18,7 +18,13 @@
  */
 const ENDPOINT_KEY = 'endpoint'
 
-const DEFAULT_ENDPOINT = 'http://127.0.0.1:8300/api/browser'
+const DEFAULT_ENDPOINT = 'http://127.0.0.1:17831/api/browser'
+// Earlier builds defaulted to :8300, which Consul and others also use. A saved
+// copy of that old default is treated as "never customised" and follows the
+// new default; any other saved endpoint is the user's choice and is kept.
+const LEGACY_DEFAULT_ENDPOINT = 'http://127.0.0.1:8300/api/browser'
+const resolveEndpoint = (saved) =>
+  !saved || saved === LEGACY_DEFAULT_ENDPOINT ? DEFAULT_ENDPOINT : saved
 
 // Even length-only facts are personal data once they accumulate over time
 // (a length timeline is still a usage pattern). A queue without a cap keeps
@@ -143,7 +149,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     reply?.({ queued: queue.length })
   } else if (msg?.type === 'agent.getEndpoint') {
     chrome.storage.local.get(ENDPOINT_KEY, (v) =>
-      reply?.({ endpoint: v[ENDPOINT_KEY] || DEFAULT_ENDPOINT }))
+      reply?.({ endpoint: resolveEndpoint(v[ENDPOINT_KEY]) }))
   } else if (msg?.type === 'agent.setEndpoint') {
     // The batcher carries Shield metadata; redirecting it anywhere but the
     // local Shield server would exfiltrate that record off the machine.
@@ -213,5 +219,5 @@ async function flush() {
 
 function getEndpoint() {
   return new Promise((resolve) =>
-    chrome.storage.local.get(ENDPOINT_KEY, (v) => resolve(v[ENDPOINT_KEY] || DEFAULT_ENDPOINT)))
+    chrome.storage.local.get(ENDPOINT_KEY, (v) => resolve(resolveEndpoint(v[ENDPOINT_KEY]))))
 }

@@ -7,7 +7,7 @@ MCP connector gateway and the desktop capture proxy. This module keeps the
 behavioral rules in one place so the console (``web/``) and the demo UI read
 the same analyzer.
 
-    python -m byoai.integrations.shield          # serves UI + API on :8300
+    python -m byoai.integrations.shield          # serves UI + API on :17831
 
 Components:
 
@@ -39,6 +39,13 @@ from pathlib import Path
 
 from byoai.recorder.keys import load_or_create_device_key
 from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
+
+# Shield's own port. Not 8300 (Consul), 8800 (the MCP demo gateway), 8080
+# (the proxy) or any other number a dev stack likes; the browser extension
+# ships the same default (browser_extension/background.js). Override with
+# BYOAI_SHIELD_PORT and enter the same port in the extension popup.
+import os as _os
+DEFAULT_PORT = int(_os.environ.get("BYOAI_SHIELD_PORT", "17831"))
 
 MAX_INTERACTIONS = 400
 
@@ -689,6 +696,16 @@ class Interaction(dict):
     """One user-visible activity event, already flag-evaluated."""
 
 
+def _stat_sig(path) -> tuple:
+    if path is None:
+        return (0, 0)
+    try:
+        st = Path(path).stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, 0)
+
+
 class Feed:
     """Turns ledger rows into shield interactions and re-flags replies."""
 
@@ -732,6 +749,11 @@ class Feed:
         # offset 0 then would absorb (and seal) every row twice.
         if not self._scanned:
             return 0
+        # Idle is the common case: two stat() calls, no read, no parse.
+        sig = (_stat_sig(self.cfg.ledger), _stat_sig(self.cfg.policy_path))
+        if sig == getattr(self, "_poll_sig", None):
+            return 0
+        self._poll_sig = sig
         self._policy = load_policy(self.cfg)
         try:
             lines = self.cfg.ledger.read_text().splitlines()
@@ -1049,7 +1071,7 @@ def clean_browser_row(row: object) -> dict | None:
     return out
 
 
-def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
+def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
           feed: Feed | None = None) -> None:
     """Run the capture shield (API + static UI) until interrupted."""
     feed = feed or Feed(cfg)
@@ -1379,7 +1401,15 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
         def log_message(self, *a):  # per-request rlog silenced
             return
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    try:
+        server = ThreadingHTTPServer((host, port), Handler)
+    except OSError as exc:
+        # Never slide to another port: the extension and bookmarks look for
+        # Shield at one address, and a silent move would hide it from them.
+        raise SystemExit(
+            f"Shield cannot listen on {host}:{port} ({exc.strerror}). Something "
+            f"else is using that port. Set BYOAI_SHIELD_PORT (or --port) to a "
+            f"free one and enter the same address in the extension popup.") from exc
     print(f"Coriqo Shield → http://{host}:{port}/shield", flush=True)
     print(f"seal chain: {feed.seals.height} entries, root "
           f"{(feed.seals.root_hex() or '')[:10]}", flush=True)
@@ -1409,7 +1439,7 @@ def main() -> None:  # console-script entrypoint: byoai-shield
                     default="examples/mcp_capture/captures.jsonl",
                     help="path to captures.jsonl (default: ./examples/mcp_capture)")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8300)
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--daemonize-watch", action="store_true", default=True)
     args = ap.parse_args()
     cfg = default_paths(args.ledger)

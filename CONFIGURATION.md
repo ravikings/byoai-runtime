@@ -75,8 +75,9 @@ the recorder's shipped evidence; it never writes to a ledger.
 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
+| `BYOAI_SHIELD_PORT` | shield (shell) | `17831` | Port Shield listens on when `--port` is not given. Chosen to stay clear of common dev ports (Consul 8300, the MCP demo 8800, proxies 8080). If you change it, enter the new address in the extension popup. |
 | `BYOAI_SHIELD_EXTENSION_IDS` | shield (shell) | *(unset = any extension)* | Comma-separated list of extension IDs `POST /api/browser` accepts. With it set, every other `chrome-extension://` origin is refused — the popup shows the id to pin (Trust only this extension → Copy id). |
-| `SHIELD_URL` | dev server (shell) | `http://127.0.0.1:8300` | Where the Vite dev proxy finds the shield; also the Origin the proxy claims on its forwarded writes, so Shield's same-origin policy rule holds in dev without extra config. |
+| `SHIELD_URL` | dev server (shell) | `http://127.0.0.1:17831` | Where the Vite dev proxy finds the shield; also the Origin the proxy claims on its forwarded writes, so Shield's same-origin policy rule holds in dev without extra config. |
 
 The shield hardens every write: `POST /api/browser` requires a
 `chrome-extension://` origin (optionally pinned as above; the extension

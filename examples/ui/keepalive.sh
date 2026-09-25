@@ -2,7 +2,7 @@
 # Coriqo local keep-alive — starts (or restarts) the three live surfaces:
 #   1. MCP connector gateway        :8800/mcp  (+ Tailscale outside)
 #   2. Desktop capture proxy        :8080      (system HTTPS proxy target)
-#   3. Coriqo shield analyzer + UI  :8300      (ledger → verdicts → seal → UI)
+#   3. Coriqo shield analyzer + UI  :17831      (ledger → verdicts → seal → UI)
 # Designed to run under launchd KeepAlive: if a process dies, running this
 # again resyncs everything.
 set -u
@@ -27,9 +27,9 @@ start() { # name, pattern, command...
 
 start mcp-server   "mcp_capture/server.py --http" "$PY" "$ROOT/examples/mcp_capture/server.py" --http
 start desktop-proxy "mitmdump --listen-port 8080" "$ROOT/.venv/bin/mitmdump" --listen-port 8080 -s "$ROOT/examples/desktop_proxy_capture.py"
-start shield       "byoai.integrations.shield" "$PY" -m byoai.integrations.shield "$ROOT/examples/mcp_capture/captures.jsonl" --port 8300
+start shield       "byoai.integrations.shield" "$PY" -m byoai.integrations.shield "$ROOT/examples/mcp_capture/captures.jsonl" --port 17831
 
-echo "[keepalive] all surfaces synced → MCP :8800 · proxy :8080 · shield :8300"
+echo "[keepalive] all surfaces synced → MCP :8800 · proxy :8080 · shield :17831"
 
 # Stay in the foreground babysitting; if any surface dies, exit 1 so launchd
 # (KeepAlive SuccessfulExit=false) re-runs this script and restarts what's

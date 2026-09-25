@@ -47,7 +47,7 @@ export default defineConfig({
       // (Settings POSTs must come from the service's own page) holds in dev
       // too — Vite's changeOrigin only fixes Host, not Origin.
       '/shield-api': {
-        target: process.env.SHIELD_URL ?? 'http://127.0.0.1:8300',
+        target: process.env.SHIELD_URL ?? 'http://127.0.0.1:17831',
         changeOrigin: true,
         rewrite: p => p.replace(/^\/shield-api/, '/api'),
         configure: (proxy) => {
@@ -56,7 +56,7 @@ export default defineConfig({
             if (origin && String(origin).startsWith('http://localhost:')) {
               // The request path is already rewritten too, so Shield sees a
               // request that looks exactly like one from its own page.
-              proxyReq.setHeader('origin', process.env.SHIELD_URL ?? 'http://127.0.0.1:8300')
+              proxyReq.setHeader('origin', process.env.SHIELD_URL ?? 'http://127.0.0.1:17831')
             }
           })
         },

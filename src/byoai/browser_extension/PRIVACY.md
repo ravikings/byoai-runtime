@@ -37,7 +37,7 @@ second, is never stored, never logged, never transmitted.
 
 ## Where data goes
 
-Rows ship to `POST http://127.0.0.1:8300/api/browser` (configurable but
+Rows ship to `POST http://127.0.0.1:17831/api/browser` (configurable but
 *enforced* localhost — see `isLocalEndpoint` in `background.js`). One
 destination, on the same machine, behind the guard the server already runs
 against web pages. If Shield is not running, rows wait in memory (capped at
