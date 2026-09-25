@@ -445,10 +445,17 @@ def receipt_kind(cfg: ShieldConfig) -> str:  # tiny helper for console wiring
     return "byoai.receipt.v2"
 
 
+# Policy files written before privacy-first carry no version. The old UI saved
+# its own default ("observe") into them, so a stored "observe" there is not a
+# choice anyone made: those files are read as privacy-first.
+POLICY_VERSION = 2
+
+
 def default_policy() -> dict:
     """Privacy-first defaults: redact before sending, keep no message text,
     30 days of history, notice on."""
     return {
+        "policy_version": POLICY_VERSION,
         "mode": "redact",
         "apps": {"claude": True, "chatgpt": False, "gemini": False,
                  "copilot": False},
@@ -468,18 +475,42 @@ def load_policy(cfg: ShieldConfig) -> dict:
     return read_policy(cfg.policy_path)
 
 
+def upgrade_policy(disc: dict) -> dict:
+    """Bring a pre-privacy-first file up to the privacy-first defaults: redact
+    (block stays block, it is stricter) and no stored text. App toggles and
+    other choices are kept."""
+    version = disc.get("policy_version")
+    if isinstance(version, int) and version >= POLICY_VERSION:
+        return disc  # current, or written by a newer Shield: leave it alone
+    out = dict(disc)
+    if out.get("mode") != "block":
+        out["mode"] = "redact"
+    out["keep_text"] = False
+    out["policy_version"] = POLICY_VERSION
+    return out
+
+
 def read_policy(path: Path | None) -> dict:
     if path and path.exists():
         try:
-            return merge_policy(json.loads(path.read_text()))
+            return merge_policy(upgrade_policy(json.loads(path.read_text())))
         except Exception:
             return default_policy()
     return default_policy()
 
 
+def is_less_private(policy: dict) -> bool:
+    """Record-only mode or stored previews: weaker than the default."""
+    return policy.get("mode") == "observe" or bool(policy.get("keep_text"))
+
+
 def apply_policy_update(policy: dict, payload: dict) -> dict:
     """Validated merge of a Settings write. Raises ValueError naming the first
-    bad field; nothing is saved in that case."""
+    bad field; nothing is saved in that case.
+
+    A change that makes Shield less private than it is now (record-only mode,
+    or keeping previews) must carry ``"acknowledge": "less_private"``: the
+    screen asks first, and a script can't weaken it by accident."""
     out = merge_policy(policy)
     if "mode" in payload:
         if payload["mode"] not in ("observe", "redact", "block"):
@@ -504,6 +535,11 @@ def apply_policy_update(policy: dict, payload: dict) -> dict:
             raise ValueError("retention_days must be one of "
                              + ", ".join(map(str, RETENTION_CHOICES)))
         out["retention_days"] = payload["retention_days"]
+    weakened = ((out["mode"] == "observe" and policy.get("mode") != "observe")
+                or (out["keep_text"] and not policy.get("keep_text")))
+    if weakened and payload.get("acknowledge") != "less_private":
+        raise ValueError("This makes Shield less private than it is now; "
+                         "confirm it to save (acknowledge: less_private)")
     return out
 
 
@@ -549,6 +585,7 @@ def privacy_report(cfg: ShieldConfig, seals: "SealChain | None" = None) -> dict:
         "keep_text": policy["keep_text"],
         "retention_days": policy["retention_days"],
         "mode": policy["mode"],
+        "less_private": is_less_private(policy),
         # "Where your data lives": real paths, not a description of them.
         "ledger_path": str(cfg.ledger.resolve()),
         "seal_path": str(cfg.seal_path.resolve()),
@@ -874,6 +911,15 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
           feed: Feed | None = None) -> None:
     """Run the capture shield (API + static UI) until interrupted."""
     feed = feed or Feed(cfg)
+    if cfg.policy_path and cfg.policy_path.exists():
+        try:
+            disc = json.loads(cfg.policy_path.read_text())
+        except ValueError:
+            disc = None
+        if isinstance(disc, dict) and upgrade_policy(disc) is not disc:
+            save_policy(cfg, merge_policy(upgrade_policy(disc)))
+            print("policy: upgraded to privacy-first defaults (redact, no stored "
+                  "text); app choices kept", flush=True)
     pruned = scrub_ledger(cfg, scrub_text=False)["deleted"]
     if pruned:
         print(f"retention: deleted {pruned} ledger rows past "

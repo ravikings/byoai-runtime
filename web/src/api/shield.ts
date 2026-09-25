@@ -118,6 +118,7 @@ export const ShieldPrivacy = z.object({
   keep_text: z.boolean(),
   retention_days: z.number().int(),
   mode: z.enum(['observe', 'redact', 'block']),
+  less_private: z.boolean().optional(),
   ledger_path: z.string().nullish(),
   seal_path: z.string().nullish(),
   device_id: z.string().nullish(),
@@ -171,7 +172,9 @@ async function post<T>(path: string, body: unknown, schema: z.ZodType<T>): Promi
   return schema.parse(json)
 }
 
-export function savePolicy(next: Partial<ShieldPolicy>) {
+/** `acknowledge` is required by the server for any change that makes Shield
+ * less private than it is now (record-only mode, stored previews). */
+export function savePolicy(next: Partial<ShieldPolicy> & { acknowledge?: 'less_private' }) {
   return post('/policy', next, ShieldPolicy)
 }
 

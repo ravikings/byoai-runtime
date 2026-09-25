@@ -4,10 +4,10 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { fetchPrivacy, scrubStoredText } from '@/api/shield'
+import { fetchPrivacy, savePolicy, scrubStoredText } from '@/api/shield'
 import type { ShieldPolicy, ShieldPrivacy, ShieldVerify } from '@/api/shield'
 import {
-  NeedFilter, WhenFilter, flagTagClass, inWhen, matchesNeed, ruleLabel, useFeed,
+  NeedFilter, SectionHead, WhenFilter, flagTagClass, inWhen, matchesNeed, plural, ruleLabel, useFeed,
 } from './shared'
 import type { Item, Need, When } from './shared'
 
@@ -46,38 +46,33 @@ export function Trust({ verify, policy, onOpen, goSettings }: {
   return (
     <div className="shield-split">
       <div className="shield-main">
-        <div className="status-card">
-          <div className="left">
-            <div className="headline">
-              {!verify
-                ? <span className="tag unknown">Checking…</span>
-                : intact
-                  ? <span className="tag ok">Shield is on</span>
-                  : <span className="tag bad">Seal check failed</span>}
-              <span className="protect-note">
-                {counts.bad ? 'Something high-risk was stopped or flagged today.'
-                  : counts.caught ? 'Personal details were caught today.'
-                    : 'Nothing flagged today.'}
-              </span>
-            </div>
-            <p className="seal-status">
-              {verify
-                ? intact
-                  ? `Seal intact · ${verify.entries ?? 0} entries · root ${(verify.merkle_root ?? '').slice(0, 10)}…`
-                  : `Seal broken at entry ${verify.broken_at ?? '?'}: ${verify.reason ?? 'mismatch'}`
-                : 'Checking the seal…'}
-            </p>
+        <section className={`verdict ${!verify ? 'unknown' : intact ? 'ok' : 'bad'}`} aria-live="polite">
+          <div className="state">
+            {!verify ? 'Checking…' : intact ? 'Shield is on' : 'Seal check failed'}
           </div>
-          <div className="counts" aria-label="Today">
-            <CountButton label="checked today" value={counts.checked} onClick={() => pick('all')} />
-            <CountButton label="caught" value={counts.caught} tone="warn" onClick={() => pick('warn')} />
-            <CountButton label="high risk" value={counts.bad} tone="bad" onClick={() => pick('bad')} />
-            <CountButton label="tool calls" value={counts.mcp} onClick={() => pick('mcp')} />
-          </div>
+          <p className="reading">
+            {counts.bad ? `${plural(counts.bad, 'message')} stopped or flagged high risk today.`
+              : counts.caught ? `Personal details caught in ${plural(counts.caught, 'message')} today.`
+                : 'Nothing flagged today.'}
+          </p>
+          <p className="hash">
+            {verify
+              ? intact
+                ? `Seal intact · ${plural(verify.entries ?? 0, 'entry', 'entries')} · root ${(verify.merkle_root ?? '').slice(0, 10)}…`
+                : `Broken at entry ${verify.broken_at ?? '?'}: ${verify.reason ?? 'mismatch'}`
+              : 'Checking the seal…'}
+          </p>
+        </section>
+
+        <div className="shield-stats" role="group" aria-label="Today, click to filter">
+          <StatButton lead label="checked today" value={counts.checked} on={need === 'all'} onClick={() => pick('all')} />
+          <StatButton label="caught" value={counts.caught} tone="warn" on={need === 'warn'} onClick={() => pick('warn')} />
+          <StatButton label="high risk" value={counts.bad} tone="bad" on={need === 'bad'} onClick={() => pick('bad')} />
+          <StatButton label="tool calls" value={counts.mcp} on={need === 'mcp'} onClick={() => pick('mcp')} />
         </div>
 
         <section aria-labelledby="activity-h">
-          <h3 className="label" id="activity-h">Activity</h3>
+          <SectionHead id="activity-h" title="Activity" accent />
           <div className="filterbar">
             <NeedFilter value={need} onChange={n => { setNeed(n); setPage(0) }} />
             <WhenFilter value={when} onChange={w => { setWhen(w); setPage(0) }} />
@@ -89,9 +84,9 @@ export function Trust({ verify, policy, onOpen, goSettings }: {
             />
           </div>
           <div className="rows">
-            {feed.isPending && <div className="empty-row">Loading activity…</div>}
+            {feed.isPending && <div className="empty-row" role="status">Loading activity…</div>}
             {feed.isError && (
-              <div className="empty-row">
+              <div className="empty-row" role="alert">
                 Can't reach Shield on this Mac. Start it with <code className="mono">byoai-shield</code>.
               </div>
             )}
@@ -124,13 +119,14 @@ export function Trust({ verify, policy, onOpen, goSettings }: {
   )
 }
 
-function CountButton({ label, value, tone, onClick }: {
-  label: string; value: number; tone?: 'warn' | 'bad'; onClick: () => void
+function StatButton({ label, value, tone, lead, on, onClick }: {
+  label: string; value: number; tone?: 'warn' | 'bad'; lead?: boolean; on: boolean; onClick: () => void
 }) {
   return (
-    <button className={`count ${tone ?? ''}`} onClick={onClick} title={`Show ${label}`}>
-      <b className="t-num">{value}</b>
-      <span>{label}</span>
+    <button className={`stat-btn ${tone ?? ''} ${lead ? 'lead' : ''} ${on ? 'on' : ''}`}
+      aria-pressed={on} onClick={onClick}>
+      <span className="value">{value.toLocaleString()}</span>
+      <span className="unit">{label}</span>
     </button>
   )
 }
@@ -143,9 +139,7 @@ export function Row({ item, onOpen }: { item: Item; onOpen: () => void }) {
         <span className="app-name">{item.surface}</span>
         <span className="what">{item.verb}</span>
         <span className="row-meta">
-          <span className={item.source === 'mcp' ? 'tag info' : 'tag unknown'}>
-            {item.source === 'mcp' ? 'MCP' : 'Chat'}
-          </span>
+          {item.source === 'mcp' && <span className="tag info">Tool call</span>}
           {item.status === 'blocked' && <span className="tag bad">Stopped on this Mac</span>}
           {n > 0 && <span className="tag ok">{n === 1 ? '1 detail replaced' : `${n} details replaced`}</span>}
           {item.flags.map(f => (
@@ -171,36 +165,62 @@ function KeepsPanel({ policy, goSettings }: {
   policy: ShieldPolicy | undefined
   goSettings: () => void
 }) {
+  const qc = useQueryClient()
   const privacy = useQuery({ queryKey: ['shield-privacy'], queryFn: fetchPrivacy, refetchInterval: 15_000 })
+  // Undo only what is weaker than the default: Record only goes back to
+  // redact, previews go off, and a stricter "block" stays. Tightening never
+  // needs a confirmation.
+  const restore = useMutation({
+    mutationFn: () => savePolicy({
+      keep_text: false,
+      ...(policy?.mode === 'observe' ? { mode: 'redact' as const } : {}),
+    }),
+    onSuccess: data => {
+      qc.setQueryData(['shield-policy'], data)
+      void qc.invalidateQueries({ queryKey: ['shield-privacy'] })
+    },
+  })
   if (privacy.isError) {
-    return <section className="panel"><p className="muted">Can't read what Shield keeps: Shield isn't running.</p></section>
+    return <section className="panel"><p className="muted" role="alert">Can't read what Shield keeps: Shield isn't running.</p></section>
   }
-  if (!policy || !privacy.data) return <section className="panel"><p className="muted">Reading what Shield keeps…</p></section>
+  if (!policy || !privacy.data) {
+    return <section className="panel"><p className="muted" role="status">Reading what Shield keeps…</p></section>
+  }
   const pv = privacy.data
+  const weaker = policy.mode === 'observe' || policy.keep_text
   return (
     <section className="panel keeps" aria-labelledby="keeps-h">
-      <div className="panel-head">
-        <h3 className="label" id="keeps-h">What Shield keeps on this Mac</h3>
-        <button className="btn ghost sm" onClick={goSettings}>Change</button>
-      </div>
+      <SectionHead id="keeps-h" title="What Shield keeps"
+        action={<button className="btn ghost sm" onClick={goSettings}>Change</button>} />
+      {weaker && (
+        <div className="banner warn keeps-alert" role="status">
+          <span><b>Less private than the default.</b>{' '}
+            {[policy.mode === 'observe' && 'Messages go out unchanged.',
+              policy.keep_text && 'Previews of messages are kept.'].filter(Boolean).join(' ')}</span>
+          <button className="btn sm" disabled={restore.isPending} onClick={() => restore.mutate()}>
+            {restore.isPending ? 'Restoring…' : 'Restore defaults'}
+          </button>
+        </div>
+      )}
       <dl className="keeps-list stacked">
         <dt>Message text</dt>
         <dd>
           {policy.keep_text
             ? 'A preview of up to 200 characters, with personal details removed.'
-            : 'Not kept. Shield stores the length and a fingerprint that only this Mac can recompute.'}
+            : 'Not kept. Shield stores the length and a fingerprint only this Mac can recompute.'}
         </dd>
         <dt>Personal details</dt>
         <dd>{MODE_EFFECT[policy.mode]}</dd>
         <dt>History</dt>
         <dd>
-          {pv.ledger_rows.toLocaleString()} records, kept for {policy.retention_days} days.
+          {plural(pv.ledger_rows, 'record')}, kept for {policy.retention_days} days.
           {pv.rows_past_retention > 0 && (
-            <> {pv.rows_past_retention.toLocaleString()} are older and go at the next cleanup or restart.</>
+            <> {pv.rows_past_retention.toLocaleString()} {pv.rows_past_retention === 1 ? 'is' : 'are'} older
+              and go at the next cleanup or restart.</>
           )}
         </dd>
         <dt>Sent to Coriqo</dt>
-        <dd>Only when you ship the seal: its root, entry count and signed checkpoint. No messages and no rule matches.</dd>
+        <dd>Only if you ship the seal: its root, entry count and signed checkpoint. No messages, no rule matches.</dd>
       </dl>
       {pv.rows_with_text > 0 && <CleanupAlert privacy={pv} />}
     </section>
@@ -216,9 +236,8 @@ function CleanupAlert({ privacy }: { privacy: ShieldPrivacy }) {
   return (
     <div className="banner warn keeps-alert">
       <span>
-        {privacy.rows_with_text.toLocaleString()} older{' '}
-        {privacy.rows_with_text === 1 ? 'record still holds' : 'records still hold'} message
-        text from before these settings.
+        {plural(privacy.rows_with_text, 'older record')} still{' '}
+        {privacy.rows_with_text === 1 ? 'holds' : 'hold'} message text from before these settings.
       </span>
       <button className="btn sm" disabled={scrub.isPending} onClick={() => scrub.mutate()}>
         {scrub.isPending ? 'Removing…' : 'Remove stored text'}

@@ -117,12 +117,47 @@ def test_defaults_are_privacy_first():
     assert p["notice"] is True
 
 
-def test_saved_observe_choice_survives_new_defaults(tmp_path):
+def test_pre_privacy_first_file_is_read_as_privacy_first(tmp_path):
+    """Pinned: a policy.json from before privacy-first (no version) holding the
+    old UI's saved default is read as redact with no stored text; the app
+    toggles in it are kept."""
     cfg = make_cfg(tmp_path)
-    cfg.policy_path.write_text(json.dumps({"mode": "observe", "apps": {"claude": True}}))
+    cfg.policy_path.write_text(json.dumps(
+        {"mode": "observe", "keep_text": True, "apps": {"chatgpt": True}}))
     p = load_policy(cfg)
-    assert p["mode"] == "observe"          # the user's explicit choice
-    assert p["keep_text"] is False         # missing PF keys get PF defaults
+    assert p["mode"] == "redact" and p["keep_text"] is False
+    assert p["apps"]["chatgpt"] is True
+
+
+def test_block_is_kept_when_upgrading(tmp_path):
+    cfg = make_cfg(tmp_path)
+    cfg.policy_path.write_text(json.dumps({"mode": "block"}))
+    assert load_policy(cfg)["mode"] == "block"
+
+
+def test_a_newer_policy_file_is_not_downgraded(tmp_path):
+    cfg = make_cfg(tmp_path)
+    cfg.policy_path.write_text(json.dumps({"policy_version": 3, "mode": "observe"}))
+    assert load_policy(cfg)["mode"] == "observe"
+
+
+def test_a_confirmed_choice_after_the_upgrade_is_kept(tmp_path):
+    cfg = make_cfg(tmp_path)
+    cfg.policy_path.write_text(json.dumps({"policy_version": 2, "mode": "observe"}))
+    assert load_policy(cfg)["mode"] == "observe"
+
+
+def test_weakening_needs_acknowledgement():
+    p = default_policy()
+    for change in ({"mode": "observe"}, {"keep_text": True}):
+        with pytest.raises(ValueError, match="less private"):
+            apply_policy_update(p, change)
+        out = apply_policy_update(p, {**change, "acknowledge": "less_private"})
+        assert "acknowledge" not in out
+    # tightening, or re-saving an already-weaker setting, needs nothing
+    observe = apply_policy_update(p, {"mode": "observe", "acknowledge": "less_private"})
+    assert apply_policy_update(observe, {"mode": "redact"})["mode"] == "redact"
+    assert apply_policy_update(observe, {"retention_days": 7})["mode"] == "observe"
 
 
 def test_inspect_text_keeps_no_text_by_default(key_path):

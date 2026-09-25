@@ -327,8 +327,17 @@ Responses APIs; off until turned on). Gemini and Copilot are listed but not
 covered: their clients don't send JSON the proxy can read, so their toggles
 can't be turned on and say so.
 
-All of these are keys in `policy.json`, edited from the console's Settings
-tab; a saved `mode` from an older file is kept as the user chose it. The MCP
+All of these are keys in `policy.json`, edited from Shield's Settings tab.
+
+**Privacy-first is enforced, not just defaulted.** A `policy.json` from
+before these defaults (no `policy_version`) is upgraded when `byoai-shield`
+starts, and read that way by the proxy until then: `observe` becomes
+`redact` (`block` stays, it is stricter), `keep_text` goes off, app toggles
+are kept. Afterwards, any change that makes Shield less private than it is
+now (switching to `observe`, turning `keep_text` on) must carry
+`"acknowledge": "less_private"` or `POST /api/policy` refuses it with a 400;
+the Settings screen asks for that in a confirmation dialog, and the Trust
+page flags a weaker setup with a one-click "Restore defaults". The MCP
 capture gateway (`examples/mcp_capture/server.py`) writes rows the same way.
 
 ### The Shield screen — `/shield` in `web/`

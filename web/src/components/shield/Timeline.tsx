@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react'
 import {
-  NeedFilter, WhenFilter, flagTagClass, inWhen, matchesNeed, ruleLabel, today, useFeed,
+  NeedFilter, WhenFilter, flagTagClass, inWhen, matchesNeed, plural, ruleLabel, today, useFeed,
 } from './shared'
 import type { Item, Need, When } from './shared'
 
@@ -58,7 +58,7 @@ export function Timeline({ focus, setFocus, onOpen }: {
       )}
       {[...days.entries()].map(([d, rows]) => (
         <section key={d} className="tl-day">
-          <h3 className="label">{d === t ? 'Today' : d} · {rows.length} {rows.length === 1 ? 'event' : 'events'}</h3>
+          <h2 className="label">{d === t ? 'Today' : d} · {plural(rows.length, 'event')}</h2>
           <ol className="tl-list">
             {rows.map(it => (
               <li key={it.id} id={`tl-${it.id}`} data-tier={it.tier}
@@ -119,7 +119,7 @@ function Journey({ it, onClose, onOpen }: { it: Item; onClose: () => void; onOpe
   return (
     <section className="panel journey" aria-labelledby="journey-h">
       <div className="panel-head">
-        <h3 className="label" id="journey-h">How this interaction became a record · {it.date} {it.ts}</h3>
+        <h2 className="label" id="journey-h">How this interaction became a record · {it.date} {it.ts}</h2>
         <span className="spacer" />
         <button className="btn ghost sm" onClick={onOpen}>Details</button>
         <button className="btn ghost sm" onClick={onClose} aria-label="Close journey">Close</button>

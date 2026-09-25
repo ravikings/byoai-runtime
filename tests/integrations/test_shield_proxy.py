@@ -76,7 +76,7 @@ def test_default_redacts_before_send_and_logs_no_text(proxy):
 
 
 def test_observe_sends_unchanged_but_still_logs_no_text(proxy):
-    proxy.policy_path.write_text(json.dumps({"mode": "observe"}))
+    proxy.policy_path.write_text(json.dumps({"policy_version": 2, "mode": "observe"}))
     flow = _chat({"prompt": SECRET})
     proxy.request(flow)
     assert json.loads(flow.request.get_text())["prompt"] == SECRET

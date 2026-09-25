@@ -10,7 +10,7 @@ import {
   publishSeal, saveCoriqo, savePolicy, scrubStoredText,
 } from '@/api/shield'
 import type { ShieldPolicy } from '@/api/shield'
-import { APP_NAME } from './shared'
+import { APP_NAME, ConfirmDialog, SectionHead, plural } from './shared'
 
 const MODES = [
   ['redact', 'Replace personal details', 'Emails, card numbers, phone numbers, SSNs, wallet addresses and API keys become labels such as [redacted-email].', true],
@@ -18,43 +18,55 @@ const MODES = [
   ['observe', 'Record only', 'Messages go out unchanged. Shield records which rules matched.', false],
 ] as const
 
+type Weaker = { change: Partial<ShieldPolicy>; kind: 'observe' | 'keep_text' }
+
 export function Settings() {
   const qc = useQueryClient()
+  const [asking, setAsking] = useState<Weaker | null>(null)
   const policy = useQuery({ queryKey: ['shield-policy'], queryFn: fetchPolicy })
   const installed = useQuery({ queryKey: ['shield-apps'], queryFn: fetchInstalledApps, refetchInterval: 10_000 })
   const save = useMutation({
-    mutationFn: (next: Partial<ShieldPolicy>) => savePolicy(next),
+    mutationFn: (next: Partial<ShieldPolicy> & { acknowledge?: 'less_private' }) => savePolicy(next),
     onSuccess: data => {
       qc.setQueryData(['shield-policy'], data)
+      setAsking(null)
       void qc.invalidateQueries({ queryKey: ['shield-privacy'] })
     },
   })
-  if (policy.isPending) return <p className="empty-row">Loading settings…</p>
-  if (policy.isError) return <p className="empty-row">Can't reach Shield on this Mac.</p>
+  /** Changes that make Shield less private go through a confirmation first;
+   * the server refuses them without the acknowledgement. */
+  const change = (next: Partial<ShieldPolicy>) => {
+    const p = policy.data
+    if (p && next.mode === 'observe' && p.mode !== 'observe') return setAsking({ change: next, kind: 'observe' })
+    if (p && next.keep_text && !p.keep_text) return setAsking({ change: next, kind: 'keep_text' })
+    save.mutate(next)
+  }
+  if (policy.isPending) return <p className="empty-row" role="status">Loading settings…</p>
+  if (policy.isError) return <p className="empty-row" role="alert">Can't reach Shield on this Mac.</p>
   const p = policy.data
   const covered = new Set(p.covered_apps ?? Object.keys(p.apps))
 
   return (
     <div className="shield-split">
       <div className="shield-main">
-        <PrivacySettings policy={p} save={next => save.mutate(next)} saving={save.isPending} />
-
         <section className="settings-block" aria-labelledby="mode-h">
-          <p className="fkey" id="mode-h">What happens to personal details before a message leaves this Mac</p>
+          <SectionHead id="mode-h" title="Before a message leaves" accent
+            help="What Shield does to personal details in what you send." />
           {MODES.map(([mode, title, note, recommended]) => (
             <label key={mode} className="mode-row">
               <input type="radio" name="shield-mode" checked={p.mode === mode}
-                onChange={() => save.mutate({ mode })} />
+                onChange={() => change({ mode })} />
               <b>{title}{recommended && <> <span className="tag ok">Recommended</span></>}</b>
               <span>{note}</span>
             </label>
           ))}
         </section>
 
+        <PrivacySettings policy={p} save={change} saving={save.isPending} />
+
         <section className="settings-block" aria-labelledby="apps-h">
-          <p className="fkey" id="apps-h">
-            AI apps on this Mac. On: Shield checks what the app sends. Off: its traffic passes through untouched and unrecorded.
-          </p>
+          <SectionHead id="apps-h" title="Apps"
+            help="On: Shield checks what the app sends. Off: its traffic passes through, unchecked and unrecorded." />
           {Object.entries(p.apps).map(([app, on]) => {
             const where = installed.data
               ? installed.data[app] ? 'Installed on this Mac.' : 'Not found in Applications; the web version is still covered.'
@@ -86,12 +98,28 @@ export function Settings() {
 
         <p className="note">
           Changes reach the proxy within about two seconds. No restart needed.
-          {save.isError ? ` Last change wasn't saved: ${save.error.message}` : ''}
+          {save.isError && !asking ? ` Last change wasn't saved: ${save.error.message}` : ''}
         </p>
       </div>
       <aside className="shield-rail">
         <DataLocation />
       </aside>
+
+      {asking && (
+        <ConfirmDialog
+          title={asking.kind === 'observe' ? 'Send messages unchanged?' : 'Keep message previews?'}
+          confirmLabel={asking.kind === 'observe' ? 'Send unchanged' : 'Keep previews'}
+          busy={save.isPending}
+          onCancel={() => { setAsking(null); save.reset() }}
+          onConfirm={() => save.mutate({ ...asking.change, acknowledge: 'less_private' })}>
+          {asking.kind === 'observe'
+            ? <p>Emails, card numbers, phone numbers and keys will reach the AI app as typed. Shield
+              will only record which rules matched. The notice on this Mac will say so.</p>
+            : <p>Shield will store up to 200 characters of each message on this Mac, with personal
+              details removed. The rest of what you type still isn't kept.</p>}
+          {save.isError && <p role="alert">Not saved: {save.error.message}</p>}
+        </ConfirmDialog>
+      )}
     </div>
   )
 }
@@ -110,7 +138,7 @@ function PrivacySettings({ policy, save, saving }: {
   const pv = privacy.data
   return (
     <section className="settings-block privacy-block" aria-labelledby="privacy-h">
-      <p className="fkey" id="privacy-h">Privacy</p>
+      <SectionHead id="privacy-h" title="What Shield keeps" />
 
       <label className="row-app">
         <span>
@@ -158,21 +186,21 @@ function PrivacySettings({ policy, save, saving }: {
           <span className="muted setting-help">
             {pv
               ? pv.rows_with_text > 0
-                ? `${pv.rows_with_text.toLocaleString()} records written before these settings still hold message text. This replaces it with the length and fingerprint, and deletes records older than ${policy.retention_days} days.`
+                ? `${plural(pv.rows_with_text, 'record')} written before these settings still ${pv.rows_with_text === 1 ? 'holds' : 'hold'} message text. This replaces it with the length and fingerprint, and deletes records older than ${policy.retention_days} days.`
                 : `No stored records hold message text.${pv.rows_past_retention ? ` ${pv.rows_past_retention.toLocaleString()} are older than ${policy.retention_days} days and will be deleted.` : ''}`
               : 'Checking the ledger…'}
           </span>
           {pv && pv.sealed_with_text > 0 && (
             <span className="muted setting-help">
-              {pv.sealed_with_text.toLocaleString()} sealed entries include text with personal
+              {plural(pv.sealed_with_text, 'sealed entry', 'sealed entries')} include text with personal
               details removed. They are left as they are: changing a sealed entry is what the
               seal exists to detect.
             </span>
           )}
           {scrub.data && (
             <span className="setting-help" role="status">
-              Removed text from {scrub.data.scrubbed.toLocaleString()} records and deleted{' '}
-              {scrub.data.deleted.toLocaleString()} older ones.
+              Removed text from {plural(scrub.data.scrubbed, 'record')} and deleted{' '}
+              {plural(scrub.data.deleted, 'older record')}.
             </span>
           )}
           {scrub.isError && <span className="setting-help">Cleanup failed: {scrub.error.message}</span>}
@@ -206,7 +234,7 @@ function CoriqoLink() {
   const ci = info.data
   return (
     <section className="settings-block coriqo" aria-labelledby="coriqo-h">
-      <p className="fkey" id="coriqo-h">Coriqo account (optional)</p>
+      <SectionHead id="coriqo-h" title="Coriqo account" help="Optional." />
       <p className="muted setting-help">
         {ci?.configured
           ? `Connected to ${ci.app_url ?? 'Coriqo'}${ci.tenant ? `, tenant ${ci.tenant}` : ''}. Shipping sends the seal's root, entry count and signed checkpoint. No messages and no rule matches.`
@@ -265,7 +293,7 @@ function DataLocation() {
   const pv = privacy.data
   return (
     <section className="panel" aria-labelledby="where-h">
-      <h3 className="label" id="where-h">Where your data lives</h3>
+      <SectionHead id="where-h" title="Where your data lives" />
       <dl className="keeps-list stacked">
         <dt>Records</dt>
         <dd className="mono">{pv?.ledger_path ?? '…'}</dd>

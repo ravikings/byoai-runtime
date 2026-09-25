@@ -2,6 +2,8 @@
  * Pieces every Shield tab uses: rule and app labels, the date filter, the
  * shared feed query, the notice strip and the receipt download button.
  */
+import { useEffect, useRef } from 'react'
+import type { ReactNode } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { fetchFeed, fetchReceipt } from '@/api/shield'
 import type { ShieldPolicy } from '@/api/shield'
@@ -82,11 +84,13 @@ export function NoticeStrip({ policy }: { policy: ShieldPolicy }) {
   return (
     <div className="banner info shield-notice" role="status">
       <span>
-        Shield checks what you send to AI apps from this Mac. It records which
-        rules matched and how long each message was.{' '}
+        Shield checks what you send to AI apps from this Mac.{' '}
+        {policy.mode === 'observe'
+          ? 'Messages go out unchanged; it records which rules matched.'
+          : 'Personal details are replaced before a message leaves.'}{' '}
         {policy.keep_text
-          ? 'It also keeps a short preview with personal details removed.'
-          : 'It does not keep your words.'}
+          ? 'It keeps a short preview of each message with those details removed.'
+          : 'It keeps the rule matches and message length, not your words.'}
       </span>
     </div>
   )
@@ -156,6 +160,66 @@ export function NeedFilter({ value, onChange }: { value: Need; onChange: (n: Nee
           {label}
         </button>
       ))}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------ primitives */
+
+/** "1 record", "12 records". */
+export function plural(n: number, one: string, many = `${one}s`) {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`
+}
+
+/** Opens every section: a short title, then at most one line of help. The
+ * accent tone marks the section the reader came to the page for. */
+export function SectionHead({ id, title, help, accent, action }: {
+  id: string
+  title: string
+  help?: ReactNode
+  accent?: boolean
+  action?: ReactNode
+}) {
+  return (
+    <header className="sec-head">
+      <div className="sec-title">
+        <span className={`sec-dot ${accent ? 'accent' : ''}`} aria-hidden="true" />
+        <h2 className="label" id={id}>{title}</h2>
+        {action && <span className="sec-action">{action}</span>}
+      </div>
+      {help && <p className="sec-help">{help}</p>}
+    </header>
+  )
+}
+
+/** A yes/no question that needs a deliberate answer. Esc or the backdrop
+ * cancels; focus starts on Cancel so Enter never confirms by accident. */
+export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCancel, busy }: {
+  title: string
+  children: ReactNode
+  confirmLabel: string
+  onConfirm: () => void
+  onCancel: () => void
+  busy?: boolean
+}) {
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    cancelRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+  return (
+    <div className="dialog-backdrop" onClick={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="dialog" role="alertdialog" aria-modal="true"
+        aria-labelledby="dialog-h" aria-describedby="dialog-body">
+        <h2 id="dialog-h">{title}</h2>
+        <div id="dialog-body" className="dialog-body">{children}</div>
+        <div className="dialog-actions">
+          <button ref={cancelRef} className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn danger" onClick={onConfirm} disabled={busy}>{confirmLabel}</button>
+        </div>
+      </div>
     </div>
   )
 }

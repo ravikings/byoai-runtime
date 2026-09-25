@@ -7,7 +7,7 @@ import { useState } from 'react'
 import { fetchVerify } from '@/api/shield'
 import { checkReceipt } from '@/lib/receipt'
 import type { ReceiptCheck } from '@/lib/receipt'
-import { ReceiptButton, downloadBlob, tierLabel, tierTagClass, useFeed } from './shared'
+import { ReceiptButton, SectionHead, downloadBlob, plural, tierLabel, tierTagClass, useFeed } from './shared'
 import type { Item } from './shared'
 
 export function Ledger({ onOpen }: { onOpen: (it: Item) => void }) {
@@ -28,6 +28,7 @@ export function Ledger({ onOpen }: { onOpen: (it: Item) => void }) {
   return (
     <div className="shield-split">
       <div className="shield-main">
+        <SectionHead id="ledger-h" title="Sealed entries" accent />
         <div className="ledger-head">
           {v
             ? v.tamper_evident
@@ -36,7 +37,7 @@ export function Ledger({ onOpen }: { onOpen: (it: Item) => void }) {
             : <span className="tag unknown">Checking…</span>}
           {v?.tamper_evident && (
             <span className="mono">
-              {v.entries ?? 0} entries · root {(v.merkle_root ?? '').slice(0, 12)}… · device{' '}
+              {plural(v.entries ?? 0, 'entry', 'entries')} · root {(v.merkle_root ?? '').slice(0, 12)}… · device{' '}
               {v.checkpoint?.device_id ?? 'not signed yet'}
             </span>
           )}
@@ -96,11 +97,8 @@ function ReceiptVerifier() {
   }
   return (
     <section className="panel" aria-labelledby="verify-h">
-      <h3 className="label" id="verify-h">Check a receipt</h3>
-      <p className="muted setting-help">
-        Paste a downloaded receipt. The check runs in this browser against the
-        receipt's own hashes. Nothing is sent anywhere.
-      </p>
+      <SectionHead id="verify-h" title="Check a receipt"
+        help="Paste a downloaded receipt. This browser recomputes its hashes; nothing is sent anywhere." />
       <textarea
         className="receipt-input mono" aria-label="Receipt JSON"
         placeholder='{"kind":"byoai.receipt.v2", …}'
