@@ -377,28 +377,34 @@ copy: Coriqo never asks the user to take its word for anything. The receipt
 math (`byoai.receipt.v2`, sha256 + Merkle proof + device checkpoint) is what
 settles it.
 
-### Publishing the shield seal to the Coriqo app
+### Sending the Shield seal to Coriqo
 
-The shield can publish its current signed seal to the Coriqo main app — the
-same online account the recorder feeds. Configure either way:
+Shield can send this Mac's seal to a Coriqo tenant, so it sits with the rest
+of that tenant's AI evidence. What leaves the Mac is only the chain's signed
+checkpoint (Merkle root, entry count, Ed25519 signature); no messages, no rule
+matches, no ledger rows.
 
-```bash
-# shell env (matches the recorder's publish triple)
-export BYOAI_CORIQO_URL=https://app.coriqo.com
-export BYOAI_CORIQO_API_KEY=...
-export BYOAI_CORIQO_TENANT_SLUG=acme
+**Setup, once.** A Coriqo admin creates an enrolment token (the same kind
+agent hosts use). In Shield's Settings → Coriqo, paste it with the Coriqo
+address and press *Connect this Mac*. Shield enrols its existing device key
+(`POST /v1/enroll`) and keeps nothing secret afterwards: every send is signed
+by the Mac's key. (`POST /api/coriqo/enrol` does the same without the UI.)
 
-# or in the shield Settings form (per-Mac, written to corioqo.json next to
-# the ledger — env takes precedence)
-```
+**After that, nothing to do.** A background publisher
+(`byoai.integrations.shield_publish`):
 
-`POST /api/coriqo` saves the triple without a shell; `POST /api/publish`
-ships `{kind: byoai.shield.publish.v1, height, root_hex, checkpoint}` and
-answers `{"shipped": true, "root": ...}`. Unconfigured requests get a typed
-503 the UI renders as setup instructions. `GET /api/coriqo` also returns
-`marketing_url` (`BYOAI_CORIQO_MARKETING_URL`, default `https://coriqo.com`)
-for the "what longer plans offer" link; realtime org-wide sync is the admin's
-enrollment step within the Coriqo app.
+* sends only when the chain has grown, and at most every 6 hours, to Coriqo's
+  existing device checkpoint route (`POST /v1/checkpoints/batch`, the one the
+  agent recorder uses), plus *Send now* in Settings;
+* is idempotent: each checkpoint has a stable id, so a resend after a crash is
+  a duplicate on Coriqo's side, never a second row;
+* backs off on failure (1 min, doubling, capped at 6 h, honouring
+  `Retry-After`) and retries on its own; state survives restarts;
+* never blocks, slows or stops checking.
+
+The only state that needs a person is Coriqo refusing the Mac (HTTP 401/403,
+e.g. the device was revoked): Settings says so and asks for a new token.
+`GET /api/coriqo` reports the connection, last and next send, and any error.
 
 ### 5. Semantic (intent) caching
 

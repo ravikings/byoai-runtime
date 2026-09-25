@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from byoai.recorder.keys import load_or_create_device_key
+from byoai.recorder.keys import atomic_write_bytes, load_or_create_device_key
 from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
 
 MAX_INTERACTIONS = 400
@@ -299,7 +299,12 @@ class SealChain:
     """
 
     def __init__(self, cfg: ShieldConfig) -> None:
+        import threading
         self.cfg = cfg
+        # The feed's watcher stamps entries while the Coriqo publisher and
+        # receipt requests sign checkpoints, each on its own thread. One lock
+        # keeps the entries, the checkpoint and the file in step.
+        self._lock = threading.RLock()
         self._key = load_or_create_device_key(cfg.key_dir)
         self.entries: list[dict] = []
         self.checkpoint: dict | None = None
@@ -318,9 +323,12 @@ class SealChain:
         self._rebuild_tree()
 
     def _persist(self) -> None:
-        self.cfg.seal_path.write_text(json.dumps({
+        # Atomic (temp file + fsync + rename): a crash or a full disk mid-write
+        # can't leave a half-written chain for the next start to misread as
+        # tampering.
+        atomic_write_bytes(self.cfg.seal_path, json.dumps({
             "entries": self.entries[-512:], "checkpoint": self.checkpoint,
-        }, indent=1))
+        }, indent=1).encode(), mode=0o644, prefix=".sealchain-")
 
     def _leaf(self, payload: dict) -> bytes:
         return checkpoint_leaf_hash(payload)
@@ -336,6 +344,10 @@ class SealChain:
         return -1
 
     def stamp(self, payload: dict) -> str:
+        with self._lock:
+            return self._stamp(payload)
+
+    def _stamp(self, payload: dict) -> str:
         leaf = self._leaf(payload)
         entry: dict = {"height": len(self.entries) + 1, "payload": payload,
                        "seal": leaf.hex()[:16], "leaf_hash": leaf.hex()}
@@ -352,6 +364,10 @@ class SealChain:
         return len(self.entries)
 
     def sign_checkpoint(self) -> dict:
+        with self._lock:
+            return self._sign_checkpoint()
+
+    def _sign_checkpoint(self) -> dict:
         if self._tree is None:
             self._rebuild_tree()
         assert self._tree is not None, "empty seal chain — at least one entry required"
@@ -369,6 +385,10 @@ class SealChain:
         return cp
 
     def verify_chain(self) -> dict:
+        with self._lock:
+            return self._verify_chain()
+
+    def _verify_chain(self) -> dict:
         self._rebuild_tree()
         for e in self.entries:
             if self._leaf(e["payload"]).hex()[:16] != e["seal"]:
@@ -968,6 +988,9 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             save_policy(cfg, merge_policy(upgrade_policy(disc)))
             print("policy: upgraded to privacy-first defaults (redact, no stored "
                   "text); app choices kept", flush=True)
+    from byoai.integrations.shield_publish import Publisher
+    publisher = Publisher(feed.seals, cfg.key_dir, cfg.key_dir.parent)
+    publisher.start()  # background; sends only when enrolled and due
     pruned = scrub_ledger(cfg, scrub_text=False)["deleted"]
     if pruned:
         print(f"retention: deleted {pruned} ledger rows past "
@@ -1003,30 +1026,13 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             return {tag: any(b in apps for b in v) for tag, v in bundles.items()}
 
         def _coriqo(self) -> dict:
-            """Coriqo app config (the publish triple), env first, settings
-            file second — the Settings form writes this file so a
-            non-technical user never touches a shell."""
+            """Connection and publishing status for Settings, plus the
+            marketing link. Nothing secret is stored or returned: the Mac is
+            identified by its own key after a one-time enrolment."""
             import os
-            disc: dict = {}
-            if cfg.policy_path is not None:
-                cfg_file = cfg.policy_path.parent / "corioqo.json"
-                if cfg_file.exists():
-                    try:
-                        disc = json.loads(cfg_file.read_text())
-                    except Exception:
-                        disc = {}
-            return {
-                "app_url": os.environ.get("BYOAI_CORIQO_URL")
-                           or disc.get("app_url"),
-                "api_key": os.environ.get("BYOAI_CORIQO_API_KEY")
-                           or disc.get("api_key"),
-                "tenant": os.environ.get("BYOAI_CORIQO_TENANT_SLUG")
-                          or disc.get("tenant"),
-                "marketing_url": os.environ.get("BYOAI_CORIQO_MARKETING_URL")
-                                 or "https://coriqo.com",
-                "configured": bool(
-                    os.environ.get("BYOAI_CORIQO_URL") or disc.get("app_url")),
-            }
+            return {**publisher.status(),
+                    "marketing_url": os.environ.get("BYOAI_CORIQO_MARKETING_URL")
+                    or "https://coriqo.com"}
 
         def _api(self):
             from urllib.parse import urlparse, parse_qs
@@ -1131,11 +1137,11 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             self._unprefix()
             if self._refused("POST"):
                 return
-            if self.path.split("?")[0] == "/api/coriqo":
-                self._save_coriqo_config()
+            if self.path.split("?")[0] == "/api/coriqo/enrol":
+                self._enrol()
                 return
             if self.path.split("?")[0] == "/api/publish":
-                self._publish_to_coriqo()
+                self._publish_now()
                 return
             if self.path.split("?")[0] == "/api/privacy/scrub":
                 result = scrub_ledger(cfg)
@@ -1165,72 +1171,46 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             self._send(200, json.dumps(
                 {**policy, "covered_apps": list(COVERED_APPS)}).encode())
 
-        def _save_coriqo_config(self) -> None:
-            """The Settings form writes the app_url/api_key/tenant here instead
-            of exporting shell env vars — same effect on publish, no shell."""
-            import os
+        def _enrol(self) -> None:
+            """One-time setup: exchange a Coriqo enrolment token for this
+            Mac's device identity. The token is used once and not kept."""
+            from byoai.recorder.enroll import EnrollmentError
             n = int(self.headers.get("Content-Length", 0))
             try:
                 payload = json.loads(self.rfile.read(n) or b"{}")
-            except Exception:
+            except ValueError:
                 self._send(400, b'{"error":"invalid json"}')
                 return
-            out = {}
-            for key in ("app_url", "api_key", "tenant"):
-                if isinstance(payload.get(key), str) and payload[key].strip():
-                    out[key] = payload[key].strip()
-            if cfg.policy_path is not None:
-                target = cfg.policy_path.parent / "corioqo.json"
-                existing = {}
-                if target.exists():
-                    try:
-                        existing = json.loads(target.read_text())
-                    except Exception:
-                        existing = {}
-                existing.update(out)
-                target.write_text(json.dumps(existing, indent=1))
-            info = self._coriqo()
-            self._send(200, json.dumps(info).encode())
+            try:
+                status = publisher.enrol(str(payload.get("base_url") or ""),
+                                         str(payload.get("token") or ""))
+            except ValueError as exc:
+                self._send(400, json.dumps({"error": str(exc)}).encode())
+                return
+            except EnrollmentError as exc:
+                msg = str(exc)
+                hint = ("Coriqo didn't accept that token. It may be used, expired "
+                        "or revoked; ask your Coriqo admin for a new one."
+                        if "rejected" in msg else
+                        "Couldn't reach Coriqo at that address. Check it and try again.")
+                self._send(400, json.dumps({"error": hint}).encode())
+                return
+            self._send(200, json.dumps(status).encode())
 
-        def _publish_to_coriqo(self) -> None:
-            """Ship the current signed shield seal to Coriqo's main app. Same
-            env triple as the recorder (`BYOAI_CORIQO_URL/_API_KEY/_TENANT_SLUG`).
-            Unconfigured answers a typed 503 the UI renders plainly."""
-            import httpx
-            info = self._coriqo()
-            base = info["app_url"]
-            if not base or not info["api_key"]:
-                self._send(503, json.dumps({
-                    "error": "publish_disabled",
-                    "how": "Set BYOAI_CORIQO_URL, BYOAI_CORIQO_API_KEY and "
-                           "BYOAI_CORIQO_TENANT_SLUG to publish this Mac's seal.",
+        def _publish_now(self) -> None:
+            """"Send now": publish the current seal immediately. Failures are
+            recorded in the status (and retried on their own), not raised."""
+            try:
+                status = publisher.send()
+            except ValueError as exc:
+                self._send(409, json.dumps({"error": str(exc)}).encode())
+                return
+            except Exception:  # noqa: BLE001 - always answer, never drop the request
+                self._send(500, json.dumps({
+                    "error": "Couldn't send right now. Shield will try again on its own."
                 }).encode())
                 return
-            state = feed.seals.verify_chain()
-            doc = {
-                "kind": "byoai.shield.publish.v1",
-                "height": state.get("entries"),
-                "root_hex": state.get("merkle_root"),
-                "checkpoint": feed.seals.checkpoint,
-                "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-            try:
-                http = httpx.Client(trust_env=False)
-                resp = http.post(
-                    base.rstrip("/") + "/api/v1/shield/seals",
-                    json=doc,
-                    headers={
-                        "x-coriqo-api-key": info["api_key"],
-                        "x-coriqo-tenant": info["tenant"] or "",
-                    },
-                    timeout=10.0,
-                )
-                self._send(resp.status_code if resp.status_code < 500 else 502,
-                           json.dumps({"shipped": resp.is_success,
-                                       "root": doc["root_hex"],
-                                       "height": doc["height"]}).encode())
-            except Exception as exc:  # noqa: BLE001
-                self._send(502, json.dumps({"shipped": False, "error": str(exc)}).encode())
+            self._send(200, json.dumps(status).encode())
 
         def log_message(self, *a):  # per-request rlog silenced
             return
