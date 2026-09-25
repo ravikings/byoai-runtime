@@ -865,6 +865,7 @@ if credentials is not None:
 | `BYOAI_CORIQO_URL` | unset | Coriqo base URL, e.g. `http://localhost:8000`. Unset means `CoriqoCredentials.from_env()` returns `None` and nothing is published |
 | `BYOAI_CORIQO_API_KEY` | unset | Coriqo service account key (`cq_sa_…`). Required alongside the URL |
 | `BYOAI_CORIQO_TENANT_SLUG` | unset | Coriqo tenant slug, e.g. `acme_bank`. Required alongside the URL |
+| `BYOAI_CORIQO_MARKETING_URL` | `https://coriqo.com` | Coriqo Shield only: the link its Settings page shows for what longer plans offer (`GET /api/coriqo` → `marketing_url`) |
 
 The service account authenticates with two headers rather than a JWT, and needs
 `governance:approve` to register agents plus `model:write` to record traces. A

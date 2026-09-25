@@ -15,6 +15,7 @@ import { Route as ConsoleTenantRouteImport } from './routes/console.$tenant'
 import { Route as ConsoleTenantIndexRouteImport } from './routes/console.$tenant.index'
 import { Route as ConsoleTenantSplatRouteImport } from './routes/console.$tenant.$'
 import { Route as ConsoleTenantFleetRouteImport } from './routes/console.$tenant.fleet'
+import { Route as ConsoleTenantShieldRouteImport } from './routes/console.$tenant.shield'
 import { Route as ConsoleTenantFleetIndexRouteImport } from './routes/console.$tenant.fleet.index'
 import { Route as ConsoleTenantFleetCoverageRouteImport } from './routes/console.$tenant.fleet.coverage'
 
@@ -48,6 +49,11 @@ const ConsoleTenantFleetRoute = ConsoleTenantFleetRouteImport.update({
   path: '/fleet',
   getParentRoute: () => ConsoleTenantRoute,
 } as any)
+const ConsoleTenantShieldRoute = ConsoleTenantShieldRouteImport.update({
+  id: '/shield',
+  path: '/shield',
+  getParentRoute: () => ConsoleTenantRoute,
+} as any)
 const ConsoleTenantFleetIndexRoute = ConsoleTenantFleetIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -66,6 +72,7 @@ export interface FileRoutesByFullPath {
   '/console/': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
   '/console/$tenant/fleet': typeof ConsoleTenantFleetRouteWithChildren
+  '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
   '/console/$tenant/fleet/': typeof ConsoleTenantFleetIndexRoute
@@ -74,6 +81,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/console': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
+  '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant': typeof ConsoleTenantIndexRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
   '/console/$tenant/fleet': typeof ConsoleTenantFleetIndexRoute
@@ -85,6 +93,7 @@ export interface FileRoutesById {
   '/console/': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
   '/console/$tenant/fleet': typeof ConsoleTenantFleetRouteWithChildren
+  '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
   '/console/$tenant/fleet/': typeof ConsoleTenantFleetIndexRoute
@@ -97,6 +106,7 @@ export interface FileRouteTypes {
     | '/console/'
     | '/console/$tenant/$'
     | '/console/$tenant/fleet'
+    | '/console/$tenant/shield'
     | '/console/$tenant/'
     | '/console/$tenant/fleet/coverage'
     | '/console/$tenant/fleet/'
@@ -105,6 +115,7 @@ export interface FileRouteTypes {
     | '/'
     | '/console'
     | '/console/$tenant/$'
+    | '/console/$tenant/shield'
     | '/console/$tenant'
     | '/console/$tenant/fleet/coverage'
     | '/console/$tenant/fleet'
@@ -115,6 +126,7 @@ export interface FileRouteTypes {
     | '/console/'
     | '/console/$tenant/$'
     | '/console/$tenant/fleet'
+    | '/console/$tenant/shield'
     | '/console/$tenant/'
     | '/console/$tenant/fleet/coverage'
     | '/console/$tenant/fleet/'
@@ -170,6 +182,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleTenantFleetRouteImport
       parentRoute: typeof ConsoleTenantRoute
     }
+    '/console/$tenant/shield': {
+      id: '/console/$tenant/shield'
+      path: '/shield'
+      fullPath: '/console/$tenant/shield'
+      preLoaderRoute: typeof ConsoleTenantShieldRouteImport
+      parentRoute: typeof ConsoleTenantRoute
+    }
     '/console/$tenant/fleet/': {
       id: '/console/$tenant/fleet/'
       path: '/'
@@ -203,12 +222,14 @@ const ConsoleTenantFleetRouteWithChildren =
 interface ConsoleTenantRouteChildren {
   ConsoleTenantSplatRoute: typeof ConsoleTenantSplatRoute
   ConsoleTenantFleetRoute: typeof ConsoleTenantFleetRouteWithChildren
+  ConsoleTenantShieldRoute: typeof ConsoleTenantShieldRoute
   ConsoleTenantIndexRoute: typeof ConsoleTenantIndexRoute
 }
 
 const ConsoleTenantRouteChildren: ConsoleTenantRouteChildren = {
   ConsoleTenantSplatRoute: ConsoleTenantSplatRoute,
   ConsoleTenantFleetRoute: ConsoleTenantFleetRouteWithChildren,
+  ConsoleTenantShieldRoute: ConsoleTenantShieldRoute,
   ConsoleTenantIndexRoute: ConsoleTenantIndexRoute,
 }
 

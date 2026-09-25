@@ -1,0 +1,67 @@
+{
+ "kind": "byoai.receipt.v2",
+ "seal": "e0b576e6ff4badba",
+ "height": 304,
+ "payload": {
+  "interaction": "41e132c0c9",
+  "ts": "21:59:47",
+  "source": "desktop",
+  "surface": "Claude Desktop \u00b7 claude",
+  "text_redacted_hash": "5ed227d2f5480475",
+  "reply_hash": null,
+  "flags": [],
+  "identity": {
+   "user_id": null,
+   "session_id": null,
+   "client_name": null
+  },
+  "usage": {}
+ },
+ "merkle": {
+  "proof": {
+   "leaf_index": 303,
+   "leaf_hash": "e0b576e6ff4badba40ac1d20f5224aeb71631b8288fc963e27d7d5569f9db449",
+   "steps": [
+    {
+     "sibling": "065f3e172d3ffa4901a690344a53beda426afa65dccf1e08300bd263bce8fd39",
+     "side": "left"
+    },
+    {
+     "sibling": "44db630215339f92b78c0b63198c58dcecadcca3810391fb7c1d12c3b3634204",
+     "side": "left"
+    },
+    {
+     "sibling": "1519ad5ddf61c9534e526e2b4e3d90fba9c8a3b8a59c9bb52a52bf612f1ef355",
+     "side": "left"
+    },
+    {
+     "sibling": "e797cc516e7ad103b0a81b197995ea94d93ed08042cdf1a217f41a29e3ce1874",
+     "side": "left"
+    },
+    {
+     "sibling": "44fa08ffd63418587cedea9d18aa524739c938ff1d2b81608ee9c9f45f7c2fc8",
+     "side": "left"
+    },
+    {
+     "sibling": "12bde84157147e2b91c8ba880b8d3736680113dc1d7cd7eb25d95da6b5c32644",
+     "side": "left"
+    }
+   ],
+   "root_hex": "4435a6c142ddfbe4a8028872f11b738bf2c760eff6d9cb8e6ee15b89bafe36d8"
+  },
+  "checkpoint": {
+   "root_hex": "4435a6c142ddfbe4a8028872f11b738bf2c760eff6d9cb8e6ee15b89bafe36d8",
+   "height": 304,
+   "device_id": "dev_2PRTR44IMTKTER2YCOXUTU3CSR",
+   "public_key_b64": "//IT6seIazGu4nP5N8+UgJxJD+JYjtpXliDGQGjIPiU=",
+   "sig": "ed25519:ces86lt4FJZtPDPRsKCmawtkJ+ya0wrPTWWaq6pWVzBKY8vyFPNQXHyCE2vZyl3hT4KDHWx8Utv3dUR9rMGiCg=="
+  },
+  "note": "Offline verify: sha256(canonical payload) == seal; fold leaf + steps \u2192 root; unwrap Ed25519 sig over the checkpoint (sig field excluded) with public_key_b64."
+ },
+ "self_check": {
+  "entry_hash_ok": true,
+  "chain_intact": false,
+  "chain_height": 304,
+  "verified_at": "2026-09-25T03:09:08Z"
+ }
+}

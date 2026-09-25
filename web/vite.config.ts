@@ -18,6 +18,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/v1': { target: process.env.BYOAI_PROXY_URL ?? 'http://127.0.0.1:8787', changeOrigin: true },
+      // Coriqo shield (live capture ledger) — dev-only sidecar; the prod build
+      // keeps serving the console build with the Python app.
+      '/shield-api': { target: process.env.SHIELD_URL ?? 'http://127.0.0.1:8300', changeOrigin: true, rewrite: p => p.replace(/^\/shield-api/, '/api') },
+      '/shield-ui': { target: process.env.SHIELD_URL ?? 'http://127.0.0.1:8300', changeOrigin: true, rewrite: p => p.replace(/^\/shield-ui/, '') },
     },
   },
   // Build straight into the Python package: hatchling ships whatever is in
