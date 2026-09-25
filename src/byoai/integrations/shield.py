@@ -1450,8 +1450,8 @@ def main() -> None:  # console-script entrypoint: byoai-shield
 
     ap = argparse.ArgumentParser(prog="byoai-shield", description=__doc__)
     ap.add_argument("ledger", nargs="?",
-                    default="examples/mcp_capture/captures.jsonl",
-                    help="path to captures.jsonl (default: ./examples/mcp_capture)")
+                    default=str(DATA_DIR / "captures.jsonl"),
+                    help="path to captures.jsonl (default: ~/.byoai/shield/captures.jsonl)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--daemonize-watch", action="store_true", default=True)

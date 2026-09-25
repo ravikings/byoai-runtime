@@ -264,7 +264,8 @@ pip install 'byoai-runtime[mcp]' mitmproxy
 python examples/mcp_capture/server.py --http          # MCP over :8800/mcp
 python examples/mcp_capture/client.py                 # real session → ledger
 npm --prefix web install && npm --prefix web run build   # once, from a checkout
-byoai-shield examples/mcp_capture/captures.jsonl      # Shield → :17831/shield
+byoai-shield                                          # Shield → :17831/shield (ledger: ~/.byoai/shield/captures.jsonl)
+byoai-shield examples/mcp_capture/captures.jsonl      # or point it at another ledger
 ```
 
 | Example | What it wires |
@@ -283,7 +284,7 @@ as `byoai.integrations.shield` with a console script (see `pyproject.toml`):
 ```bash
 pip install 'byoai-runtime[mcp]'   # includes the mcp extra
 byoai-shield ./examples/mcp_capture/captures.jsonl --host 127.0.0.1 --port 17831
-byoai-shield ./examples/mcp_capture/captures.jsonl --install-login-item   # macOS: start at login, low priority; --remove-login-item undoes it
+byoai-shield --install-login-item   # macOS: start at login, low priority; --remove-login-item undoes it
 ```
 
 API: `/api/feed` (limit/offset pagination), `/api/verify`, `/api/policy`
