@@ -35,7 +35,13 @@ async function probe() {
   try {
     const res = await withTimeout(fetch(baseOf(endpoint) + '/api/verify', { cache: 'no-store' }), 1500)
     if (!res.ok) throw new Error(String(res.status))
-    return { state, endpoint, verify: await res.json() }
+    const verify = await res.json()
+    let apps = {}
+    try {
+      const policy = await withTimeout(fetch(baseOf(endpoint) + '/api/policy', { cache: 'no-store' }), 1500)
+      apps = (await policy.json()).apps || {}
+    } catch { /* an older Shield: say nothing rather than guess */ }
+    return { state, endpoint, verify, apps }
   } catch {
     return { state: 'unreachable', endpoint }
   }
@@ -69,7 +75,7 @@ function ago(ms) {
   return `${Math.round(hours / 24)} days ago`
 }
 
-function render({ state, endpoint, verify }, app) {
+function render({ state, endpoint, verify, apps }, app) {
   el('endpoint').value = endpoint
   const set = (kind, icon, title, detail) => {
     el('status').className = `status ${kind}`
@@ -117,7 +123,10 @@ function render({ state, endpoint, verify }, app) {
         : 'The record is intact.')
   }
   const tab = el('tab')
-  if (app.name) {
+  const appKey = { Claude: 'claude', ChatGPT: 'chatgpt', Gemini: 'gemini', Copilot: 'copilot' }[app.name]
+  if (app.name && apps && apps[appKey] === false) {
+    tab.textContent = `Shield is set not to record ${app.name}. Turn it on in Shield's settings and messages here will be noted.`
+  } else if (app.name) {
     const b = Object.assign(document.createElement('b'), { textContent: app.name })
     if (app.lastSeen && Date.now() - app.lastSeen < STALE_AFTER_MS) {
       tab.append('Shield watches ', b, ` on this tab. Last message noted ${ago(app.lastSeen)}.`)
