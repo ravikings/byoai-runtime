@@ -298,22 +298,29 @@ recorder-core primitives: RFC 6962 MerkleTree, device Ed25519 keys in
 that the capture proxy reads live.
 
 ### What protects the record, and what does not
-Shield's files (ledger, seal chain, policy, keys) are owner-only (`0600` on
-Linux and macOS; on Windows the user-profile ACL) and written atomically, with
-each platform's own file lock. A row is sealed before the request that carried
-it returns. `/api/verify` then reports a break when an entry no longer matches
-the signed checkpoint (recomputing an entry's hash does not hide an edit), and
-an unreadable chain file is kept, replaced, and recorded as an incident rather
-than silently reset. The browser extension keeps one number, the most sealed
-entries Shield has reported, so a deleted or rolled-back record shows in its
-popup.
+Shield's files (ledger, seal log, state, policy, keys) are owner-only (`0600`
+on Linux and macOS; on Windows the user-profile ACL) and written safely, with
+each platform's own file lock. The seal chain is an append-only log
+(`sealchain.log.jsonl`, one entry per line) plus a small state file
+(`sealchain.json`). Nothing is trimmed, and every entry back to the first is
+covered by a signed checkpoint, one per seal. A row is sealed before the
+request that carried it returns, and sealing is idempotent, so a restart adds
+nothing.
+
+`/api/verify` reports a break when an entry no longer matches its hash, when
+the signed checkpoint no longer matches the entries (so recomputing an entry's
+hash does not hide an edit), when entries were cut off the end, or when the log
+changes while Shield runs. A damaged log or state file is kept under a new
+name, the intact part carries over, and the event is recorded as an incident
+that stays in `/api/verify`. The browser extension keeps one number, the most
+sealed entries Shield has reported, so a deleted or rolled-back record shows in
+its popup.
 
 What this cannot do: anything running as your user can still edit or delete
-the files. It is detected in the cases above, not prevented, and a wipe of
-everything, including the extension's profile, leaves no trace. The seal
-window holds the last 512 entries, so older entries are not re-verified.
-Copies held off the machine (enrol Shield in Coriqo, which receives signed
-checkpoints) are the defence against a local wipe.
+the files. That is detected in the cases above, not prevented, and a wipe of
+everything, including the extension's profile, leaves no trace. Copies held off
+the machine (enrol Shield in Coriqo, which receives signed checkpoints) are the
+defence against a local wipe.
 
 ### Privacy-first by default
 

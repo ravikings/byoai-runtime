@@ -70,7 +70,7 @@ describe('extension pairing (real browser)', () => {
     // Phase 1b: the record is wiped (ledger and chain both) and Shield comes
     // back. The extension remembers it had 1 sealed entry, so this must show.
     shield.kill(); await sleep(800)
-    rmSync(ledger, { force: true }); rmSync(path.join(dataDir, 'sealchain.json'), { force: true })
+    for (const f of ['captures.jsonl', 'sealchain.json', 'sealchain.log.jsonl']) rmSync(path.join(dataDir, f), { force: true })
     await startShield()
     expect(await open()).toBe("Shield's record is shorter than it was")
     await popup.click('#accept')

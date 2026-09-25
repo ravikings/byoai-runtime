@@ -378,85 +378,195 @@ class SealChain:
     """RFC 6962-graded tamper evidence on recorder-core primitives.
 
     leaf = sha256(0x00 || canonical(payload)) per entry (via
-    :data:`byoai.recorder.merkle.checkpoint_leaf_hash`), binary MerkleTree
-    over those leaves, and PerSigEvery entries a checkpoint
-    {root, height, device_id} Ed25519-signed with a locally-held DeviceKey
-    (same trust root as recorder/receipts.py).
+    :data:`byoai.recorder.merkle.checkpoint_leaf_hash`), a binary MerkleTree
+    over all leaves, and a checkpoint {root, height, device_id} Ed25519-signed
+    with a locally-held DeviceKey (same trust root as recorder/receipts.py).
+
+    Storage is an append-only log, one entry per line (``log_path``), plus a
+    small state file (``cfg.seal_path``: latest checkpoint, incidents). An
+    append is O(1), nothing is ever trimmed, and every entry back to the first
+    is covered by the signed checkpoint. Only the newest ``WINDOW`` payloads
+    are kept in memory; every leaf hash is, which is what the tree needs.
+    Sealing is idempotent: a payload already in the chain is not added again,
+    so replaying the ledger after a restart adds nothing.
     """
+
+    WINDOW = 512
 
     def __init__(self, cfg: ShieldConfig) -> None:
         self.cfg = cfg
         self._key = load_or_create_device_key(cfg.key_dir)
-        self.entries: list[dict] = []
+        self.entries: list[dict] = []        # newest WINDOW entries, with payloads
         self.checkpoint: dict | None = None
+        self._leaves: list[bytes] = []       # every leaf, in order
+        self._leaf_set: set[bytes] = set()
         self._tree: MerkleTree | None = None
-        # Sealed entries ever, across restarts and the 512-entry window below.
-        # Only goes up, so a chain that comes back shorter than a witness
-        # remembers (the extension keeps one) has been rolled back or wiped.
-        self.total = 0
-        # Things an examiner must be able to see, kept in the chain file itself
-        # (a reset that left no trace would be the easiest way to hide edits).
+        self._log_sig: tuple = (0, 0)
+        # Things an examiner must be able to see, kept in the state file (a
+        # reset that left no trace would be the easiest way to hide edits).
         self.incidents: list[dict] = []
         self._load()
 
+    @property
+    def log_path(self) -> Path:
+        return self.cfg.seal_path.with_name(self.cfg.seal_path.stem + ".log.jsonl")
+
+    @property
+    def height(self) -> int:
+        return len(self._leaves)
+
+    @property
+    def total(self) -> int:
+        """Sealed entries ever. Only goes up, so a chain that comes back
+        shorter than a witness remembers (the extension keeps one) has been
+        rolled back or wiped."""
+        return len(self._leaves)
+
     # -- persistence ------------------------------------------------------
+    def _note(self, what: str, detail: str) -> None:
+        self.incidents.append({"at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                               "what": what, "detail": detail})
+
+    def _quarantine(self, path: Path, tag: str) -> Path:
+        moved = path.with_name(f"{path.name}.{tag}-{int(time.time())}")
+        _os.replace(path, moved)
+        return moved
+
+    def _scan_log(self):
+        """Yield ``(entry, problem)`` for each log line, in order. A problem
+        ends the scan: nothing after a bad line can be trusted. A torn final
+        line (a crash mid-write) is dropped without a problem."""
+        try:
+            raw = self.log_path.read_bytes()
+        except FileNotFoundError:
+            return
+        lines = raw.split(b"\n")
+        torn = lines.pop() if lines and lines[-1] else b""   # no trailing newline
+        del torn
+        for i, line in enumerate(lines):
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+                ok = (e["height"] == i + 1
+                      and self._leaf(e["payload"]).hex() == e["leaf_hash"]
+                      and e["leaf_hash"][:16] == e["seal"])
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok:
+                yield None, f"entry {i + 1} does not match its own hash"
+                return
+            yield e, None
+
     def _load(self) -> None:
+        state: dict = {}
         if self.cfg.seal_path.exists():
             try:
                 state = json.loads(self.cfg.seal_path.read_text())
-                self.entries = state.get("entries", [])[-512:]
-                self.checkpoint = state.get("checkpoint")
-                self.total = int(state.get("total", len(self.entries)))
-                self.incidents = list(state.get("incidents", []))
             except Exception as exc:  # noqa: BLE001
-                # An unreadable chain is never a fresh start. Keep the evidence,
-                # begin a new chain, and record that this happened.
-                moved = self.cfg.seal_path.with_name(
-                    f"{self.cfg.seal_path.name}.unreadable-{int(time.time())}")
-                _os.replace(self.cfg.seal_path, moved)
-                self.entries, self.checkpoint, self.total = [], None, 0
-                self.incidents.append({
-                    "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "what": "chain_unreadable",
-                    "detail": f"{type(exc).__name__}; the old file was kept as {moved.name}"})
-                self._persist()
-        self._rebuild_tree()
+                moved = self._quarantine(self.cfg.seal_path, "unreadable")
+                self._note("chain_unreadable",
+                           f"{type(exc).__name__}; the old file was kept as {moved.name}")
+        self.incidents = list(state.get("incidents", [])) + self.incidents
+        if "entries" in state:                # format 1: one JSON file, last 512
+            self._migrate_v1(state)
+            state = {"incidents": self.incidents}
+        self.checkpoint = state.get("checkpoint")
+        good: list[dict] = []
+        for entry, problem in self._scan_log():
+            if problem:
+                moved = self._quarantine(self.log_path, "broken")
+                self._note("chain_broken", f"{problem}; the log was kept as {moved.name} "
+                           f"and its {len(good)} intact entries carried over")
+                self._rewrite_log(good)
+                break
+            good.append(entry)
+        else:
+            self._trim_torn_tail()
+        self._leaves = [bytes.fromhex(e["leaf_hash"]) for e in good]
+        self._leaf_set = set(self._leaves)
+        self.entries = good[-self.WINDOW:]
+        self._tree = None
+        self._log_sig = _stat_sig(self.log_path)
+        if self.checkpoint and self._checkpoint_matches() is False:
+            self._note("checkpoint_mismatch",
+                       "the signed checkpoint no longer matches the entries it covered "
+                       "(entries were edited or removed while Shield was off)")
+        self._persist()
+
+    def _migrate_v1(self, state: dict) -> None:
+        entries = state.get("entries") or []
+        lines = []
+        for i, e in enumerate(entries, 1):
+            leaf = self._leaf(e["payload"])
+            lines.append(json.dumps({"height": i, "payload": e["payload"],
+                                     "seal": leaf.hex()[:16], "leaf_hash": leaf.hex()},
+                                    sort_keys=True))
+        if lines:
+            atomic_write_private(self.log_path, "\n".join(lines) + "\n")
+
+    def _rewrite_log(self, entries: list[dict]) -> None:
+        atomic_write_private(self.log_path, "".join(
+            json.dumps(e, sort_keys=True) + "\n" for e in entries))
+
+    def _trim_torn_tail(self) -> None:
+        try:
+            raw = self.log_path.read_bytes()
+        except FileNotFoundError:
+            return
+        if raw and not raw.endswith(b"\n"):
+            keep = raw[: raw.rfind(b"\n") + 1]
+            atomic_write_private(self.log_path, keep.decode("utf-8", "replace"))
 
     def _persist(self) -> None:
         atomic_write_private(self.cfg.seal_path, json.dumps({
-            "entries": self.entries[-512:], "checkpoint": self.checkpoint,
-            "total": self.total, "incidents": self.incidents,
+            "format": 2, "checkpoint": self.checkpoint, "total": self.total,
+            "incidents": self.incidents,
         }, indent=1))
 
+    def _append_line(self, entry: dict) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = _os.open(self.log_path, _os.O_WRONLY | _os.O_APPEND | _os.O_CREAT, 0o600)
+        with _os.fdopen(fd, "a") as fh:
+            fh.write(json.dumps(entry, sort_keys=True) + "\n")
+            fh.flush()
+            _os.fsync(fh.fileno())
+        self._log_sig = _stat_sig(self.log_path)
+
+    # -- chain ------------------------------------------------------------
     def _leaf(self, payload: dict) -> bytes:
         return checkpoint_leaf_hash(payload)
 
     def _rebuild_tree(self) -> None:
-        leaves = [self._leaf(e["payload"]) for e in self.entries]
-        self._tree = MerkleTree(leaves) if leaves else None
+        self._tree = MerkleTree(self._leaves) if self._leaves else None
 
     def _leaf_index(self, seal: str) -> int:
-        for i, e in enumerate(self.entries):
-            if e["seal"] == seal:
+        try:
+            prefix = bytes.fromhex(seal)
+        except ValueError:
+            return -1
+        for i, leaf in enumerate(self._leaves):
+            if leaf.startswith(prefix):
                 return i
         return -1
 
     def stamp(self, payload: dict) -> str:
         leaf = self._leaf(payload)
-        entry: dict = {"height": len(self.entries) + 1, "payload": payload,
+        if leaf in self._leaf_set:            # already sealed: replay adds nothing
+            return leaf.hex()[:16]
+        entry: dict = {"height": len(self._leaves) + 1, "payload": payload,
                        "seal": leaf.hex()[:16], "leaf_hash": leaf.hex()}
+        self._append_line(entry)
+        self._leaves.append(leaf)
+        self._leaf_set.add(leaf)
         self.entries.append(entry)
-        self.total += 1
+        del self.entries[:-self.WINDOW]
         self._tree = None  # lazily rebuilt on demand
         if self.height % self.cfg.sig_every == 0:
             self.sign_checkpoint()
         else:
             self._persist()
         return entry["seal"]
-
-    @property
-    def height(self) -> int:
-        return len(self.entries)
 
     def sign_checkpoint(self) -> dict:
         if self._tree is None:
@@ -475,24 +585,42 @@ class SealChain:
         self._persist()
         return cp
 
+    def _checkpoint_matches(self) -> bool | None:
+        """Does the signed checkpoint still describe the entries it covered?
+        The seal is an unkeyed hash, so someone who edits an entry can
+        recompute it; what they can't redo is the signature."""
+        cp = self.checkpoint
+        if not cp:
+            return None
+        n = int(cp.get("height", 0))
+        if n > len(self._leaves):
+            return False                       # entries were cut off the end
+        if n == 0:
+            return None
+        return MerkleTree(self._leaves[:n]).root.hex() == cp.get("root_hex")
+
     def verify_chain(self) -> dict:
         self._rebuild_tree()
+        # If the log changed by anything but our own appends, re-read it all.
+        if _stat_sig(self.log_path) != self._log_sig:
+            for _entry, problem in self._scan_log():
+                if problem:
+                    self._note("chain_broken", f"{problem} (found while running)")
+                    self._persist()
+                    break
+            else:
+                fresh = [e["leaf_hash"] for e, _ in self._scan_log()]
+                if fresh != [leaf.hex() for leaf in self._leaves]:
+                    self._note("chain_changed", "the log was changed while Shield was running")
+                    self._persist()
+            self._log_sig = _stat_sig(self.log_path)
         for e in self.entries:
             if self._leaf(e["payload"]).hex()[:16] != e["seal"]:
                 return {"tamper_evident": False, "broken_at": e["height"],
                         "reason": "content hash mismatch"}
         cp = self.checkpoint
-        sig_ok = None
-        matches: bool | None = None  # None: the entries it covered are gone
-        if cp:
-            sig_ok = self._sig_valid(cp)
-            # The seal is an unkeyed hash, so someone who edits an entry can
-            # recompute it. What they can't redo is the signed checkpoint, so
-            # its root has to match the entries it claims to cover.
-            n = int(cp.get("height", 0))
-            if self.entries and self.entries[0]["height"] == 1 and 0 < n <= len(self.entries):
-                root = MerkleTree([self._leaf(e["payload"]) for e in self.entries[:n]]).root.hex()
-                matches = root == cp.get("root_hex")
+        sig_ok = self._sig_valid(cp) if cp else None
+        matches = self._checkpoint_matches()
         return {
             "tamper_evident": (cp is None or bool(sig_ok)) and matches is not False
                               and not self.incidents,
@@ -513,9 +641,27 @@ class SealChain:
                                        {k: v for k, v in cp.items() if k != "sig"}),
                                    cp.get("sig", ""))
 
+    def _find_entry(self, seal: str) -> dict | None:
+        found = next((e for e in self.entries if e["seal"] == seal), None)
+        if found is not None:
+            return found
+        for e, _problem in self._scan_log():   # older than the in-memory window
+            if e and e["seal"] == seal:
+                return e
+        return None
+
+    def count_with_text(self) -> int:
+        """Entries whose payload carries a redacted preview (keep_text was on)."""
+        return sum(1 for e, _ in self._scan_log()
+                   if e and (e.get("payload") or {}).get("text_redacted"))
+
     def proof_for(self, seal: str) -> dict | None:
         idx = self._leaf_index(seal)
-        if idx < 0 or self._tree is None:
+        if idx < 0:
+            return None
+        if self._tree is None:
+            self._rebuild_tree()
+        if self._tree is None:
             return None
         p = self._tree.proof(idx)
         return {
@@ -528,7 +674,7 @@ class SealChain:
 
     def receipt(self, seal: str) -> dict | None:
         """Portable receipt — verifies fully offline given the checkpoint."""
-        entry = next((e for e in self.entries if e["seal"] == seal), None)
+        entry = self._find_entry(seal)
         if entry is None:
             return None
         cp = self.sign_checkpoint()  # fresh, so the root covers this entry
@@ -692,8 +838,7 @@ def privacy_report(cfg: ShieldConfig, seals: "SealChain | None" = None) -> dict:
     dates = [d for d in (_row_date(r) for r in rows) if d]
     sealed_with_text = 0
     if seals is not None:
-        sealed_with_text = sum(1 for e in seals.entries
-                               if (e.get("payload") or {}).get("text_redacted"))
+        sealed_with_text = seals.count_with_text()
     return {
         "ledger_rows": len(rows),
         "rows_with_text": sum(1 for r in rows
@@ -825,6 +970,8 @@ class Feed:
         self._policy = load_policy(cfg)
         self._scanned = False
         self._poll_lock = threading.Lock()
+        self._seen_rows: dict[str, int] = {}
+        self._current_id = ""
         # The browser extension never reads message text, so it can't supply
         # rule hits — it always ships length only. Recorded clean here; if the
         # request also crosses the desktop proxy for the same app, that side
@@ -886,7 +1033,18 @@ class Feed:
                 continue
         return len(new)
 
+    def _row_id_for(self, r: dict) -> str:
+        """The same ledger row gets the same interaction id on every restart,
+        so sealing it again is a no-op. Text and scrub markers are left out of
+        the key: a scrub rewrites them, and must not make the row look new."""
+        skip = set(TEXT_FIELDS) | {"text_hmac", "scrubbed", "flags"}
+        key = json.dumps({k: v for k, v in r.items() if k not in skip},
+                         sort_keys=True, default=str)
+        n = self._seen_rows[key] = self._seen_rows.get(key, 0) + 1
+        return hashlib.sha256(f"{key}#{n}".encode()).hexdigest()[:10]
+
     def _absorb(self, r: dict) -> None:
+        self._current_id = self._row_id_for(r)
         kind = r.get("kind", "")
         wall = r.get("wall_clock", "")
         ts = wall.split()[-1] if wall else ""
@@ -989,7 +1147,7 @@ class Feed:
              tool=None, identity=None, flags_box, verdict=None, text_hmac=None,
              chars=None, redactions=None):
         item = {
-            "id": uuid.uuid4().hex[:10], "source": source, "surface": surface,
+            "id": self._current_id, "source": source, "surface": surface,
             "ts": ts, "date": date, "verb": redact(verb), "status": status,
             "tool": tool, "identity": identity or {},
             "flags": [{"tier": t, "rule": ru} for t, ru, _ in flags_box],
@@ -1556,7 +1714,7 @@ def default_paths(ledger: str | Path) -> ShieldConfig:
         seal_path=ledger.parent / "sealchain.json",
         key_dir=DATA_DIR / "keys",
         policy_path=ledger.parent / "policy.json",
-        sig_every=8, max_interactions=MAX_INTERACTIONS,
+        sig_every=1, max_interactions=MAX_INTERACTIONS,
     )
 
 
