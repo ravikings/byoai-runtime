@@ -1453,10 +1453,14 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                 return
             except EnrollmentError as exc:
                 msg = str(exc)
-                hint = ("Coriqo didn't accept that token. It may be used, expired "
-                        "or revoked; ask your Coriqo admin for a new one."
-                        if "rejected" in msg else
-                        "Couldn't reach Coriqo at that address. Check it and try again.")
+                if "already enrolled" in msg or "HTTP 409" in msg:
+                    hint = ("This Mac is already connected to Coriqo with its current key, "
+                            "so it doesn't need a new token. The token hasn't been used.")
+                elif "rejected" in msg:
+                    hint = ("Coriqo didn't accept that token. It may be used, expired "
+                            "or revoked; ask your Coriqo admin for a new one.")
+                else:
+                    hint = "Couldn't reach Coriqo at that address. Check it and try again."
                 self._send(400, json.dumps({"error": hint}).encode())
                 return
             self._send(200, json.dumps(status).encode())
