@@ -412,3 +412,81 @@ def test_server_says_how_to_build_when_the_app_is_missing(tmp_path, monkeypatch)
     base = _serve(make_cfg(tmp_path))
     code, _, body = _get(base + "/shield")
     assert code == 503 and b"npm" in body
+
+
+# ------------------------------------------- other sites can't drive Shield
+
+from byoai.integrations.shield import clean_browser_row, request_problem
+
+
+def _post(url, body, headers):
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers=headers, method="POST")
+    try:
+        r = urllib.request.urlopen(req, timeout=2)
+        return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+def test_a_web_page_cannot_weaken_shield(tmp_path):
+    base = _serve(make_cfg(tmp_path))
+    weaken = {"mode": "observe", "acknowledge": "less_private"}
+    # a form/text POST from any site: no JSON content type
+    assert _post(base + "/api/policy", weaken, {"Content-Type": "text/plain"})[0] == 415
+    # JSON from another site (would need a preflight; Origin gives it away)
+    code, _ = _post(base + "/api/policy", weaken, {
+        "Content-Type": "application/json", "Origin": "https://evil.example"})
+    assert code == 403
+    # DNS rebinding: the page's own hostname pointed at 127.0.0.1
+    code, _ = _post(base + "/api/policy", weaken, {
+        "Content-Type": "application/json", "Host": "evil.example:8300"})
+    assert code == 403
+    assert json.loads(_get(base + "/api/policy")[2])["mode"] == "redact"
+    # Shield's own page still can
+    code, body = _post(base + "/api/policy", weaken, {
+        "Content-Type": "application/json", "Origin": base})
+    assert code == 200 and body["mode"] == "observe"
+
+
+def test_only_the_extension_can_send_browser_rows(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    base = _serve(cfg)
+    rows = {"rows": [{"kind": "browser.chat.request", "app": "claude", "chars": 12,
+                      "prompt": "email j.rivers@gmail.com", "wire": "/api/x"}]}
+    json_h = {"Content-Type": "application/json"}
+    assert _post(base + "/api/browser", rows, {**json_h, "Origin": "https://claude.ai"})[0] == 403
+    assert _post(base + "/api/browser", rows, json_h)[0] == 403
+    code, body = _post(base + "/api/browser", rows,
+                       {**json_h, "Origin": "chrome-extension://abcdef"})
+    assert code == 200 and body["accepted"] == 1
+    stored = cfg.ledger.read_text()
+    assert "j.rivers" not in stored and '"chars": 12' in stored
+    # pinned to one extension id
+    monkeypatch.setenv("BYOAI_SHIELD_EXTENSION_IDS", "trusted-id")
+    assert _post(base + "/api/browser", rows,
+                 {**json_h, "Origin": "chrome-extension://abcdef"})[0] == 403
+    assert _post(base + "/api/browser", rows,
+                 {**json_h, "Origin": "chrome-extension://trusted-id"})[0] == 200
+
+
+def test_browser_rows_keep_only_known_fields():
+    row = clean_browser_row({"kind": "browser.chat.request", "app": "claude",
+                             "chars": 5, "prompt": "secret", "preview": "x",
+                             "wire": "w" * 500, "ok": True})
+    assert row is not None and set(row) == {"kind", "wall_clock", "app", "chars", "wire", "ok"}
+    assert len(row["wire"]) == 60
+    assert clean_browser_row({"kind": "desktop.chat.request"}) is None
+    assert clean_browser_row({"kind": "browser.chat.request", "app": "evil",
+                              "chars": True})["kind"] == "browser.chat.request"
+
+
+def test_request_problem_allows_local_pages_and_get():
+    ok_host = {"Host": "127.0.0.1:8300"}
+    assert request_problem("GET", "/api/feed", ok_host) is None
+    assert request_problem("GET", "/api/feed", {"Host": "attacker.test"}) is not None
+    assert request_problem("POST", "/api/policy", {
+        **ok_host, "Content-Type": "application/json; charset=utf-8",
+        "Origin": "http://localhost:5173"}) is None

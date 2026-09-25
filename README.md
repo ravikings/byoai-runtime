@@ -75,7 +75,7 @@ state, not an error.
 ```bash
 cd web
 npm install
-npm run dev      # http://localhost:5173/console/
+npm run dev      # http://localhost:5174/console/ (Shield: http://localhost:5174/shield)
 ```
 
 `npm run dev` proxies `/v1` to a running context-cache proxy
@@ -272,6 +272,7 @@ byoai-shield examples/mcp_capture/captures.jsonl      # Shield → :8300/shield
 | `examples/mcp_server/` | ByoAI-over-MCP tool server (stdio or streamable HTTP). |
 | `examples/mcp_capture/` | Real MCP session (`client.py`) against an echo-backed `server.py`: tool calls, cache hits, stream deltas, and client identity from the `initialize` handshake land in `captures.jsonl`. |
 | `examples/desktop_proxy_capture.py` | Loads the packaged capture proxy (`byoai.integrations.shield_proxy`) against the example ledger: Claude Desktop chat sends and replies go through the same rules → redact → seal path (admin-consented CA + `NODE_EXTRA_CA_CERTS`). |
+| `src/byoai/browser_extension/` | Chrome (MV3) extension that records agent chat sends in the browser (claude.ai, chatgpt.com) into the same ledger. Load it unpacked from `chrome://extensions` → Developer mode → Load unpacked; it ships length-only facts to `POST /api/browser` on `127.0.0.1:8300` (endpoint configurable from the extension's options). The extension never reads message text — rule evaluation happens server-side, and what lands in the ledger is "a message was sent, N characters", sealed like every other row. Its popup shows reachability, the seal chain height, and a direct link to the Shield UI (`/shield`), which is where the full experience lives (the extension itself has no timeline by design — the local server already has one). See its data-protection record in `src/byoai/browser_extension/PRIVACY.md`. |
 | `examples/ui/keepalive.sh` | launchd-friendly supervisor for the three surfaces (MCP gateway, capture proxy, shield): runs them as a group and exits nonzero if any dies, so `com.coriqo.keepalive` (see the script header) restarts what's missing — survives crashes and reboots. |
 
 ### `byoai-shield` — packaged capture shield (source promotion)
@@ -287,7 +288,8 @@ byoai-shield ./examples/mcp_capture/captures.jsonl --host 127.0.0.1 --port 8300
 API: `/api/feed` (limit/offset pagination), `/api/verify`, `/api/policy`
 GET+POST (validated; a bad value is a 400 that names the field),
 `/api/privacy` (what the ledger holds right now), `POST /api/privacy/scrub`,
-and `/api/receipt/<seal>`, driven by
+and `/api/receipt/<seal>`, plus `POST /api/browser` for the Chrome
+extension (bulk rows, length-only), driven by
 recorder-core primitives: RFC 6962 MerkleTree, device Ed25519 keys in
 `~/.byoai/shield/keys` (mode 0600 — see `byoai.recorder.keys`), and
 `policy.json` verdict modes (`observe`/`redact`/`block`) + per-app toggles
@@ -354,9 +356,9 @@ build it once with `npm --prefix web run build`.
 The tab and the focused interaction are in the URL (`?tab=timeline&focus=…`).
 
 * **Trust** — status card; today's counters (checked, caught, high risk,
-  tool calls), each a filter; the Activity list with show / when filters,
-  search and paging; "What Shield keeps on this Mac" in the rail, read from
-  `/api/privacy` and the saved policy.
+  tool calls, in browser), each a filter; the Activity list with show / when
+  filters, search and paging; "What Shield keeps on this Mac" in the rail,
+  read from `/api/privacy` and the saved policy.
 * **Ledger** — sealed entries with per-row receipts, export of the chain
   state, and **Check a receipt**: paste a receipt and the browser recomputes
   the seal and the Merkle path with no request (`web/src/lib/receipt.ts`,

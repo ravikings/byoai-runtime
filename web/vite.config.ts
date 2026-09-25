@@ -34,7 +34,11 @@ export default defineConfig({
   plugins: [shieldPageInDev(), TanStackRouterVite({ routesDirectory: 'src/routes', generatedRouteTree: 'src/routeTree.gen.ts' }), react()],
   resolve: { alias: { '@': path.resolve(__dirname, 'src') } },
   server: {
-    port: 5173,
+    // 5173 belongs to the Coriqo app's own frontend container. Sharing it
+    // meant localhost:5173 reached whichever server won the IPv4/IPv6 race,
+    // so one app's changes seemed to vanish. strictPort: fail loudly instead.
+    port: 5174,
+    strictPort: true,
     proxy: {
       '/v1': { target: process.env.BYOAI_PROXY_URL ?? 'http://127.0.0.1:8787', changeOrigin: true },
       // Coriqo shield (live capture ledger) — dev-only sidecar; the prod build

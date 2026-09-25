@@ -138,15 +138,17 @@ export function WhenFilter({ value, onChange }: { value: When; onChange: (w: Whe
   )
 }
 
-export type Need = 'all' | 'warn' | 'bad' | 'mcp'
+export type Need = 'all' | 'warn' | 'bad' | 'mcp' | 'browser'
 export const NEED_OPTIONS: readonly (readonly [Need, string])[] = [
-  ['all', 'All'], ['warn', 'Caught'], ['bad', 'Stopped or high risk'], ['mcp', 'Tool calls'],
+  ['all', 'All'], ['warn', 'Caught'], ['bad', 'Stopped or high risk'],
+  ['mcp', 'Tool calls'], ['browser', 'In browser'],
 ]
 
 export function matchesNeed(it: Item, need: Need) {
   if (need === 'warn') return it.tier === 'warn'
   if (need === 'bad') return it.tier === 'bad'
   if (need === 'mcp') return it.source === 'mcp'
+  if (need === 'browser') return it.source === 'browser'
   return true
 }
 

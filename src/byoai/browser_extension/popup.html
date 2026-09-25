@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      width: 320px; margin: 0; padding: 14px;
+      font: 13px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif;
+    }
+    .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; flex: none; }
+    .dot.on { background: #16a34a; }
+    .dot.off { background: #dc2626; }
+    h1 { font-size: 14px; margin: 0; }
+    .sub { color: #6b7280; margin: 2px 0 12px; font-size: 12px; }
+    .state { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+    .state b { display: block; margin-bottom: 2px; }
+    .state span.muted { color: #6b7280; font-size: 12px; }
+    .row { display: flex; gap: 6px; margin-top: 8px; }
+    input[type=text] {
+      flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid #d1d5db;
+      border-radius: 6px; font: inherit; font-size: 12px;
+    }
+    button {
+      padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px;
+      background: #f9fafb; font: inherit; font-size: 12px; cursor: pointer;
+    }
+    button.primary { background: #111827; border-color: #111827; color: #fff; }
+    .msg { font-size: 12px; margin-top: 6px; min-height: 15px; }
+    .msg.ok { color: #15803d; } .msg.bad { color: #b91c1c; }
+    ul { margin: 0 0 10px; padding-left: 18px; }
+    li { margin-bottom: 3px; font-size: 12px; }
+    a { color: inherit; }
+    .foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #6b7280; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111827; color: #e5e7eb; }
+      .state, input[type=text], button { border-color: #374151; }
+      .state { background: #1f2937; }
+      .state span.muted, .sub, .msg:not(.ok):not(.bad), .foot { color: #9ca3af; }
+      a { color: #93c5fd; }
+      input[type=text], button { background: #1f2937; color: #e5e7eb; }
+      button.primary { background: #f9fafb; border-color: #f9fafb; color: #111827; }
+    }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <span class="dot" id="dot"></span>
+    <h1>Coriqo Shield — Agent Capture</h1>
+  </div>
+  <p class="sub">For claude.ai and chatgpt.com, Shield keeps a record of which app you sent to, when, and the message length. It never sees message content.</p>
+
+  <div class="state">
+    <b id="state-title">Checking Shield…</b>
+    <span class="muted" id="state-detail"></span>
+    <div class="row" style="margin-bottom:0">
+      <input type="text" id="endpoint" spellcheck="false" aria-label="Shield server endpoint" />
+      <button class="primary" id="save">Save</button>
+    </div>
+    <p class="msg" id="msg"></p>
+  </div>
+
+  <ul>
+    <li><a id="open-shield" href="#" target="_blank">Open Shield timeline</a> — today's counters, full activity, receipts</li>
+    <li><a id="open-privacy" href="#" target="_blank">What this extension records</a> — the privacy record</li>
+  </ul>
+
+  <p class="foot">
+    This extension sends facts (app, time, length) to your local Shield server only.
+    Nothing leaves this Mac.
+  </p>
+  <script src="popup.js"></script>
+</body>
+</html>

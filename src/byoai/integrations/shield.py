@@ -699,6 +699,11 @@ class Feed:
         self._offset = 0
         self._policy = load_policy(cfg)
         self._scanned = False
+        # The browser extension never reads message text, so it can't supply
+        # rule hits — it always ships length only. Recorded clean here; if the
+        # request also crosses the desktop proxy for the same app, that side
+        # (with the wire body) does the flagging.
+        self.BROWSER_FLAGS: list[tuple[str, str, str]] = []
 
     def scan_initial(self) -> int:
         self._scanned = True
@@ -779,6 +784,41 @@ class Feed:
                       chars=chars, redactions=r.get("redactions"))
         elif kind == "desktop.chat.response":
             self._attach_reply(r)
+        elif kind in ("browser.chat.request", "browser.chat.status"):
+            app = r.get("app") or "claude"
+            label = APP_LABEL.get(app, app)
+            wire = r.get("wire") if isinstance(r.get("wire"), str) else None
+            ts_raw = r.get("sent_at") or ""
+            # Extension rows carry their own ISO timestamp; fall back to now.
+            try:
+                when = ts_raw.replace("Z", "+00:00")
+                import datetime as _dt
+                parsed = _dt.datetime.fromisoformat(when)
+                ts = parsed.strftime("%H:%M:%S.%f")
+                ts = ts[:ts.index('.')] if '.' in ts else ts
+                date = parsed.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+            status = ("answered" if r.get("ok") else "failed"
+                      if kind == "browser.chat.status" and "ok" in r
+                      else "answered")
+            # Browser sends stop here only for a fetch that failed; statuses
+            # attach to the latest browser request from the same app.
+            if kind == "browser.chat.status":
+                for it in reversed(list(self.items)):
+                    if it["source"] == "browser" and it["surface"].startswith(label):
+                        if status == "failed":
+                            it["status"] = "failed"
+                            it["tier"] = _tier(it)
+                        break
+                return
+            first = self._is_first_browser_send(label)
+            verb = (f"First message to {label} in this browser"
+                    if first else f"Message to {label}")
+            self._add(source="browser", surface=f"{label} · browser", ts=ts,
+                      verb=verb, date=date, flags_box=self.BROWSER_FLAGS,
+                      status=status, text_hmac=r.get("text_hmac"),
+                      chars=r.get("chars"))
         elif kind == "tool.call":
             ident = r.get("identity") or {}
             tool = r.get("tool") or "execute"
@@ -804,6 +844,11 @@ class Feed:
                             r.get("usage") or {}, r.get("latency_ms"),
                             call_id=r.get("call_id"),
                             status="failed" if kind == "tool.error" else "answered")
+
+    def _is_first_browser_send(self, label: str) -> bool:
+        return not any(
+            it["source"] == "browser" and it["surface"].startswith(label)
+            for it in self.items)
 
     def _add(self, *, source, surface, ts, verb, date, status="answered",
              tool=None, identity=None, flags_box, verdict=None, text_hmac=None,
@@ -905,6 +950,77 @@ class Feed:
 
 
 # --------------------------------------------------------------------- server
+
+
+# ------------------------------------------------------------ request guard
+#
+# The shield listens on localhost, but every web page the user opens can send
+# requests to localhost too. Without these checks a page could POST
+# {"mode": "observe", "acknowledge": "less_private"} and quietly weaken
+# Shield, rewrite the Coriqo connection, or write fake rows into the sealed
+# ledger through /api/browser. A page can't forge Origin or Host, and a
+# cross-site JSON POST needs a CORS preflight this server never approves.
+
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+EXTENSION_SCHEMES = ("chrome-extension://", "moz-extension://")
+BROWSER_KINDS = ("browser.chat.request", "browser.chat.status")
+
+
+def _host_name(value: str) -> str:
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        return value[: value.find("]") + 1]
+    return value.split(":", 1)[0]
+
+
+def request_problem(method: str, path: str, headers) -> str | None:
+    """Why a request must be refused, or None. ``headers`` is anything with
+    ``.get`` (an HTTP message or a dict)."""
+    import os
+    from urllib.parse import urlsplit
+    if _host_name(headers.get("Host", "")) not in LOCAL_HOSTS:
+        return "Shield only answers requests addressed to localhost."
+    if method != "POST":
+        return None
+    ctype = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if ctype != "application/json":
+        return "Send JSON with Content-Type: application/json."
+    origin = (headers.get("Origin") or "").strip()
+    if path == "/api/browser":
+        if not origin.startswith(EXTENSION_SCHEMES):
+            return "Only the Shield browser extension can send browser rows."
+        pinned = [x.strip() for x in os.environ.get(
+            "BYOAI_SHIELD_EXTENSION_IDS", "").split(",") if x.strip()]
+        if pinned and origin.split("://", 1)[1].rstrip("/") not in pinned:
+            return "This browser extension isn't the one Shield was set up to trust."
+        return None
+    # Settings writes come from Shield's own page (or a local dev server
+    # proxying to it), never from another site.
+    if origin and _host_name(urlsplit(origin).netloc) not in LOCAL_HOSTS:
+        return "Settings can only be changed from Shield's own page."
+    return None
+
+
+def clean_browser_row(row: object) -> dict | None:
+    """Keep only the fields a browser row is allowed to carry. Anything else,
+    message text included, is dropped before it can reach the ledger."""
+    if not isinstance(row, dict) or row.get("kind") not in BROWSER_KINDS:
+        return None
+    out: dict = {"kind": row["kind"],
+                 "wall_clock": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if row.get("app") in APP_LABEL:
+        out["app"] = row["app"]
+    chars = row.get("chars")
+    if isinstance(chars, int) and not isinstance(chars, bool) and 0 <= chars < 10_000_000:
+        out["chars"] = chars
+    for key, limit in (("wire", 60), ("sent_at", 40)):
+        if isinstance(row.get(key), str):
+            out[key] = row[key][:limit]
+    if isinstance(row.get("ok"), bool):
+        out["ok"] = row["ok"]
+    if isinstance(row.get("status"), int) and not isinstance(row.get("status"), bool):
+        out["status"] = row["status"]
+    return out
 
 
 def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
@@ -1044,8 +1160,18 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                 return
             self._send(404, b'{"error":"not found"}')
 
+        def _refused(self, method: str) -> bool:
+            problem = request_problem(method, self.path.split("?")[0], self.headers)
+            if problem is None:
+                return False
+            self._send(403 if "Content-Type" not in problem else 415,
+                       json.dumps({"error": problem}).encode())
+            return True
+
         def do_GET(self):  # noqa: N802
             self._unprefix()
+            if self._refused("GET"):
+                return
             path = self.path.split("?")[0]
             api = self._api()
             if path == "/api/apps":
@@ -1071,6 +1197,11 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
 
         def do_POST(self):  # noqa: N802
             self._unprefix()
+            if self._refused("POST"):
+                return
+            if self.path.split("?")[0] == "/api/browser":
+                self._browser_ingest()
+                return
             if self.path.split("?")[0] == "/api/coriqo":
                 self._save_coriqo_config()
                 return
@@ -1104,6 +1235,32 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             save_policy(cfg, policy)
             self._send(200, json.dumps(
                 {**policy, "covered_apps": list(COVERED_APPS)}).encode())
+
+        def _browser_ingest(self) -> None:
+            """Rows from the browser extension: same ledger, same seal chain,
+            same privacy-first stance as the desktop proxy. The extension was
+            told the endpoint at install; an unconfigured one is not an error
+            here — it is recorded, subject to the same policy as everything
+            else."""
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                payload = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                self._send(400, b'{"error":"invalid json"}')
+                return
+            rows = payload.get("rows") if isinstance(payload, dict) else None
+            if not isinstance(rows, list) or not rows:
+                self._send(400, b'{"error":"expected {rows: [...]}"}')
+                return
+            accepted = 0
+            for row in rows[:200]:
+                clean = clean_browser_row(row)
+                if clean is not None:
+                    append_row(cfg.ledger, clean)
+                    accepted += 1
+            # The watcher thread picks new rows up within ~1.5 s. Polling here
+            # as well would race it and could absorb (and seal) a row twice.
+            self._send(200, json.dumps({"accepted": accepted}).encode())
 
         def _save_coriqo_config(self) -> None:
             """The Settings form writes the app_url/api_key/tenant here instead

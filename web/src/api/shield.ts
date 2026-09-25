@@ -15,9 +15,11 @@ export const ShieldFlag = z.object({
   rule: z.string().min(1),
 })
 
+export const SHIELD_SOURCES = ['mcp', 'desktop', 'browser'] as const
+
 export const ShieldItem = z.object({
   id: z.string().min(1),
-  source: z.enum(['mcp', 'desktop']),
+  source: z.enum(['mcp', 'desktop', 'browser']),
   surface: z.string().min(1),
   ts: z.string(),
   date: z.string(),
@@ -216,7 +218,11 @@ const PublishResult = z.object({
 /** Ship this Mac's current seal (root + signed checkpoint) to Coriqo. Throws
  * with the server's own explanation when it wasn't shipped. */
 export async function publishSeal() {
-  const res = await fetch('/shield-api/publish', { method: 'POST' })
+  // JSON even with nothing to say: the shield refuses other POSTs (see
+  // request_problem in shield.py).
+  const res = await fetch('/shield-api/publish', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })
   const body = PublishResult.safeParse(await res.json().catch(() => ({})))
   if (!res.ok || !body.success || !body.data.shipped) {
     const d = body.success ? body.data : undefined

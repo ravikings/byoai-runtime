@@ -102,7 +102,7 @@ function Journey({ it, onClose, onOpen }: { it: Item; onClose: () => void; onOpe
           body: it.reply ?? (it.response_stream ? 'Reply streamed back.' : ''),
         }
   const steps = [
-    { dot: 'g', title: it.source === 'mcp' ? 'The agent called a tool' : 'A message was sent', body: it.verb },
+    { dot: 'g', title: it.source === 'mcp' ? 'The agent called a tool' : it.source === 'browser' ? 'A message was sent in the browser' : 'A message was sent', body: it.verb },
     {
       dot: it.tier === 'bad' ? 'r' : flags.length ? 'y' : 'g',
       title: flags.length ? 'Shield checked it: rules matched' : 'Shield checked it: nothing matched',
