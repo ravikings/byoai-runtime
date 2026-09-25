@@ -965,6 +965,15 @@ LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 EXTENSION_SCHEMES = ("chrome-extension://", "moz-extension://")
 BROWSER_KINDS = ("browser.chat.request", "browser.chat.status")
 
+# Hosts the browser extension watches. The relay covers the whole page even
+# when the send itself bypassed fetch, so a bare host must classify like the
+# tagged capture does.
+_APP_TAG_FOR_HOST = {
+    "claude.ai": "claude",
+    "chatgpt.com": "chatgpt",
+    "chat.openai.com": "chatgpt",
+}
+
 
 def _host_name(value: str) -> str:
     value = (value or "").strip().lower()
@@ -1008,8 +1017,13 @@ def clean_browser_row(row: object) -> dict | None:
         return None
     out: dict = {"kind": row["kind"],
                  "wall_clock": time.strftime("%Y-%m-%d %H:%M:%S")}
-    if row.get("app") in APP_LABEL:
-        out["app"] = row["app"]
+    app = row.get("app")
+    # The relay publishes the host (`location.host`) because only it knows it
+    # reliably; the fetch-patch path sends the app tag directly. Map known
+    # hosts to apps so every path lands under the right surface.
+    app = _APP_TAG_FOR_HOST.get(app) or app
+    if app in APP_LABEL:
+        out["app"] = app
     chars = row.get("chars")
     if isinstance(chars, int) and not isinstance(chars, bool) and 0 <= chars < 10_000_000:
         out["chars"] = chars
@@ -1252,10 +1266,16 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
             if not isinstance(rows, list) or not rows:
                 self._send(400, b'{"error":"expected {rows: [...]}"}')
                 return
+            policy = load_policy(cfg)
             accepted = 0
             for row in rows[:200]:
                 clean = clean_browser_row(row)
                 if clean is not None:
+                    # The per-app toggles are policy, not display state: a
+                    # surface the user turned off is not recorded, whatever
+                    # the extension ships. Same rule the desktop proxy obeys.
+                    if not policy["apps"].get(clean.get("app") or "claude"):
+                        continue
                     append_row(cfg.ledger, clean)
                     accepted += 1
             # The watcher thread picks new rows up within ~1.5 s. Polling here

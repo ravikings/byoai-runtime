@@ -60,7 +60,7 @@
     const now = Date.now()
     if (now - lastSend < 1500) return // the fetch patch already recorded it
     lastSend = now
-    send({ kind: 'browser.chat.request', app: null, chars: null, wire: 'input' })
+    send({ kind: 'browser.chat.request', app: location.host, chars: null, wire: 'input' })
   }
 
   document.addEventListener('keydown', onKey, true)
