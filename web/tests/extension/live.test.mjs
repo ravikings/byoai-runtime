@@ -21,29 +21,21 @@
 import { describe, expect, it, afterAll } from 'vitest'
 import puppeteer from 'puppeteer-core'
 import { spawn } from 'node:child_process'
-import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { REPO, chromiumPath, pythonPath, skipReason, waitForServer } from './env.mjs'
 import http from 'node:http'
 import path from 'node:path'
 import os from 'node:os'
 
-const CHROME_CANDIDATE = '/tmp/pptr/chromium/mac_arm-1704762/chrome-mac/Chromium.app/Contents/MacOS/Chromium'
-if (!process.env.CHROMIUM_PATH) {
-  if (!existsSync(CHROME_CANDIDATE)) {
-    console.warn('[ext-test] downloading chromium for testing (first run only)...')
-    execSync('npx -y @puppeteer/browsers install chromium@latest --path /tmp/pptr', {
-      stdio: 'inherit', cwd: path.resolve('../web'),
-    })
-  }
-  process.env.CHROMIUM_PATH = CHROME_CANDIDATE
-}
-const EXT = path.resolve('../src/byoai/browser_extension')
+const SKIP = skipReason()
+if (SKIP) console.warn(`[ext-test] live: skipped — ${SKIP}`)
+const EXT = path.join(REPO, 'src', 'byoai', 'browser_extension')
 const FREE_PORT = 8320 + Math.floor(Math.random() * 60)
 
 let shield, page_server, browser
 
 
-describe('extension in a real browser (unpacked, CSP guarded)', () => {
+describe.skipIf(SKIP)('extension in a real browser (unpacked, CSP guarded)', () => {
   afterAll(async () => {
     await browser?.close?.()
     shield?.kill?.()
@@ -53,11 +45,11 @@ describe('extension in a real browser (unpacked, CSP guarded)', () => {
   it('captures a send and seals it in the Shield ledger', { timeout: 60_000 }, async () => {
     // 1. Shield server, that gate rows by origin and seal them.
     const ledger = path.join(os.tmpdir(), `ext-ledger-${Date.now()}.jsonl`)
-    shield = spawn(path.resolve('../.venv/bin/python'), ['-m', 'byoai.integrations.shield', ledger, '--port', String(FREE_PORT)], {
-      cwd: path.resolve('..'),
+    shield = spawn(pythonPath(), ['-m', 'byoai.integrations.shield', ledger, '--port', String(FREE_PORT)], {
+      cwd: REPO,
       stdio: 'ignore',
     })
-    await new Promise((r) => setTimeout(r, 2000))
+    await waitForServer(FREE_PORT)
 
     // 2. The mock chat surface: strict CSP (no inline scripts), one button
     //    that does what chatgpt.com does — POST a JSON chat body over fetch.
@@ -95,10 +87,9 @@ describe('extension in a real browser (unpacked, CSP guarded)', () => {
     // 3. Chrome with the unpacked extension.
     browser = await puppeteer.launch({
 // Branded Chrome 137+ ignores --load-extension (removed by Google), so the
-      // test drives Chromium for Testing (same engine, flag honored). First
-      // use downloads it via `npx @puppeteer/browsers install chromium`,
-      // cached under /tmp/pptr.
-      executablePath: process.env.CHROMIUM_PATH ?? '',
+      // test drives Chromium for Testing (same engine, flag honored); see
+      // env.mjs for how it is found, and skipped when absent.
+      executablePath: chromiumPath(),
       // MV3 service workers don't start in headless Chrome; a short
       // window flashes during this test.
       headless: false,

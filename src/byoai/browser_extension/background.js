@@ -29,6 +29,7 @@ const resolveEndpoint = (saved) =>
 const PIN_KEY = 'pinned_shield'
 const LAST_CAPTURE_KEY = 'last_capture'
 const WITNESS_KEY = 'witness'
+const ROLLBACK_KEY = 'rollback'
 const TODAY_KEY = 'today'
 const IDENTITY_PREFIX = 'byoai-shield-identity:'
 
@@ -66,11 +67,27 @@ async function checkServer(endpoint, { trustCurrent = false } = {}) {
   const saved = (await chrome.storage.local.get(PIN_KEY))[PIN_KEY]
   if (!saved || trustCurrent) {
     await chrome.storage.local.set({ [PIN_KEY]: identity.public_key })
-    await chrome.storage.local.remove(WITNESS_KEY) // a different Shield has its own count
+    // A different Shield has its own count. Cleared inside the witness queue so a
+    // check already waiting for the old Shield cannot write after it.
+    await serially(async () => {
+      await chrome.storage.local.remove([WITNESS_KEY, ROLLBACK_KEY])
+      rolledBack = false
+    })
     return { state: 'paired', deviceId: identity.device_id }
   }
   return { state: saved === identity.public_key ? 'ok' : 'mismatch', deviceId: identity.device_id }
 }
+
+// A content script shares the extension's id but runs for a web page and reports
+// that page's URL; only our own pages (the popup) report an extension URL.
+const isExtensionPage = (sender) =>
+  sender.id === chrome.runtime.id && String(sender.url || '').startsWith(chrome.runtime.getURL(''))
+
+let witnessChain = Promise.resolve()
+// The witness and the rollback flag are read, compared and written here and
+// nowhere else. The popup asks through messages, and every request runs one
+// after another, so an Accept cannot land between a check's read and write.
+const serially = (fn) => (witnessChain = witnessChain.then(fn, fn))
 
 /*
  * Shield's record lives in files the user's own account can edit. The browser
@@ -78,14 +95,35 @@ async function checkServer(endpoint, { trustCurrent = false } = {}) {
  * sealed entries Shield has reported (a single number, never content). If
  * Shield later reports fewer, its record was deleted or rolled back, and the
  * popup says so. Re-pairing with a different Shield starts a fresh witness.
- * Returns true when the reported total is lower than what was seen before.
+ * Returns the {was, now} of a shorter record (and keeps it flagged), else null.
  */
-async function noteWitness(total) {
-  if (!Number.isInteger(total)) return false
-  const seen = (await chrome.storage.local.get(WITNESS_KEY))[WITNESS_KEY]?.total ?? 0
-  if (total < seen) return true
-  if (total > seen) await chrome.storage.local.set({ [WITNESS_KEY]: { total } })
-  return false
+function noteWitness(total) {
+  return serially(async () => {
+    // Once a shorter record has been seen the warning stays until the user
+    // accepts it (which clears ROLLBACK_KEY). It must not fade just because a
+    // later batch reports a count that has caught up again.
+    const store = await chrome.storage.local.get([WITNESS_KEY, ROLLBACK_KEY])
+    if (store[ROLLBACK_KEY]) { rolledBack = true; return store[ROLLBACK_KEY] }
+    if (!Number.isInteger(total)) return null
+    const seen = store[WITNESS_KEY]?.total ?? 0
+    if (total < seen) {
+      const shorter = { was: seen, now: total }
+      await chrome.storage.local.set({ [ROLLBACK_KEY]: shorter })
+      rolledBack = true
+      return shorter
+    }
+    if (total > seen) await chrome.storage.local.set({ [WITNESS_KEY]: { total } })
+    return null
+  })
+}
+
+function acceptRecord(total) {
+  return serially(async () => {
+    await chrome.storage.local.set({ [WITNESS_KEY]: { total } })
+    await chrome.storage.local.remove(ROLLBACK_KEY)
+    rolledBack = false
+    setOfflineIfQueued()
+  })
 }
 
 // Even length-only facts are personal data once they accumulate over time
@@ -100,7 +138,7 @@ const RETRY_AT_KEY = 'retry_at'
 
 let queue = []
 let timer = null
-let restored = false
+let restoring = null
 
 const WATCHED_HOST = ['claude.ai', 'chatgpt.com', 'chat.openai.com', 'gemini.google.com', 'copilot.microsoft.com']
 
@@ -147,21 +185,30 @@ function setOffline() {
 }
 
 function setRefused(why) {
+  const text = why === 'shorter'
+    ? "Shield's record is shorter than it was. Open this popup."
+    : why === 'old'
+      ? 'Shield is too old to prove it is yours. Update it (pip install -U byoai) and restart it.'
+      : "The server on Shield's address isn't your Shield. Nothing is being sent. Open this popup."
   chrome.action.setBadgeText({ text: '!' })
   chrome.action.setBadgeBackgroundColor({ color: '#b42318' })
-  chrome.action.setTitle({ title: why === 'shorter'
-    ? "Shield's record is shorter than it was. Open this popup."
-    : "The server on Shield's address isn't your Shield. Nothing is being sent. Open this popup." })
+  chrome.action.setTitle({ title: text })
 }
 
+// True while a shorter record is unacknowledged; kept in step with storage so
+// no later "all good" badge update can hide it.
+let rolledBack = false
+
 function setWorking() {
+  if (rolledBack) { setRefused('shorter'); return }
   chrome.action.setBadgeText({ text: WATCHED_BADGE })
   chrome.action.setBadgeBackgroundColor({ color: '#16a34a' })
   chrome.action.setTitle({ title: WORKING_TITLE })
 }
 
 function setOfflineIfQueued() {
-  if (queue.length) setOffline()
+  if (rolledBack) setRefused('shorter')
+  else if (queue.length) setOffline()
   else setWorking()
 }
 
@@ -172,12 +219,21 @@ chrome.runtime.onInstalled.addListener(() => {
 // A worker that starts fresh (cold start, after termination, after browser
 // restart) resumes from what it persisted — or, finding nothing, honestly
 // reports the gap.
-chrome.runtime.onStartup.addListener(restore)
+chrome.runtime.onStartup.addListener(() => restore())
 restore()
 
-async function restore() {
-  if (restored) return
-  restored = true
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !(ROLLBACK_KEY in changes)) return
+  rolledBack = !!changes[ROLLBACK_KEY].newValue
+  if (rolledBack) setRefused('shorter'); else setOfflineIfQueued()
+})
+
+function restore() {
+  return (restoring ??= doRestore())
+}
+
+async function doRestore() {
+  rolledBack = !!(await chrome.storage.local.get(ROLLBACK_KEY))[ROLLBACK_KEY]
   const store = chrome.storage?.session
   if (!store) return // test harness or older Chrome; memory-only mode
   const data = await store.get([QUEUE_KEY, RETRY_AT_KEY])
@@ -223,9 +279,19 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       // Re-pairing is the user's decision, made in the popup. Anything coming
       // from a web page's tab (content scripts) can ask for a check, never
       // for a change of who is trusted.
-      const r = await checkServer(endpoint, { trustCurrent: msg.trustCurrent === true && !sender.tab })
+      const r = await checkServer(endpoint, { trustCurrent: msg.trustCurrent === true && isExtensionPage(sender) })
       reply?.({ ...r, endpoint })
     }).catch(() => reply?.({ state: 'unreachable' }))
+    return true
+  } else if (msg?.type === 'agent.noteWitness' || msg?.type === 'agent.acceptRecord') {
+    // Only the popup (an extension page) may move the witness; a content
+    // script is a web page's neighbour and gets no say in what is trusted.
+    if (!isExtensionPage(sender) || !Number.isInteger(msg.total)) {
+      reply?.({ error: 'not allowed' })
+      return false
+    }
+    const job = msg.type === 'agent.noteWitness' ? noteWitness(msg.total) : acceptRecord(msg.total)
+    job.then((shorter) => reply?.({ shorter: shorter || null }), () => reply?.({ error: 'failed' }))
     return true
   } else if (msg?.type === 'agent.getEndpoint') {
     chrome.storage.local.get(ENDPOINT_KEY, (v) =>
@@ -246,7 +312,16 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
 // One timestamp per app, overwritten on every send: enough for the popup to
 // say "last message noted 3 min ago" and to show when capture has gone quiet,
 // and nothing that grows into a usage history.
-async function noteCapture(url, kind) {
+// Sends from several tabs land here together; each one reads the counter,
+// adds to it and writes it back, so they run one at a time or one overwrites
+// the other.
+let noteChain = Promise.resolve()
+function noteCapture(url, kind) {
+  noteChain = noteChain.then(() => recordCapture(url, kind))
+  return noteChain
+}
+
+async function recordCapture(url, kind) {
   try {
     const host = new URL(url).host
     if (!WATCHED_HOST.includes(host)) return
@@ -275,7 +350,9 @@ function isLocalEndpoint(candidate) {
 }
 
 function scheduleFlush() {
-  setWorking()
+  // Not before restore() has read the rollback flag, or a shorter record
+  // could show as a green check for a moment after the worker wakes.
+  restore().then(setWorking)
   if (timer) return
   timer = setTimeout(flush, 2000)
   // The in-page timer dies with the worker; the alarm survives restarts and
@@ -313,12 +390,15 @@ async function flush() {
     // cap, so an off-again server days out still means dropped rows, not
     // an ever-growing local record.
     queue = [...batch, ...queue].slice(-MAX_QUEUED)
-    const refused = err?.message === 'mismatch' || err?.message === 'unverifiable'
-    // A server that failed the identity check is not going to fix itself in
-    // 10 s; leave it to the slow alarm instead of asking it again and again.
-    if (!refused) timer = setTimeout(flush, 10000)
+    const mismatch = err?.message === 'mismatch'
+    const old = err?.message === 'unverifiable'
+    // A different program on the port will not turn into Shield in seconds, so
+    // it waits for the slow alarm. An unverifiable (older) Shield is fixed by
+    // updating and restarting it, so it is asked again soon and recovers by
+    // itself without the user touching the extension.
+    if (!mismatch) timer = setTimeout(flush, old ? 30000 : 10000)
     chrome.alarms?.create('shield-retry', { delayInMinutes: 1.1 })
-    if (refused) setRefused(); else setOffline()
+    if (mismatch) setRefused(); else if (old) setRefused('old'); else setOffline()
     persist()
   }
 }

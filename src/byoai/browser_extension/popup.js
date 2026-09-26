@@ -38,12 +38,11 @@ async function probe() {
     const res = await withTimeout(fetch(baseOf(endpoint) + '/api/verify', { cache: 'no-store' }), 1500)
     if (!res.ok) throw new Error(String(res.status))
     const verify = await res.json()
-    const seen = (await chrome.storage.local.get('witness')).witness?.total ?? 0
-    const total = verify.sealed_total
-    if (Number.isInteger(total)) {
-      if (total < seen) return { state, endpoint, verify, apps: {}, shorter: { was: seen, now: total } }
-      if (total > seen) await chrome.storage.local.set({ witness: { total } })
-    }
+    // The background worker owns the witness (one writer, so an Accept cannot
+    // race a check); a shorter record stays flagged until "Accept".
+    const noted = await withTimeout(send({ type: 'agent.noteWitness', total: verify.sealed_total }), 1500)
+      .catch(() => null)
+    if (noted?.shorter) return { state, endpoint, verify, apps: {}, shorter: noted.shorter }
     let apps = {}
     try {
       const policy = await withTimeout(fetch(baseOf(endpoint) + '/api/policy', { cache: 'no-store' }), 1500)
@@ -179,11 +178,16 @@ function wire() {
     await refresh()
   })
   el('accept').addEventListener('click', async () => {
-    const check = await withTimeout(fetch(baseOf(el('endpoint').value || FALLBACK_ENDPOINT) + '/api/verify', { cache: 'no-store' }).then((r) => r.json()), 1500).catch(() => null)
+    const button = el('accept')
+    const check = await withTimeout(fetch(baseOf(el('endpoint').value || FALLBACK_ENDPOINT) + '/api/verify', { cache: 'no-store' }).then((r) => r.json()), 3000).catch(() => null)
     if (check && Number.isInteger(check.sealed_total)) {
-      await chrome.storage.local.set({ witness: { total: check.sealed_total } })
+      const done = await withTimeout(send({ type: 'agent.acceptRecord', total: check.sealed_total }), 3000).catch(() => null)
+      if (done && !done.error) { await refresh(); return }
     }
-    await refresh()
+    // Say so, rather than leaving the warning in place with no reaction.
+    const label = button.textContent
+    button.textContent = 'Shield did not answer, try again'
+    setTimeout(() => { button.textContent = label }, 2500)
   })
   el('open-privacy').addEventListener('click', (ev) => {
     ev.preventDefault()

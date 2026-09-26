@@ -11,19 +11,21 @@
 import { describe, expect, it, afterAll } from 'vitest'
 import puppeteer from 'puppeteer-core'
 import { spawn } from 'node:child_process'
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { REPO, chromiumPath, pythonPath, skipReason, sleep, until, waitForPortFree, waitForServer } from './env.mjs'
 import http from 'node:http'
 import path from 'node:path'
 import os from 'node:os'
 
-const EXT = path.resolve('../src/byoai/browser_extension')
+const EXT = path.join(REPO, 'src', 'byoai', 'browser_extension')
 const EXPECTED_ID = 'jbbongpiablbbmfflcaafjbeejeododc' // pinned by manifest.json "key"
 const PORT = 18300 + Math.floor(Math.random() * 400)
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const SKIP = skipReason()
+if (SKIP) console.warn(`[ext-test] identity: skipped — ${SKIP}`)
 
 let shield, impostor, browser
 
-describe('extension pairing (real browser)', () => {
+describe.skipIf(SKIP)('extension pairing (real browser)', () => {
   afterAll(async () => {
     await browser?.close?.()
     shield?.kill?.()
@@ -34,15 +36,15 @@ describe('extension pairing (real browser)', () => {
     const dataDir = mkdtempSync(path.join(os.tmpdir(), 'id-data-')) // ledger + seal chain live together
     const ledger = path.join(dataDir, 'captures.jsonl')
     const startShield = async () => {
-      shield = spawn(path.resolve('../.venv/bin/python'),
+      shield = spawn(pythonPath(),
         ['-m', 'byoai.integrations.shield', ledger, '--port', String(PORT)],
-        { cwd: path.resolve('..'), stdio: 'ignore' })
-      await sleep(2000)
+        { cwd: REPO, stdio: 'ignore' })
+      await waitForServer(PORT)
     }
     await startShield()
 
     browser = await puppeteer.launch({
-      executablePath: process.env.CHROMIUM_PATH ?? '/tmp/pptr/chromium/mac_arm-1704762/chrome-mac/Chromium.app/Contents/MacOS/Chromium',
+      executablePath: chromiumPath(),
       headless: false,
       args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
         '--user-data-dir=' + path.join(os.tmpdir(), `id-profile-${Date.now()}`), '--no-first-run'],
@@ -64,21 +66,27 @@ describe('extension pairing (real browser)', () => {
     // Phase 1: real Shield.
     expect(await open()).toBe('Paired with your Shield')
     await file('real-1')
-    await sleep(4500)
-    expect(readFileSync(ledger, 'utf8')).toContain('browser.chat.request')
+    await until(() => existsSync(ledger) && readFileSync(ledger, 'utf8').includes('browser.chat.request'),
+      15_000, 'the row to reach the ledger')
 
     // Phase 1b: the record is wiped (ledger and chain both) and Shield comes
     // back. The extension remembers it had 1 sealed entry, so this must show.
-    shield.kill(); await sleep(800)
+    shield.kill(); await waitForPortFree(PORT)
     for (const f of ['captures.jsonl', 'sealchain.json', 'sealchain.log.jsonl']) rmSync(path.join(dataDir, f), { force: true })
     await startShield()
+    expect(await open()).toBe("Shield's record is shorter than it was")
+    // More rows arrive, and Shield's count climbs back past what the extension
+    // remembers. The warning must still be there: it clears only on Accept.
+    for (const id of ['after-1', 'after-2']) await file(id)
+    await until(() => existsSync(ledger) && readFileSync(ledger, 'utf8').split('\n').filter(Boolean).length >= 2,
+      15_000, 'the new rows to reach the ledger')
     expect(await open()).toBe("Shield's record is shorter than it was")
     await popup.click('#accept')
     await popup.waitForFunction(() => document.getElementById('state-title').textContent === 'Shield is on', { timeout: 8000 })
 
     // Phase 2: an impostor takes the port. Its signature comes from a key the
     // extension never paired with.
-    shield.kill(); await sleep(800)
+    shield.kill(); await waitForPortFree(PORT)
     const { generateKeyPairSync, sign } = await import('node:crypto')
     const { privateKey, publicKey } = generateKeyPairSync('ed25519')
     const pub = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64')
@@ -97,7 +105,7 @@ describe('extension pairing (real browser)', () => {
 
     expect(await open()).toBe("That isn't your Shield")
     await file('imp-1')
-    await sleep(4500)
+    await sleep(4500) // a negative: give the worker time to (wrongly) send
     expect(seen.filter((s) => s.startsWith('POST'))).toEqual([]) // nothing reached the impostor
   })
 })

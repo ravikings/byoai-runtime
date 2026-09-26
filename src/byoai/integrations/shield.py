@@ -47,13 +47,34 @@ from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
 # BYOAI_SHIELD_PORT and enter the same port in the extension popup.
 import os as _os
 import sys as _sys
-DEFAULT_PORT = int(_os.environ.get("BYOAI_SHIELD_PORT", "17831"))
+
+
+def _port_from_env(default: int = 17831) -> int:
+    raw = _os.environ.get("BYOAI_SHIELD_PORT")
+    if raw is None:
+        return default
+    try:
+        port = int(raw)
+        if 1 <= port <= 65535:
+            return port
+    except ValueError:
+        pass
+    # An exported-but-empty variable is common; it must not stop Shield from
+    # starting at all, and the one line says what to fix.
+    print(f"BYOAI_SHIELD_PORT={raw!r} is not a port number (1-65535); "
+          f"using {default}.", file=_sys.stderr)
+    return default
+
+
+DEFAULT_PORT = _port_from_env()
 
 # What /api/identity signs (prefix + caller's nonce); the extension checks the
 # same bytes. Changing it breaks pairing with installed extensions.
 IDENTITY_PREFIX = b"byoai-shield-identity:"
 
 MAX_INTERACTIONS = 400
+# Most entries an older seal file may claim to have trimmed before an upgrade.
+MAX_CARRIED = 10_000_000
 
 
 # ------------------------------------------------- private files, portable
@@ -407,6 +428,9 @@ class SealChain:
         self._leaf_set: set[bytes] = set()
         self._tree: MerkleTree | None = None
         self._log_sig: tuple = (0, 0)
+        self._carried = 0                    # entries the v1 format trimmed before upgrade
+        self._batch = 0                      # >0 while a batch defers its checkpoint
+        self._batch_dirty = False
         # Things an examiner must be able to see, kept in the state file (a
         # reset that left no trace would be the easiest way to hide edits).
         self.incidents: list[dict] = []
@@ -428,8 +452,9 @@ class SealChain:
     def total(self) -> int:
         """Sealed entries ever. Only goes up, so a chain that comes back
         shorter than a witness remembers (the extension keeps one) has been
-        rolled back or wiped."""
-        return len(self._leaves)
+        rolled back or wiped. Includes entries the old format had already
+        trimmed before an upgrade, so the count does not drop when it happens."""
+        return self._carried + len(self._leaves)
 
     # -- persistence ------------------------------------------------------
     def _note(self, what: str, detail: str) -> None:
@@ -477,10 +502,25 @@ class SealChain:
                 self._note("chain_unreadable",
                            f"{type(exc).__name__}; the old file was kept as {moved.name}")
         self.incidents = list(state.get("incidents", [])) + self.incidents
+        migrated = False
+        carried = state.get("carried", 0)
+        self._carried = (carried if isinstance(carried, int) and not isinstance(carried, bool)
+                         and 0 < carried <= MAX_CARRIED else 0)
         if "entries" in state:                # format 1: one JSON file, last 512
-            self._migrate_v1(state)
+            migrated = True
+            kept = self._migrate_v1(state)
             state = {"incidents": self.incidents, "record_id": state.get("record_id"),
-                     "checkpoint": None}
+                     "checkpoint": state.get("checkpoint")}
+            n = len(kept.get("entries") or [])
+            total = kept.get("total", n)
+            # The file is the user's to edit: only a plausible count is carried,
+            # since an inflated one would make every honest count look rolled back.
+            if isinstance(total, int) and not isinstance(total, bool) and n <= total <= n + MAX_CARRIED:
+                self._carried = total - n
+            else:
+                self._carried = 0
+                self._note("migrated", "the older seal file's entry count was not a usable "
+                           "number, so the count restarts from the entries it held")
         self.checkpoint = state.get("checkpoint")
         stored_id = state.get("record_id")
         self.record_id = stored_id if isinstance(stored_id, str) and stored_id else uuid.uuid4().hex
@@ -500,13 +540,27 @@ class SealChain:
         self.entries = good[-self.WINDOW:]
         self._tree = None
         self._log_sig = _stat_sig(self.log_path)
-        if self.checkpoint and self._checkpoint_matches() is False:
+        cp_height = int((self.checkpoint or {}).get("height", 0) or 0)
+        trimmed = self._carried and len(self._leaves) < cp_height <= self.total
+        if migrated and self.checkpoint and trimmed and self._checkpoint_matches() is False:
+            # The old format signed over entries it later trimmed away, so this
+            # is the upgrade, not tampering. The old file is kept beside it.
+            self._note("migrated",
+                       "upgraded from the older seal format; its last signed checkpoint covered "
+                       "entries that format had already trimmed, so it could not be carried "
+                       "over (the old file was kept). A new one is signed with the next entry.")
+            self.checkpoint = None
+        elif self.checkpoint and self._checkpoint_matches() is False:
             self._note("checkpoint_mismatch",
                        "the signed checkpoint no longer matches the entries it covered "
                        "(entries were edited or removed while Shield was off)")
         self._persist()
 
-    def _migrate_v1(self, state: dict) -> None:
+    def _migrate_v1(self, state: dict) -> dict:
+        # Keep the old file whole: earlier seal proofs and its signed
+        # checkpoint stay checkable against it.
+        backup = self.cfg.seal_path.with_name(f"{self.cfg.seal_path.name}.v1-{int(time.time())}")
+        atomic_write_private(backup, self.cfg.seal_path.read_text())
         entries = state.get("entries") or []
         lines = []
         for i, e in enumerate(entries, 1):
@@ -516,6 +570,7 @@ class SealChain:
                                     sort_keys=True))
         if lines:
             atomic_write_private(self.log_path, "\n".join(lines) + "\n")
+        return state
 
     def _rewrite_log(self, entries: list[dict]) -> None:
         atomic_write_private(self.log_path, "".join(
@@ -533,7 +588,7 @@ class SealChain:
     def _persist(self) -> None:
         atomic_write_private(self.cfg.seal_path, json.dumps({
             "format": 2, "record_id": self.record_id, "checkpoint": self.checkpoint,
-            "total": self.total, "incidents": self.incidents,
+            "total": self.total, "carried": self._carried, "incidents": self.incidents,
         }, indent=1))
 
     def _append_line(self, entry: dict) -> None:
@@ -578,11 +633,36 @@ class SealChain:
         self.entries.append(entry)
         del self.entries[:-self.WINDOW]
         self._tree = None  # lazily rebuilt on demand
-        if self.height % self.cfg.sig_every == 0:
+        if self._batch:
+            self._batch_dirty = True          # signed once when the batch ends
+        elif self.height % self.cfg.sig_every == 0:
             self.sign_checkpoint()
         else:
             self._persist()
         return entry["seal"]
+
+    def batch(self):
+        """Seal many entries under one signed checkpoint. Each entry is on disk
+        as soon as it is stamped; only the signature (which hashes the whole
+        tree) waits for the end, so a burst costs one signature, not one per
+        row. A crash mid-burst leaves those entries without a signature until
+        the next seal; the ledger replay is idempotent, so nothing is lost, and
+        signing at load instead would vouch for entries someone appended by hand."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            with self._lock:
+                self._batch += 1
+                try:
+                    yield self
+                finally:
+                    self._batch -= 1
+                    if not self._batch and self._batch_dirty:
+                        self._batch_dirty = False
+                        if self._leaves:
+                            self._sign_checkpoint()
+        return _ctx()
 
     def sign_checkpoint(self) -> dict:
         with self._lock:
@@ -1113,11 +1193,12 @@ class Feed:
             lines = self.cfg.ledger.read_text().splitlines()
         except OSError:
             return 0
-        for x in lines:
-            try:
-                self._absorb(json.loads(x))
-            except ValueError:
-                continue
+        with self.seals.batch():
+            for x in lines:
+                try:
+                    self._absorb(json.loads(x))
+                except ValueError:
+                    continue
         self._offset = len(lines)
         return len(self.items)
 
@@ -1141,12 +1222,12 @@ class Feed:
         sig = (_stat_sig(self.cfg.ledger), _stat_sig(self.cfg.policy_path))
         if sig == getattr(self, "_poll_sig", None):
             return 0
-        self._poll_sig = sig
         self._policy = load_policy(self.cfg)
         try:
             lines = self.cfg.ledger.read_text().splitlines()
         except OSError:
-            return 0
+            return 0    # not remembered as seen: the next poll reads it again
+        self._poll_sig = sig
         if len(lines) < self._offset:  # rewritten under us (scrub/retention)
             self._offset = len(lines)
             return 0
@@ -1154,11 +1235,12 @@ class Feed:
             return 0
         new = [l for l in lines[self._offset:] if l.strip()]
         self._offset = len(lines)
-        for l in new:
-            try:
-                self._absorb(json.loads(l))
-            except Exception:
-                continue
+        with self.seals.batch():
+            for l in new:
+                try:
+                    self._absorb(json.loads(l))
+                except Exception:
+                    continue
         return len(new)
 
     def _row_id_for(self, r: dict) -> str:
