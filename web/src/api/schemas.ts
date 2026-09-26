@@ -138,6 +138,24 @@ export const FleetSummary = z.object({
     })),
   }),
   open_findings: z.number().int(),
+  /**
+   * Present only when the summary comes from the local Shield's own seal
+   * chain — the one host where integrity is produced on the read path rather
+   * than deferred to a verify job. When it is here, the console can name the
+   * root it checked and the moment it checked, instead of just a rollup.
+   * Absent everywhere else: a fleet server cannot re-walk a device's chain
+   * and must not pretend it verified something it stored.
+   */
+  local: z.object({
+    device_id: z.string(),
+    host: z.string(),
+    merkle_root: z.string().nullable(),
+    sealed_total: z.number().int(),
+    chain_verified_at: z.string(),
+    incidents: z.number().int(),
+    connected: z.boolean(),
+    coriqo_tenant: z.string().nullable(),
+  }).optional(),
 })
 export type FleetSummary = z.infer<typeof FleetSummary>
 
@@ -157,7 +175,10 @@ export const Device = z.object({
   ship_lag_s: z.number().nullable(),
   key_state: KeyState,
   integrity: IntegrityState,
-  batches_received: z.number().int(),
+  /** How many batches a receiving server took. Null on the local host, which
+   *  cannot observe its own shipment's arrival — zero there would report
+   *  "nothing received" as a fact when the truth is "nobody here can see". */
+  batches_received: z.number().int().nullable(),
 })
 export type Device = z.infer<typeof Device>
 

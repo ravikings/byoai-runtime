@@ -90,6 +90,25 @@ function FleetOverview() {  const href = useHref()
         ) : null}
         {summaryMismatch ? <span className="tag unknown">unexpected response</span> : null}
         <div className="spacer" style={{ flex: 1 }} />
+        {/* Visible staleness: every figure on this screen has an auto-refresh
+            contract (30 s), and a number that cannot say when it was read is
+            the same failure as one that was never validated. */}
+        <span className="status" aria-label="refresh state">
+          <span
+            className={
+              summaryQ.error !== null
+                ? 'dot bad'
+                : summaryQ.isFetching
+                  ? 'dot ok pulse'
+                  : 'dot ok'
+            }
+          />
+          {summaryQ.error !== null
+            ? 'refresh failed'
+            : summaryQ.dataUpdatedAt === 0
+              ? 'connecting…'
+              : `live · updated ${duration((Date.now() - summaryQ.dataUpdatedAt) / 1000)} ago`}
+        </span>
         <a className="btn sm" href={href.coverage(tenant)}>
           Coverage report →
         </a>

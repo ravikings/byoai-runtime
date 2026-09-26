@@ -50,7 +50,14 @@ export function NeverSeenSection(props: { tenant: string; devices: CoverageRepor
               <div style={line2Style}>
                 <span className="hash">enrolled {ts(d.enrolled_at)}</span>
                 <span className="hash">key_state {d.key_state}</span>
-                <span className="tag bad">batches_received {num(d.batches_received)}</span>
+                {d.batches_received === null ? (
+                  // The local Shield cannot see its own shipment arrive, so
+                  // it answers null. "batches_received 0" here would report
+                  // an arrival-side fact nobody measured.
+                  <span className="tag unknown">batches_received unknown on this host</span>
+                ) : (
+                  <span className="tag bad">batches_received {num(d.batches_received)}</span>
+                )}
                 <span className="tag warn">
                   last_seq_received {d.last_seq_received === null ? 'none ever' : num(d.last_seq_received)}
                 </span>

@@ -1752,6 +1752,11 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                           policy=lambda: load_policy(cfg),
                           events=lambda: feed.items)
     publisher.start()  # background; sends only when enrolled and due
+    # The console SPA's fleet screens read /v1/console/fleet*; here the fleet
+    # is this one Mac, and the answers come from the local chain (see
+    # byoai.integrations.shield_console for what is knowable on this host).
+    from byoai.integrations.shield_console import ShieldConsoleAPI
+    console_api = ShieldConsoleAPI(cfg, feed, publisher)
     pruned = scrub_ledger(cfg, scrub_text=False)["deleted"]
     if pruned:
         print(f"retention: deleted {pruned} ledger rows past "
@@ -1850,6 +1855,16 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                 return privacy_report(cfg, feed.seals)
             return None
 
+        def _fleet_api(self, path: str) -> None:
+            """Read-only fleet console answers for this Mac's chain.
+
+            GET-only and localhost-addressed like every other endpoint here:
+            the Host check in request_problem has already run, and a write
+            attempt simply has no route to hit."""
+            from urllib.parse import parse_qs, urlparse
+            code, body = console_api.handle(path, parse_qs(urlparse(self.path).query))
+            self._send(code, body)
+
         def _unprefix(self) -> None:
             """The app calls ``/shield-api/*`` (Vite rewrites it in dev);
             standalone, this server takes the same prefix."""
@@ -1906,6 +1921,9 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
             if self._refused("GET"):
                 return
             path = self.path.split("?")[0]
+            if path.startswith("/v1/console/"):
+                self._fleet_api(path)
+                return
             api = self._api()
             if path == "/api/apps":
                 self._send(200, json.dumps(self._apps()).encode())

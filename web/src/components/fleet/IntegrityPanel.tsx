@@ -1,7 +1,7 @@
 import type { FleetSummary } from '@/api/schemas'
 import { useHref } from '@/app/hrefContext'
 import { Provenance } from './Provenance'
-import { n } from './format'
+import { n, clock } from './format'
 
 /**
  * Three segments, never two. `unverified` is not a shade of intact — a verify
@@ -62,6 +62,54 @@ export function IntegrityPanel({ summary, tenant }: { summary: FleetSummary; ten
           <span className="dot unknown" /> {n(integrity.unverified)} unverified
         </span>
       </div>
+
+      {summary.local ? (
+        // The local host walks the chain itself — every entry re-hashed, the
+        // checkpoint signature re-checked — on the same read that produced
+        // this panel. That is the one claim this screen gets to make with a
+        // root hash attached to it, so it shows the root, the moment of the
+        // walk, and the device whose key signed it. On every other backend
+        // `local` is absent and this block never renders: stored is not
+        // verified there, and a footer implying a walk nobody ran would be
+        // the exact lie the panel above exists to prevent. The accent is the
+        // walk's own outcome — a green rule beside a broken chain would be
+        // the same colour-carrying-the-wrong-state bug, in the one block
+        // that exists to show the state honestly.
+        <div className={summary.integrity.broken > 0 || summary.local.incidents > 0 ? 'local-proof bad' : 'local-proof'}>
+          <div className="pair">
+            <span className="mono muted">chain walked on this read</span>
+            <span className={summary.integrity.broken > 0 || summary.local.incidents > 0 ? 'tag bad' : 'tag ok'}>
+              {summary.local.incidents === 0
+                ? summary.integrity.broken > 0
+                  ? 'walk failed'
+                  : 'signature valid'
+                : `${n(summary.local.incidents)} incident${summary.local.incidents === 1 ? '' : 's'}`}
+            </span>
+          </div>
+          <div className="row" style={{ gap: 'var(--s2)' }}>
+            <span className="hash">root {summary.local.merkle_root ? `${summary.local.merkle_root.slice(0, 10)}…` : '—'}</span>
+            <span className="mono dim">{n(summary.local.sealed_total)} entries</span>
+            <span className="mono dim">walked {clock(summary.local.chain_verified_at)} UTC</span>
+          </div>
+          <div className="provenance">
+            device <span className="mono">{summary.local.device_id}</span> · host{' '}
+            <span className="mono">{summary.local.host}</span>
+            {' · '}
+            {summary.local.connected ? (
+              summary.local.coriqo_tenant === null ? (
+                'connected, tenant not named'
+              ) : (
+                <>
+                  ships to <b>{summary.local.coriqo_tenant}</b> — arrival at the fleet server is{' '}
+                  <a className="ref" href={href.coverage(tenant)}>that server&apos;s record</a>, not this one
+                </>
+              )
+            ) : (
+              'not connected — nothing has left this Mac'
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <p className="mono muted" style={{ lineHeight: 1.45, margin: 'var(--s2) 0 0' }}>
         {summed === reporting ? (

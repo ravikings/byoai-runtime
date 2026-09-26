@@ -96,6 +96,25 @@ local process can weaken the policy. `POST /api/policy` also refuses (409) a
 change to a setting a managed policy has locked, naming who manages it — see
 "Managed mode" below.
 
+### The fleet console on one Mac
+
+`byoai-shield` also serves the console's fleet screens (
+`http://127.0.0.1:17831/console/<tenant>/fleet`) by answering the same
+read-only API the fleet server does (`web/src/api/schemas.ts`), with the
+fleet here being exactly one enrolled device: this Mac. Nothing is
+configured; the same localhost-Host guard applies, and `tenant` is echoed.
+
+| Endpoint | What this host can honestly answer |
+|---|---|
+| `GET /v1/console/fleet` | Coverage and liveness from the seal log; **integrity from a fresh walk on every read** — entries re-hashed, checkpoint signature re-checked (the optional `local` block carries the root, so the Integrity panel shows the earned verdict with its evidence); backlog/unsynced only while connected to a fleet server, null otherwise; denial from local verdicts over the loaded ledger window. |
+| `GET /v1/console/fleet/devices` | One device row: this Mac's `device_id` and host, agents observed in the ledger (`desktop:claude`, `browser:chatgpt`, `mcp:<client>`), and `null` — never `0` — where only the receiving server knows (batches arrived, ship lag, cadence). |
+| `GET /v1/console/fleet/findings` | The seal chain's recorded incidents, mapped onto the console's finding kinds (`chain_broken` → `broken_links`, `checkpoint_mismatch` → `bad_signatures`). An empty list means this read walked everything and it held. |
+| `GET /v1/console/fleet/coverage` | The silence report for one device. `unverified_ranges` is empty because the walk is the read; the blind-spot text names the limit: no other machine you run is in any of these numbers. |
+
+Implemented in `src/byoai/integrations/shield_console.py` beside the rules
+it follows; `byoai.console.router` is the fleet-server side of the same
+contract.
+
 ### Shield managed mode
 
 Once enrolled with Coriqo, Shield can be put into managed mode: a Coriqo

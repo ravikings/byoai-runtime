@@ -12,10 +12,12 @@
  * against each other would be a presentation, not a fact. Within each class,
  * rows sort worst-first by THAT class's own clock.
  */
+import { useEffect } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useHref } from '@/app/hrefContext'
 import { useCoverage } from '@/api/queries'
-import { toScope } from '@/app/scope'
+import type { Inclusion } from '@/api/schemas'
+import { toScope, usePublishShellStatus, type ShellStatus, type HealthRollup } from '@/app/scope'
 import { ScopeLine } from '@/components/ScopeLine'
 import { BlindArea } from '@/components/coverage/BlindArea'
 import { BlindSpotPanel } from '@/components/coverage/BlindSpotPanel'
@@ -26,6 +28,7 @@ import { UngovernedAgentsSection } from '@/components/coverage/UngovernedAgentsS
 import { UnverifiedRangesSection } from '@/components/coverage/UnverifiedRangesSection'
 import { CoverageEmpty, CoverageError, CoverageLoading } from '@/components/coverage/states'
 import { num, ts } from '@/components/coverage/format'
+import { href as fleetHref } from '@/components/fleet/format'
 
 export const Route = createFileRoute('/console/$tenant/fleet/coverage')({
   component: CoveragePage,
@@ -37,6 +40,16 @@ function CoveragePage() {
   const search = Route.useSearch()
   const query = useCoverage(toScope(tenant, search))
   const r = query.data
+
+  /* The shell's health dots are a rollup of what this screen read, published
+   * upward — they may not fall back to grey just because the Fleet overview
+   * is not the screen you are on. Absence is this page's whole subject, so
+   * its dots are computed from the classes that ARE present. */
+  const publish = usePublishShellStatus()
+  useEffect(() => {
+    publish(coverageShell(tenant, r, query.isError))
+    return () => publish(null)
+  }, [publish, tenant, r, query.isError])
 
   return (
     <>
@@ -52,6 +65,16 @@ function CoveragePage() {
       <ScopeLine
         tenant={tenant}
         search={search}
+        inclusion={
+          r === undefined
+            ? undefined
+            : {
+                // The same denominator the blind-area rollup computes over:
+                // enrolled, less the devices that named themselves absent.
+                devices_included: r.enrolled - r.never_seen.length - r.silent.length,
+                devices_enrolled: r.enrolled,
+              }
+        }
         extra={[
           // "not yet loaded" over a query that has ERRORED describes a state
           // the page is not in, on the one screen whose premise is that
@@ -129,4 +152,92 @@ function CoverageBody(props: {
       </p>
     </>
   )
+}
+
+/* ------------------------------------------------------------------ *
+ * The three health dots, rolled up from what this page actually read.
+ * ------------------------------------------------------------------ */
+
+const UNKNOWN = (worst: string, to: string): HealthRollup => ({
+  state: 'unknown',
+  state_label: 'unknown',
+  worst,
+  href: to,
+})
+
+function coverageShell(
+  tenant: string,
+  r: ReturnType<typeof useCoverage>['data'],
+  failed: boolean,
+): ShellStatus {
+  if (r === undefined) {
+    const why = failed
+      ? 'the coverage request failed — absence cannot be read'
+      : 'coverage report still loading'
+    return {
+      coverage: UNKNOWN(why, fleetHref.coverage(tenant)),
+      integrity: UNKNOWN(why, fleetHref.findings(tenant)),
+      ingest: UNKNOWN(why, fleetHref.devices(tenant)),
+    }
+  }
+  const quiet = r.silent.length + r.never_seen.length
+  const inclusion: Inclusion = {
+    devices_included: r.enrolled - quiet,
+    devices_enrolled: r.enrolled,
+  }
+
+  const coverage: HealthRollup =
+    r.never_seen.length > 0
+      ? {
+          state: 'bad',
+          state_label: 'unaccounted',
+          worst: `${num(r.never_seen.length)} enrolled device${
+            r.never_seen.length === 1 ? '' : 's'
+          } never heard from`,
+          href: fleetHref.coverage(tenant),
+        }
+      : r.silent.length > 0
+        ? {
+            state: 'warn',
+            state_label: 'degraded',
+            worst: `${num(r.silent.length)} quiet device${r.silent.length === 1 ? '' : 's'} past cadence`,
+            href: fleetHref.coverage(tenant),
+          }
+        : {
+            state: 'ok',
+            state_label: 'intact',
+            worst: `all ${num(r.enrolled)} enrolled devices within cadence`,
+            href: fleetHref.coverage(tenant),
+          }
+
+  // This screen counts absences; per-device verify verdicts are the
+  // findings page's knowledge. A settled green dot here would claim an
+  // integrity rollup the coverage report does not carry.
+  const integrity: HealthRollup =
+    r.unverified_ranges.length > 0
+      ? UNKNOWN(
+          `${num(r.unverified_ranges.length)} range${r.unverified_ranges.length === 1 ? '' : 's'} stored and never walked`,
+          fleetHref.verifyUnverified(tenant),
+        )
+      : UNKNOWN('integrity verdicts are not carried by the coverage report', fleetHref.findings(tenant))
+
+  const pending = r.checkpoint_gaps.sessions_without_checkpoint
+  const ingest: HealthRollup =
+    pending > 0
+      ? {
+          state: 'warn',
+          state_label: 'degraded',
+          worst: `${num(pending)} checkpoint gap${pending === 1 ? '' : 's'} on this fleet`,
+          href: fleetHref.coverage(tenant),
+        }
+      : r.enrolled === 0
+        ? UNKNOWN('no enrolled device to ship anything', fleetHref.enrollment(tenant))
+        : {
+            state: 'ok',
+            state_label: 'intact',
+            worst: 'nothing shipped without a checkpoint',
+            href: fleetHref.devices(tenant),
+          }
+
+  return { inclusion, coverage, integrity, ingest }
 }
