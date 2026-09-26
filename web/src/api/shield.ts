@@ -98,6 +98,19 @@ export async function fetchReceipt(seal: string) {
 
 export const RETENTION_DAYS = [7, 30, 90, 365] as const
 
+/** An MSP's Coriqo tenant sets policy centrally; present only once this
+ * device has ever received one. ``by``/``locked`` are null/empty while a
+ * signed ``policy: null`` document has unmanaged the device (its version
+ * is kept, so a replayed older envelope is still refused as a rollback). */
+export const ShieldManaged = z.object({
+  by: z.string().nullable(),
+  version: z.number().int().nullable(),
+  locked: z.array(z.string()),
+  fetched_at: z.string().nullable(),
+  error: z.string().nullable(),
+})
+export type ShieldManaged = z.infer<typeof ShieldManaged>
+
 export const ShieldPolicy = z.object({
   mode: z.enum(['observe', 'redact', 'block']),
   apps: z.record(z.boolean()),
@@ -107,6 +120,7 @@ export const ShieldPolicy = z.object({
   /** Apps the capture proxy can read. Served, not saved: the others can't
    * be turned on yet. */
   covered_apps: z.array(z.string()).optional(),
+  managed: ShieldManaged.optional(),
 })
 export type ShieldPolicy = z.infer<typeof ShieldPolicy>
 

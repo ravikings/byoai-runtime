@@ -29,12 +29,27 @@ class FakeCoriqo:
         self.batches: list[dict] = []
         self.fail_with: int | None = None
         self.retry_after: str | None = None
+        #: Set to make /v1/enroll pin a policy key straight away, like an
+        #: enrolment response that carries EnrolByTokenOut.policy_key.
+        self.enrol_policy_key: dict | None = None
+        #: What POST /v1/shield/policy answers next.
+        self.policy_changed = False
+        self.policy_envelope: dict | None = None
+        self.policy_have_version: int | None = None
+        self.policy_fail = False
+        self.policy_requests: list[dict] = []
+        #: GET /api/v1/checkpoints/public-keys — the already-enrolled path.
+        self.public_keys: list[dict] = []
+        self.public_keys_requests = 0
+        self.public_keys_down = False
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/enroll":
-            return httpx.Response(201, json={
-                "device_id": "dev-enrolled-1", "coriqo_base_url": "https://coriqo.test",
-                "tenant_slug": "acme_bank", "label": "shield"})
+            body = {"device_id": "dev-enrolled-1", "coriqo_base_url": "https://coriqo.test",
+                    "tenant_slug": "acme_bank", "label": "shield"}
+            if self.enrol_policy_key:
+                body["policy_key"] = self.enrol_policy_key
+            return httpx.Response(201, json=body)
         if request.url.path == "/v1/checkpoints/batch":
             if self.fail_with:
                 headers = {"retry-after": self.retry_after} if self.retry_after else {}
@@ -43,6 +58,18 @@ class FakeCoriqo:
             assert request.headers["x-coriqo-signature"]
             self.batches.append(body)
             return httpx.Response(200, json={"accepted": 1, "duplicates": 0, "rejected": []})
+        if request.url.path == "/v1/shield/policy":
+            if self.policy_fail:
+                return httpx.Response(500, json={"detail": "nope"})
+            self.policy_requests.append(json.loads(gzip.decompress(request.content)))
+            if self.policy_changed:
+                return httpx.Response(200, json={"changed": True, "envelope": self.policy_envelope})
+            return httpx.Response(200, json={"changed": False, "version": self.policy_have_version})
+        if request.url.path == "/api/v1/checkpoints/public-keys":
+            self.public_keys_requests += 1
+            if self.public_keys_down:
+                return httpx.Response(503)
+            return httpx.Response(200, json={"keys": self.public_keys})
         return httpx.Response(404)
 
     def client(self) -> httpx.Client:
@@ -349,13 +376,14 @@ def test_every_request_says_when_it_left_and_whether_shield_protects(setup, tmp_
     pub.tick()
     first = coriqo.batches[0]
     assert first["sent_at"] == "1970-01-12T13:46:40Z"   # the injected clock, RFC3339 UTC
-    assert first["shield"] == {"protecting": True, "reasons": [], "mode": "redact"}
+    assert first["shield"] == {"protecting": True, "reasons": [], "mode": "redact",
+                                "policy_version": None}
     state.update(protecting=False, reasons=["capture_stopped"])
     clock.t += 6 * 3600
     assert pub.tick() is True                       # heartbeat
     second = coriqo.batches[1]
     assert second["shield"] == {"protecting": False, "reasons": ["capture_stopped"],
-                                "mode": "redact"}
+                                "mode": "redact", "policy_version": None}
     assert second["sent_at"] != first["sent_at"]
     # the entry is byte for byte the one Coriqo already holds
     assert json.dumps(second["checkpoints"], sort_keys=True) == \
@@ -392,7 +420,8 @@ def test_without_a_protection_check_shield_never_claims_protection(setup):
     _grow(seals)
     pub.tick()
     assert coriqo.batches[0]["shield"] == {"protecting": False,
-                                          "reasons": ["state_unknown"], "mode": None}
+                                          "reasons": ["state_unknown"], "mode": None,
+                                          "policy_version": None}
 
 
 def test_a_failing_protection_check_does_not_stop_the_send(setup, tmp_path):
@@ -601,3 +630,251 @@ def test_the_proxy_marks_itself_running_and_clears_on_stop(tmp_path):
     assert read_proxy_alive(ledger) is not None
     proxy.done()
     assert not proxy_alive_path(ledger).exists() and read_proxy_alive(ledger) is None
+
+
+# --------------------------------------------------- managed policy polling
+#
+# Phase 1 of the Shield MSP plan: poll POST /v1/shield/policy, signed exactly
+# like the checkpoint post above; pin the signing key at enrolment or (an
+# already-enrolled device) by fetching the public-keys list once; verify and
+# apply via byoai.integrations.shield.apply_managed_envelope.
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from byoai.integrations.shield import load_managed_policy
+from byoai.recorder.canonical import canonicalize
+
+# Coriqo signs with its own server key, not a device key: lowercase hex of the
+# raw 32-byte public key and the raw 64-byte signature, no "ed25519:" prefix.
+# These fixtures build server-shaped envelopes/responses, not DeviceKey's.
+
+
+def _server_key():
+    return Ed25519PrivateKey.generate()
+
+
+def _pub_hex(key) -> str:
+    return key.public_key().public_bytes_raw().hex()
+
+
+def _policy_envelope(key, **doc_overrides):
+    doc = {
+        "policy_id": "pol_1", "version": 1, "tenant_slug": "acme_bank",
+        "device_id": None, "issued_at": "2026-09-26T10:00:00Z",
+        "key_id": "coriqo-v1", "managed_by": "Acme IT",
+        "policy": {"mode": "block", "apps": {"claude": True}, "keep_text": False,
+                   "retention_days": 7, "notice": True},
+        "locked": ["mode"],
+    }
+    doc.update(doc_overrides)
+    return {"document": doc, "signature": key.sign(canonicalize(doc)).hex()}
+
+
+def test_poll_policy_with_a_key_pinned_at_enrolment_applies_a_good_signature(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    coriqo.enrol_policy_key = {"key_id": "coriqo-v1", "public_key": _pub_hex(key)}
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    stored = load_managed_policy(pub.managed_policy_path)
+    assert stored["envelope"]["document"]["version"] == 1
+    assert pub.policy_status()["error"] is None
+    (req,) = coriqo.policy_requests
+    assert "sent_at" in req and req["have_version"] is None
+
+
+def test_poll_policy_pins_the_key_by_fetching_public_keys_once(setup, tmp_path):
+    """An already-enrolled device (no policy_key from /v1/enroll) fetches
+    GET .../public-keys once and pins whichever entry matches the envelope's
+    key_id."""
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)                              # no policy_key pinned
+    coriqo.public_keys = [{"key_id": "coriqo-v1", "public_key": _pub_hex(key)}]
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 1
+    assert coriqo.public_keys_requests == 1
+    # a second poll with another changed envelope reuses the pinned key
+    coriqo.policy_envelope = _policy_envelope(key, version=2)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 2
+    assert coriqo.public_keys_requests == 1          # not fetched again
+
+
+def test_poll_policy_pins_a_pem_key_from_the_real_public_keys_shape(setup, tmp_path):
+    """Coriqo's GET .../public-keys sends ``public_key_pem`` (an SPKI PEM),
+    not ``public_key`` — Shield loads it and pins the raw hex form."""
+    from cryptography.hazmat.primitives import serialization
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    pem = key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.public_keys = [{"key_id": "coriqo-v1", "public_key_pem": pem, "revoked": False,
+                          "active": True}]
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 1
+    assert pub.state.policy_public_key == _pub_hex(key)
+
+
+def test_a_base64_key_pinned_at_enrolment_is_normalised_to_hex(setup, tmp_path):
+    import base64
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    raw = key.public_key().public_bytes_raw()
+    coriqo.enrol_policy_key = {"key_id": "coriqo-v1",
+                               "public_key": base64.b64encode(raw).decode()}
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 1
+    assert pub.policy_status()["error"] is None
+
+
+def test_a_key_list_outage_is_not_reported_as_an_unknown_key_and_retries_soon(setup, tmp_path):
+    from byoai.integrations.shield_publish import POLICY_POLL_S
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.public_keys = [{"key_id": "coriqo-v1", "public_key": _pub_hex(key)}]
+    coriqo.public_keys_down = True
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path) is None
+    assert "signing key" in pub.policy_status()["error"]
+    assert "unknown" not in pub.policy_status()["error"]
+    clock.t += 61                                    # due again in a minute, not ten
+    assert pub.policy_due() and 61 < POLICY_POLL_S
+    coriqo.public_keys_down = False
+    pub.poll_policy()
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 1
+
+
+def test_a_revoked_key_is_refused_even_if_the_id_matches(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    from cryptography.hazmat.primitives import serialization
+    pem = key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.public_keys = [{"key_id": "coriqo-v1", "public_key_pem": pem, "revoked": True}]
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path) is None
+    assert "unknown key" in pub.policy_status()["error"]
+
+
+def test_an_unknown_key_id_is_refused_and_fetched_only_once(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    other = _server_key()
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.public_keys = [{"key_id": "some-other-key", "public_key": _pub_hex(other)}]
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)   # signed with a key Coriqo never lists
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path) is None
+    assert "unknown key" in pub.policy_status()["error"]
+    assert coriqo.public_keys_requests == 1
+    pub.poll_policy(force=True)                      # doesn't refetch every poll
+    assert coriqo.public_keys_requests == 1
+
+
+def test_a_bad_signature_wrong_tenant_and_rollback_are_refused_and_keep_the_policy(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    coriqo.enrol_policy_key = {"key_id": "coriqo-v1", "public_key": _pub_hex(key)}
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key, version=5)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 5
+
+    bad = _policy_envelope(key, version=6)
+    bad["signature"] = bad["signature"][:-4] + "abcd"
+    coriqo.policy_envelope = bad
+    pub.poll_policy(force=True)
+    assert "signature" in pub.policy_status()["error"]
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 5
+
+    coriqo.policy_envelope = _policy_envelope(key, version=6, tenant_slug="someone_else")
+    pub.poll_policy(force=True)
+    assert "tenant" in pub.policy_status()["error"]
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 5
+
+    coriqo.policy_envelope = _policy_envelope(key, version=4)   # older than what's stored
+    pub.poll_policy(force=True)
+    assert "rollback" in pub.policy_status()["error"]
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 5
+
+
+def test_unmanage_clears_the_locked_keys(setup, tmp_path):
+    from byoai.integrations.shield import load_policy, merge_policy, save_policy
+    seals, coriqo, clock, pub, cfg = setup
+    cfg.managed_policy_path = tmp_path / "managed.json"
+    pub.managed_policy_path = cfg.managed_policy_path
+    key = _server_key()
+    coriqo.enrol_policy_key = {"key_id": "coriqo-v1", "public_key": _pub_hex(key)}
+    _enrol(cfg, coriqo)
+    save_policy(cfg, merge_policy({"mode": "redact"}))
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    assert load_policy(cfg)["mode"] == "block"
+    coriqo.policy_envelope = _policy_envelope(key, version=2, policy=None, locked=[])
+    pub.poll_policy(force=True)
+    assert load_policy(cfg)["mode"] == "redact"
+
+
+def test_a_poll_failure_keeps_the_current_policy_and_never_raises(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    coriqo.enrol_policy_key = {"key_id": "coriqo-v1", "public_key": _pub_hex(key)}
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    coriqo.policy_changed = True
+    coriqo.policy_envelope = _policy_envelope(key)
+    pub.poll_policy(force=True)
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 1
+    coriqo.policy_fail = True
+    coriqo.policy_envelope = _policy_envelope(key, version=2)
+    pub.poll_policy(force=True)                      # never raises
+    assert load_managed_policy(pub.managed_policy_path)["envelope"]["document"]["version"] == 1
+    assert pub.policy_status()["error"] is not None
+    _grow(seals)
+    assert pub.tick() is True                        # capture/publishing keeps going
+
+
+def test_poll_policy_only_runs_every_ten_minutes_and_on_send_now(setup, tmp_path):
+    seals, coriqo, clock, pub, cfg = setup
+    key = _server_key()
+    coriqo.enrol_policy_key = {"key_id": "coriqo-v1", "public_key": _pub_hex(key)}
+    pub.managed_policy_path = tmp_path / "managed.json"
+    _enrol(cfg, coriqo)
+    pub.tick()                                       # "at start"
+    assert len(coriqo.policy_requests) == 1
+    pub.tick()                                       # not due yet
+    assert len(coriqo.policy_requests) == 1
+    clock.t += 601
+    pub.tick()
+    assert len(coriqo.policy_requests) == 2
+    _grow(seals)
+    pub.publish_now()                                # "Send now" forces a poll
+    assert len(coriqo.policy_requests) == 3

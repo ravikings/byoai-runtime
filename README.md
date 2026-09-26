@@ -445,15 +445,18 @@ Shield keeps retrying with the usual backoff.
 * `sent_at`: when this request left, in UTC. Coriqo refuses one older than
   10 minutes or more than 5 minutes ahead, so a captured request can't be
   replayed later.
-* `shield`: `{"protecting", "reasons", "mode"}`, whether Shield is checking
-  traffic right now. It is protecting when the capture proxy is running, the
-  Mac's system HTTPS proxy points at it (checked with `scutil --proxy`; if
-  that can't be read, it isn't counted against), the policy redacts or blocks,
-  and at least one app Shield can read is switched on. Otherwise `reasons`
-  names what is missing: `capture_stopped`, `proxy_off`,
-  `policy_monitor_only`, `no_apps_enabled`. The browser extension doesn't
-  count towards protection: it records that a chat happened and never reads
-  or changes what is sent. Coriqo alerts on a Mac that reports it is not
+* `shield`: `{"protecting", "reasons", "mode", "policy_version"}`, whether
+  Shield is checking traffic right now. It is protecting when the capture
+  proxy is running, the Mac's system HTTPS proxy points at it (checked with
+  `scutil --proxy`; if that can't be read, it isn't counted against), the
+  policy redacts or blocks, and at least one app Shield can read is switched
+  on. Otherwise `reasons` names what is missing: `capture_stopped`,
+  `proxy_off`, `policy_monitor_only`, `no_apps_enabled`. `policy_version` is
+  this device's currently applied managed-policy version, or `null` if it
+  isn't managed — see "Managed mode" below; Coriqo compares it with what the
+  device should have to show drift. The browser extension doesn't count
+  towards protection: it records that a chat happened and never reads or
+  changes what is sent. Coriqo alerts on a Mac that reports it is not
   protecting. Shield knows the proxy is running from
   `shield_proxy.alive`, a small file (pid and listen port) the proxy writes
   next to the ledger on start and removes on a clean stop. A file left by a
@@ -471,6 +474,35 @@ Coriqo already holds, byte for byte. Each new entry also carries:
 With these Coriqo can tell a record that grew from one that was wiped or
 skipped, and raises its record-contradicted alert on the latter. Older Shield
 versions send none of these fields and are accepted as before.
+
+### Managed mode (set policy from Coriqo)
+
+An MSP or IT admin can set Shield's policy centrally in a Coriqo tenant and
+have it apply on every enrolled device — the agent (this repo) stays open
+source; authoring and distributing policy across a fleet is Coriqo's job.
+
+Once enrolled, Shield polls `POST /v1/shield/policy` (signed the same way as
+the checkpoint post above) every 10 minutes, at start, and whenever "Send
+now" is pressed. Polling never blocks capture, and a failed poll — network
+down, a bad signature, the wrong tenant or device, an older version than what
+is already applied, or a `key_id` this device hasn't pinned — keeps the last
+good policy exactly as it was; nothing is ever applied half-verified.
+
+The signing key is pinned once: a newly enrolled device gets it from the
+enrolment response; an already-enrolled device fetches
+`GET /api/v1/checkpoints/public-keys` the first time it sees a policy and
+pins the entry matching that `key_id`. Key rotation isn't supported yet — a
+`key_id` this device has never pinned is refused and shown as "policy signed
+with an unknown key".
+
+A managed policy names which settings are locked (`mode`, `apps`,
+`keep_text`, `retention_days`, `notice`, any subset). Locked settings
+override this Mac's own choice; everything else is still yours to change.
+The Settings screen shows a "Managed by …" banner and disables locked
+controls; `POST /api/policy` refuses a change to a locked key with
+`409 Set by <managed_by>`. A tenant admin can also unmanage a device (a
+signed `policy: null` document), which returns every setting to this Mac's
+own choice.
 
 ### 5. Semantic (intent) caching
 
