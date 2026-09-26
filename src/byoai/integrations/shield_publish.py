@@ -43,11 +43,12 @@ Coriqo can tell a record that restarted or skipped from one that grew.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import random
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -57,6 +58,7 @@ from byoai.recorder.canonical import canonicalize
 from byoai.recorder.enroll import EnrollmentError, enroll, load_enrollment_state
 from byoai.recorder.keys import atomic_write_bytes
 from byoai.recorder.shipper import ShipError, post_signed_batch
+from byoai.integrations.shield_sync import aggregate_daily, build_event, sync_level
 
 if TYPE_CHECKING:  # pragma: no cover
     from byoai.integrations.shield import SealChain
@@ -78,6 +80,19 @@ TICK_S = 60
 TIMEOUT_S = 15
 HEARTBEAT_MIN_S = 3600
 HEARTBEAT_MAX_S = 6 * 3600
+
+# -- activity sync (Shield Sync) ---------------------------------------------
+#
+# Only when the effective policy's ``sync`` is "daily" or "events" (see
+# byoai.integrations.shield_sync for exactly what leaves). Sent after a
+# checkpoint that covers every event in the batch, on its own backoff so a
+# refusing events route can never slow the seal down.
+EVENTS_PATH = "/v1/shield/events"
+SYNC_BATCH = 200
+SYNC_OUTBOX_CAP = 5000   # events kept while offline; older ones become a gap
+SYNC_BATCHES_PER_TICK = 10  # batches sent in one window
+SYNC_SEEN_CAP = 2000     # ids remembered so a sent event is never rebuilt
+SYNC_EVERY_S = {"events": 60, "daily": 3600}
 
 # -- managed policy (Shield MSP plan, Phase 1) -------------------------------
 #
@@ -153,6 +168,30 @@ class PublishState:
     #: unknown key) or a poll that couldn't reach Coriqo; cleared on the next
     #: successful poll. Surfaced by GET /api/policy as managed.error.
     policy_last_error: str | None = None
+    # -- activity sync ---------------------------------------------------------
+    #: Built events waiting for Coriqo's 200, oldest first. Dropped only after
+    #: the batch containing them is accepted (or refused as malformed).
+    sync_outbox: list | None = None
+    #: Ids already sent or dropped: never rebuilt from the feed.
+    sync_seen: list | None = None
+    #: When sharing last turned on (epoch seconds; 0 = not sharing). Nothing
+    #: that happened before it is ever sent, including across the level being
+    #: turned down and up again. Re-enrolment is a new identity: its state
+    #: starts empty, and sharing begins afresh from its first tick.
+    sync_since: float = 0.0
+    #: Events dropped locally (offline past retention, or past the cap); sent
+    #: with the next batch so the dashboard shows "no data", not a quiet period.
+    sync_gap: dict | None = None
+    #: The batch last sent and not yet acknowledged: {"batch_id", "ids",
+    #: "gap", "level"}. A resend after a lost reply carries exactly these
+    #: events, gap and id, whatever has been queued or dropped since, so
+    #: Coriqo can recognise it (daily totals would otherwise count twice).
+    sync_inflight: dict | None = None
+    sync_batch_seq: int = 0  # makes every new batch_id unique, gap-only ones too
+    sync_last_sent_at: float = 0.0
+    sync_failures: int = 0
+    sync_next_attempt_at: float = 0.0
+    sync_last_error: str | None = None
 
 
 class Publisher:
@@ -168,8 +207,15 @@ class Publisher:
                  now: Callable[[], float] = time.time,
                  client_factory: Callable[[], httpx.Client] | None = None,
                  protection: Callable[[], dict] | None = None,
-                 managed_policy_path: Path | None = None) -> None:
+                 managed_policy_path: Path | None = None,
+                 policy: Callable[[], dict] | None = None,
+                 events: Callable[[], list] | None = None) -> None:
         self.seals = seals
+        #: The effective policy (its ``sync`` level) and the feed's items.
+        #: Either missing means activity sync is not wired: seal only.
+        self._policy = policy
+        self._events = events
+        self._seen_cap = SYNC_SEEN_CAP  # grown to the feed's size by _collect
         self.key_dir = Path(key_dir)
         self.state_path = Path(state_dir) / STATE_FILE
         #: Where verified managed policy is stored; see
@@ -187,7 +233,7 @@ class Publisher:
             lambda: httpx.Client(timeout=TIMEOUT_S, trust_env=False))
         #: Returns {"protecting", "reasons", "mode"}; see shield.protection_state.
         self._protection = protection or (lambda: dict(UNKNOWN_PROTECTION))
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # sync_tick calls send() and poll_policy() while holding it
         self.state = self._load()
 
     # -- state ------------------------------------------------------------
@@ -262,13 +308,18 @@ class Publisher:
             self.poll_policy()
         except Exception:  # noqa: BLE001 - never blocks capture or checkpoint sending
             pass
+        attempted = False
         try:
-            if not self.due():
-                return False
-            self.send()
-            return True
+            if self.due():
+                attempted = True
+                self.send()
         except Exception:  # noqa: BLE001 - the loop must never die
-            return True
+            attempted = True
+        try:
+            self.sync_tick()
+        except Exception:  # noqa: BLE001 - activity sync never blocks the seal
+            pass
+        return attempted
 
     def publish_now(self) -> dict:
         """"Send now": force a policy poll (never blocking on its result) then
@@ -278,6 +329,234 @@ class Publisher:
         except Exception:  # noqa: BLE001
             pass
         return self.send()
+
+    # -- activity sync ------------------------------------------------------
+    def sync_tick(self) -> bool:
+        """Collect new events and, when due, send them. Never raises. Returns
+        whether a request went out."""
+        if self._events is None or self._policy is None:
+            return False
+        if self.enrolment() is None:
+            return False
+        with self._lock:
+            s = self.state
+            policy = self._policy()
+            level = sync_level(policy)
+            s.sync_outbox = s.sync_outbox or []
+            s.sync_seen = s.sync_seen or []
+            if level == "seal":
+                if s.sync_since or s.sync_outbox or s.sync_gap:
+                    # Sharing was turned back down: forget what was waiting.
+                    s.sync_since, s.sync_outbox, s.sync_gap = 0.0, [], None
+                    s.sync_inflight = None
+                    s.sync_failures, s.sync_next_attempt_at = 0, 0.0
+                    s.sync_last_error, s.sync_last_sent_at = None, 0.0
+                    self._save()
+                return False
+            if not s.sync_since:
+                s.sync_since = self._now()
+                self._save()
+            if self._collect(policy):
+                self._save()
+            now = self._now()
+            if not (s.sync_outbox or s.sync_gap) or now < s.sync_next_attempt_at:
+                return False
+            if s.sync_last_sent_at and now - s.sync_last_sent_at < SYNC_EVERY_S[level]:
+                return False
+            # Drain a backlog in one window (a busy `daily` device would
+            # otherwise send 200 events an hour and outrun the outbox cap).
+            sent = False
+            for _ in range(SYNC_BATCHES_PER_TICK):
+                if not self._send_events(level, now):
+                    break
+                sent = True
+                s = self.state
+                if s.sync_failures or not s.sync_outbox:
+                    break
+            return sent
+
+    def _collect(self, policy: dict) -> bool:
+        """Turn new feed items into outbox events. Returns whether anything
+        changed."""
+        s = self.state
+        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s.sync_since))
+        try:
+            items = list(self._events())
+        except Exception:  # noqa: BLE001 - a feed being written to; try next tick
+            return False
+        self._seen_cap = max(SYNC_SEEN_CAP, 4 * len(items))
+        seen = set(s.sync_seen)
+        queued = {e["event_id"] for e in s.sync_outbox}
+        device_id = self.seals._key.device_id
+        changed = False
+        old_ids: list[str] = []
+        for item in reversed(items):  # the feed is newest first
+            eid = item.get("id") if isinstance(item, dict) else None
+            if not eid or eid in seen or eid in queued:
+                continue
+            ev = build_event(item, device_id=device_id)
+            if ev is None:
+                continue  # not sealed yet: picked up on a later tick
+            if ev["occurred_at"] < since:
+                old_ids.append(eid)  # from before sharing began: never sent
+            else:
+                s.sync_outbox.append(ev)
+            changed = True
+        if old_ids:
+            self._mark_seen(old_ids)
+        if s.sync_outbox:
+            days = int(policy.get("retention_days") or 30)
+            cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                   time.gmtime(self._now() - days * 86400))
+            # The batch in flight is never trimmed: it may already be counted
+            # by Coriqo, and its resend must stay byte-identical.
+            frozen = set((s.sync_inflight or {}).get("ids") or [])
+            keep = [e for e in s.sync_outbox
+                    if e["occurred_at"] >= cutoff or e["event_id"] in frozen]
+            excess = len(keep) - SYNC_OUTBOX_CAP
+            if excess > 0:
+                trimmed, rest = 0, []
+                for e in keep:
+                    if trimmed < excess and e["event_id"] not in frozen:
+                        trimmed += 1
+                        continue
+                    rest.append(e)
+                keep = rest
+            kept_ids = {e["event_id"] for e in keep}
+            dropped = [e for e in s.sync_outbox if e["event_id"] not in kept_ids]
+            if dropped:
+                self._drop_events(dropped)
+                changed = True
+        return changed
+
+    def _send_events(self, level: str, now: float) -> bool:
+        s = self.state
+        enrolment = self.enrolment()
+        if enrolment is None:
+            return False
+        # Every event's seal must already be under an accepted checkpoint, so
+        # send that first (it is a no-op when the seal has not moved).
+        if s.outbox is not None or self.has_new():
+            if now < s.next_attempt_at:
+                return False
+            self.send()
+            s = self.state  # send() replaces the state object
+            if s.outbox is not None or self.has_new():
+                return False
+        # Resend exactly what is in flight; otherwise freeze the next batch
+        # before sending it, so a lost reply can be retried byte for byte.
+        flight = s.sync_inflight
+        if (flight and flight["level"] == level and [
+                e["event_id"] for e in s.sync_outbox[:len(flight["ids"])]] == flight["ids"]):
+            batch = s.sync_outbox[:len(flight["ids"])]
+        else:
+            batch = s.sync_outbox[:SYNC_BATCH]
+            s.sync_batch_seq += 1
+            ids = [e["event_id"] for e in batch]
+            flight = {"ids": ids, "gap": dict(s.sync_gap) if s.sync_gap else None,
+                      "level": level,
+                      "batch_id": hashlib.sha256(
+                          f"{s.sync_batch_seq}|{'|'.join(ids)}".encode()).hexdigest()[:32]}
+            s.sync_inflight = flight
+            self._save()
+        batch_id = flight["batch_id"]
+        body: dict = {
+            "device_id": self.seals._key.device_id,
+            "sent_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "level": level,
+            "policy_version": self._managed_policy_version(),
+            "batch_id": batch_id,
+        }
+        if level == "events":
+            body["events"] = batch
+        else:
+            body["daily"] = aggregate_daily(batch)
+        if flight["gap"]:
+            body["gap"] = flight["gap"]
+        try:
+            with self._client_factory() as client:
+                post_signed_batch(client, enrolment.coriqo_base_url,
+                                  self.seals._key, EVENTS_PATH, body)
+        except ShipError as exc:
+            self._sync_failed(now, exc)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._sync_failed(now, ShipError(str(exc)))
+            return True
+        self._mark_seen(e["event_id"] for e in batch)
+        s.sync_outbox = s.sync_outbox[len(batch):]
+        # A gap that widened while this batch was in flight is still owed.
+        if s.sync_gap == flight["gap"]:
+            s.sync_gap = None
+        s.sync_inflight = None
+        s.sync_failures = 0
+        s.sync_next_attempt_at = 0.0
+        s.sync_last_error = None
+        s.sync_last_sent_at = now
+        self._save()
+        return True
+
+    def _mark_seen(self, ids) -> None:
+        """Remember event ids so the feed never rebuilds them. The list is
+        bounded, but always well above the feed's own size (an id can only be
+        evicted once its item has left the feed)."""
+        s = self.state
+        s.sync_seen = (s.sync_seen or []) + list(ids)
+        del s.sync_seen[:-self._seen_cap]
+
+    def _drop_events(self, dropped: list) -> None:
+        """Take events out of the outbox for good. They are marked seen (the
+        feed must not rebuild them) and recorded as a gap (so the dashboard
+        says "no data", not a quiet period)."""
+        if not dropped:
+            return
+        s = self.state
+        ids = {e["event_id"] for e in dropped}
+        s.sync_outbox = [e for e in (s.sync_outbox or []) if e["event_id"] not in ids]
+        self._mark_seen(e["event_id"] for e in dropped)
+        lo = min(e["occurred_at"] for e in dropped)
+        hi = max(e["occurred_at"] for e in dropped)
+        if s.sync_gap:
+            lo, hi = min(lo, s.sync_gap["from"]), max(hi, s.sync_gap["to"])
+        s.sync_gap = {"from": lo, "to": hi}
+
+    def _sync_failed(self, now: float, exc: ShipError) -> None:
+        s = self.state
+        if exc.status_code == 422:
+            # Coriqo's closed schema refused the batch. Retrying the same bytes
+            # can never work: drop it, and record its range in the gap so the
+            # dashboard says "no data" rather than a quiet period.
+            flight = s.sync_inflight
+            n = len(flight["ids"]) if flight else SYNC_BATCH
+            s.sync_inflight = None
+            if n:
+                self._drop_events((s.sync_outbox or [])[:n])
+                s.sync_last_error = "Coriqo refused a batch of activity as malformed; it was dropped."
+            else:
+                # A gap-only batch refused: nothing to drop but the gap itself
+                # (unless it has widened since: that part is still owed).
+                if flight and s.sync_gap == flight["gap"]:
+                    s.sync_gap = None
+                s.sync_last_error = "Coriqo refused a gap marker as malformed; it was dropped."
+        elif exc.status_code == 409:
+            # The level this device sends at is not the one Coriqo has for it:
+            # fetch the policy now rather than at the next poll. The frozen
+            # batch is rebuilt at whatever level applies afterwards.
+            s.sync_inflight = None
+            try:
+                self.poll_policy(force=True)
+            except Exception:  # noqa: BLE001
+                pass
+            s.sync_last_error = "Coriqo expects a different sharing level; checking the policy."
+        else:
+            s.sync_last_error = "Couldn't send activity to Coriqo; Shield will try again on its own."
+        s.sync_failures += 1
+        delay = min(BACKOFF_CAP_S, BACKOFF_FIRST_S * 2 ** (s.sync_failures - 1))
+        delay *= random.uniform(0.8, 1.2)
+        if exc.retry_after:
+            delay = max(delay, float(exc.retry_after))
+        s.sync_next_attempt_at = now + delay
+        self._save()
 
     # -- managed policy -----------------------------------------------------
     def _policy_key_path(self):
@@ -457,9 +736,13 @@ class Publisher:
                 # Coriqo's "send this again later": keep the outbox, back off.
                 self._failed(state_now, ShipError("Coriqo asked for this seal again later"))
                 return self.status()
-            self.state = PublishState(
+            # Only the seal's own fields change: activity sync and managed-policy
+            # state have their own lifecycles and must not be reset by a seal.
+            self.state = replace(
+                self.state,
                 last_root=entry["chain_hash"], last_height=int(entry.get("entries") or 0),
                 last_seq=int(entry["seq_end"]), last_sent_at=state_now, last_entry=entry,
+                outbox=None, failures=0, next_attempt_at=0.0, needs_attention=False,
                 last_error=("Coriqo stored this seal but couldn't verify it."
                             if resp.get("malformed") else None),
             )
@@ -542,6 +825,9 @@ class Publisher:
             "every_hours": self.every_s / 3600,
             "last_error": s.last_error,
             "needs_attention": s.needs_attention,
+            "sync": {"pending": len(s.sync_outbox or []),
+                     "last_sent_at": s.sync_last_sent_at or None,
+                     "last_error": s.sync_last_error},
         }
 
     # -- loop -----------------------------------------------------------------

@@ -42,6 +42,12 @@ class FakeCoriqo:
         self.public_keys: list[dict] = []
         self.public_keys_requests = 0
         self.public_keys_down = False
+        #: POST /v1/shield/events: bodies received, in order across routes.
+        self.events: list[dict] = []
+        self.order: list[str] = []
+        self.events_status = 200
+        #: Record the batch, then fail the reply (Coriqo counted it; we never heard).
+        self.lose_reply = False
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/enroll":
@@ -57,7 +63,18 @@ class FakeCoriqo:
             body = json.loads(gzip.decompress(request.content))
             assert request.headers["x-coriqo-signature"]
             self.batches.append(body)
+            self.order.append("checkpoint")
             return httpx.Response(200, json={"accepted": 1, "duplicates": 0, "rejected": []})
+        if request.url.path == "/v1/shield/events":
+            body = json.loads(gzip.decompress(request.content))
+            if self.events_status != 200:
+                return httpx.Response(self.events_status, json={"error": "x"})
+            self.events.append(body)
+            self.order.append("events")
+            if self.lose_reply:
+                raise httpx.ReadTimeout("reply lost")
+            return httpx.Response(200, json={"accepted": len(body.get("events") or []),
+                                             "duplicates": 0})
         if request.url.path == "/v1/shield/policy":
             if self.policy_fail:
                 return httpx.Response(500, json={"detail": "nope"})
@@ -878,3 +895,367 @@ def test_poll_policy_only_runs_every_ten_minutes_and_on_send_now(setup, tmp_path
     _grow(seals)
     pub.publish_now()                                # "Send now" forces a poll
     assert len(coriqo.policy_requests) == 3
+
+
+
+# --------------------------------------------------------------- activity sync
+
+import calendar  # noqa: E402
+import time  # noqa: E402
+
+from byoai.integrations.shield_sync import EVENT_FIELDS  # noqa: E402
+
+SECRET = "4111 1111 1111 1111"
+
+
+@pytest.fixture
+def sync(tmp_path):
+    """A publisher wired for activity sync: a settable policy, a feed list."""
+    cfg = ShieldConfig(ledger=tmp_path / "c.jsonl", seal_path=tmp_path / "s.json",
+                       key_dir=tmp_path / "keys", sig_every=4)
+    seals = SealChain(cfg)
+    coriqo = FakeCoriqo()
+    clock = Clock(calendar.timegm((2026, 9, 26, 12, 0, 0)))
+    policy = {"sync": "events", "retention_days": 30}
+    feed: list[dict] = []
+    pub = Publisher(seals, cfg.key_dir, tmp_path, every_hours=6, now=clock,
+                    client_factory=coriqo.client, policy=lambda: policy,
+                    events=lambda: feed)
+    _enrol(cfg, coriqo)
+
+    def add(n=1, date=None, **over):
+        for _ in range(n):
+            i = len(feed)
+            # Stamped at the fake clock (local time, as the feed does), unless
+            # a date is given: sharing only sends what happens after it began.
+            at = time.localtime(clock.t)
+            item = {"id": f"row{i:05d}", "source": "desktop", "surface": "Claude · desktop",
+                    "ts": time.strftime("%H:%M:%S", at),
+                    "date": date or time.strftime("%Y-%m-%d", at), "status": "answered", "tool": None,
+                    "flags": [{"tier": "pii", "rule": "emails"}], "verdict": "redacted(1)",
+                    "chars": 40 + i, "redactions": ["emails"], "identity": {},
+                    "verb": f"Message: {SECRET}", "text_hmac": "deadbeef" * 8,
+                    "preview": SECRET, **over}
+            item["seal"] = seals.stamp({"interaction": item["id"], "chars": item["chars"]})
+            feed.insert(0, item)  # the feed is newest first
+    return pub, coriqo, clock, policy, add
+
+
+def test_events_go_after_a_checkpoint_that_covers_them(sync):
+    pub, coriqo, clock, policy, add = sync
+    add(3)
+    pub.tick()
+    assert coriqo.order == ["checkpoint", "events"]
+    (body,) = coriqo.events
+    assert body["level"] == "events" and len(body["events"]) == 3
+    assert set(body) == {"device_id", "sent_at", "level", "policy_version",
+                         "batch_id", "events"}
+    assert all(set(e) == set(EVENT_FIELDS) for e in body["events"])
+    assert SECRET not in json.dumps(body) and "deadbeef" not in json.dumps(body)
+    assert pub.status()["sync"]["pending"] == 0
+
+
+def test_a_sent_event_is_not_sent_again(sync):
+    pub, coriqo, clock, policy, add = sync
+    add(2)
+    pub.tick()
+    clock.t += 120
+    pub.tick()
+    assert len(coriqo.events) == 1
+    add(1)
+    clock.t += 120
+    pub.tick()
+    assert [len(b["events"]) for b in coriqo.events] == [2, 1]
+
+
+def test_daily_sends_totals_not_rows(sync):
+    pub, coriqo, clock, policy, add = sync
+    policy["sync"] = "daily"
+    add(3)
+    pub.tick()
+    (body,) = coriqo.events
+    assert body["level"] == "daily" and "events" not in body
+    (row,) = body["daily"]
+    assert row["messages"] == 3 and row["flags"] == {"pii:emails": 3}
+    assert row["redacted"] == 3 and row["app"] == "claude"
+
+
+def test_seal_level_sends_nothing_and_does_not_backfill_later(sync):
+    pub, coriqo, clock, policy, add = sync
+    policy["sync"] = "seal"
+    add(3)
+    pub.tick()
+    assert coriqo.events == []
+    clock.t += 120
+    policy["sync"] = "events"       # sharing turned up: only what happens next
+    pub.tick()
+    clock.t += 120
+    add(1)
+    pub.tick()
+    assert [len(b["events"]) for b in coriqo.events] == [1]
+
+
+def test_what_happened_while_sharing_was_off_stays_unsent(sync):
+    pub, coriqo, clock, policy, add = sync
+    add(1)
+    pub.tick()
+    assert len(coriqo.events) == 1
+    policy["sync"] = "seal"
+    clock.t += 120
+    coriqo.events_status = 503
+    pub.tick()
+    add(2)                            # sharing is off
+    clock.t += 120
+    pub.tick()
+    clock.t += 120
+    policy["sync"] = "events"
+    coriqo.events_status = 200
+    pub.tick()
+    add(1)
+    clock.t += 120
+    pub.tick()
+    assert [len(b["events"]) for b in coriqo.events] == [1, 1]
+
+
+def test_history_before_enrolment_is_never_sent(sync):
+    pub, coriqo, clock, policy, add = sync
+    add(3, date="2026-09-25")
+    pub.tick()
+    assert coriqo.events == []
+    add(1)
+    clock.t += 120
+    pub.tick()
+    assert [len(b["events"]) for b in coriqo.events] == [1]
+
+
+def test_turning_sharing_down_drops_what_was_waiting(sync):
+    pub, coriqo, clock, policy, add = sync
+    coriqo.events_status = 503
+    add(2)
+    pub.tick()
+    assert pub.status()["sync"]["pending"] == 2
+    policy["sync"] = "seal"
+    clock.t += 3600
+    pub.tick()
+    assert pub.status()["sync"]["pending"] == 0 and coriqo.events == []
+
+
+def test_failure_keeps_the_batch_and_never_slows_the_seal(sync):
+    pub, coriqo, clock, policy, add = sync
+    coriqo.events_status = 503
+    add(2)
+    pub.tick()
+    assert pub.status()["sync"]["pending"] == 2 and pub.status()["last_error"] is None
+    assert pub.state.sync_next_attempt_at > clock.t          # its own backoff
+    assert pub.state.next_attempt_at == 0                    # the seal's is untouched
+    coriqo.events_status = 200
+    clock.t += 3600
+    pub.tick()
+    (body,) = coriqo.events
+    assert len(body["events"]) == 2 and pub.status()["sync"]["last_error"] is None
+
+
+def test_a_batch_coriqo_calls_malformed_is_dropped_not_retried_forever(sync):
+    pub, coriqo, clock, policy, add = sync
+    coriqo.events_status = 422
+    add(2)
+    pub.tick()
+    assert pub.status()["sync"]["pending"] == 0
+    assert "malformed" in pub.status()["sync"]["last_error"]
+    # the same feed items are not rebuilt into the same refusal, and the
+    # dropped range is recorded as a gap
+    coriqo.events_status = 200
+    clock.t += 3600
+    pub.tick()
+    # the dropped range goes out on its own, as a gap with no events
+    (gap_only,) = coriqo.events
+    assert gap_only["events"] == [] and "gap" in gap_only and pub.state.sync_gap is None
+    add(1)
+    clock.t += 120
+    pub.tick()
+    assert len(coriqo.events[1]["events"]) == 1 and "gap" not in coriqo.events[1]
+
+
+def test_events_are_batched_and_the_backlog_drains(sync):
+    pub, coriqo, clock, policy, add = sync
+    add(450)
+    for _ in range(3):
+        pub.tick()
+        clock.t += 120
+    assert [len(b["events"]) for b in coriqo.events] == [200, 200, 50]
+
+
+def test_events_past_retention_become_a_gap_marker(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.tick()                       # sharing begins now
+    add(1, date="2026-01-01")        # older than the 30-day window
+    pub.state.sync_since = 1.0       # (as if sharing had begun long ago)
+    add(1)
+    pub.tick()
+    (body,) = coriqo.events
+    assert len(body["events"]) == 1
+    assert body["gap"]["from"].startswith("2026-01-01")
+    coriqo.events.clear()
+    add(1)
+    clock.t += 120
+    pub.tick()
+    assert "gap" not in coriqo.events[0]      # sent once, then cleared
+
+
+def test_a_level_mismatch_triggers_a_policy_check(sync):
+    pub, coriqo, clock, policy, add = sync
+    coriqo.events_status = 409
+    add(1)
+    pub.tick()
+    assert coriqo.policy_requests and pub.status()["sync"]["pending"] == 1
+
+
+def test_no_sync_without_wiring_or_enrolment(tmp_path):
+    cfg = ShieldConfig(ledger=tmp_path / "c.jsonl", seal_path=tmp_path / "s.json",
+                       key_dir=tmp_path / "keys", sig_every=4)
+    seals = SealChain(cfg)
+    coriqo = FakeCoriqo()
+    bare = Publisher(seals, cfg.key_dir, tmp_path, client_factory=coriqo.client)
+    assert bare.sync_tick() is False
+    unenrolled = Publisher(seals, cfg.key_dir, tmp_path, client_factory=coriqo.client,
+                           policy=lambda: {"sync": "events"}, events=lambda: [])
+    assert unenrolled.sync_tick() is False and coriqo.events == []
+
+
+def test_a_422_drops_the_batch_and_keeps_and_widens_the_gap(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.tick()
+    gap = {"from": "2026-09-01T00:00:00Z", "to": "2026-09-02T00:00:00Z"}
+    pub.state.sync_gap = dict(gap)
+    coriqo.events_status = 422
+    add(2)
+    clock.t += 3600
+    pub.tick()
+    assert pub.status()["sync"]["pending"] == 0            # refused, dropped once
+    assert pub.state.sync_gap["from"] == gap["from"]        # the old gap survives
+    assert pub.state.sync_gap["to"] > gap["to"]             # widened over the batch
+    coriqo.events_status = 200
+    add(1)
+    clock.t += 3600
+    pub.tick()
+    (body,) = coriqo.events
+    assert len(body["events"]) == 1 and body["gap"]["from"] == gap["from"]
+
+
+def test_a_seal_going_out_keeps_sync_and_policy_state(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.state.policy_key_id, pub.state.policy_public_key = "k1", "ab" * 32
+    add(2)
+    pub.tick()
+    assert pub.state.policy_key_id == "k1" and pub.state.sync_since
+
+
+def test_a_resend_after_a_lost_reply_is_the_same_batch_whatever_arrived_since(sync):
+    pub, coriqo, clock, policy, add = sync
+    policy["sync"] = "daily"
+    add(3)
+    coriqo.lose_reply = True
+    pub.tick()
+    first = coriqo.events[0]
+    assert pub.status()["sync"]["pending"] == 3          # not acknowledged
+    coriqo.lose_reply = False
+    add(2)                                               # arrives before the retry
+    clock.t += 7200
+    pub.tick()
+    resent = coriqo.events[1]
+    assert resent["batch_id"] == first["batch_id"] and resent["daily"] == first["daily"]
+    assert resent["daily"][0]["messages"] == 3
+    # the two new events follow as their own batch
+    assert coriqo.events[2]["daily"][0]["messages"] == 2
+    assert coriqo.events[2]["batch_id"] != first["batch_id"]
+
+
+def test_a_gap_is_sent_even_when_no_events_are_waiting(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.tick()
+    pub.state.sync_gap = {"from": "2026-09-01T00:00:00Z", "to": "2026-09-02T00:00:00Z"}
+    clock.t += 3600
+    pub.tick()
+    (body,) = coriqo.events
+    assert body["events"] == [] and body["gap"]["from"].startswith("2026-09-01")
+    assert pub.state.sync_gap is None
+
+
+def test_a_backlog_drains_in_one_window_even_at_daily(sync):
+    pub, coriqo, clock, policy, add = sync
+    policy["sync"] = "daily"
+    add(450)
+    pub.tick()
+    assert len(coriqo.events) == 3 and pub.status()["sync"]["pending"] == 0
+
+
+def test_a_gap_that_widens_while_a_batch_is_in_flight_is_still_owed(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.tick()
+    old = {"from": "2026-09-01T00:00:00Z", "to": "2026-09-02T00:00:00Z"}
+    pub.state.sync_gap = dict(old)
+    add(1)
+    coriqo.lose_reply = True
+    clock.t += 3600
+    pub.tick()
+    first = coriqo.events[-1]
+    assert first["gap"] == old
+    pub.state.sync_gap = {"from": old["from"], "to": "2026-09-05T00:00:00Z"}  # widened
+    coriqo.lose_reply = False
+    clock.t += 7200
+    pub.tick()
+    resent = coriqo.events[-1] if coriqo.events[-1]["batch_id"] == first["batch_id"] else None
+    assert resent is not None and resent["gap"] == old            # byte-identical resend
+    clock.t += 3600
+    pub.tick()
+    assert coriqo.events[-1]["gap"]["to"] == "2026-09-05T00:00:00Z"  # the rest is still sent
+    assert pub.state.sync_gap is None
+
+
+def test_a_refused_gap_only_batch_is_dropped_not_resent_forever(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.tick()
+    pub.state.sync_gap = {"from": "2026-09-01T00:00:00Z", "to": "2026-09-02T00:00:00Z"}
+    coriqo.events_status = 422
+    clock.t += 3600
+    pub.tick()
+    assert pub.state.sync_gap is None and "gap marker" in pub.status()["sync"]["last_error"]
+
+
+def test_two_gap_only_batches_never_share_a_batch_id(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.tick()
+    for _ in range(2):
+        pub.state.sync_gap = {"from": "2026-09-01T00:00:00Z", "to": "2026-09-02T00:00:00Z"}
+        clock.t += 3600
+        pub.tick()
+    a, b = coriqo.events
+    assert a["batch_id"] != b["batch_id"]
+
+
+def test_retention_never_trims_the_batch_that_is_in_flight(sync):
+    pub, coriqo, clock, policy, add = sync
+    add(3)
+    coriqo.lose_reply = True
+    pub.tick()
+    first = coriqo.events[0]
+    coriqo.lose_reply = False
+    policy["retention_days"] = 1
+    clock.t += 3 * 86400          # everything is now past the window
+    pub.tick()
+    resent = coriqo.events[1]
+    assert resent["batch_id"] == first["batch_id"] and len(resent["events"]) == 3
+    assert "gap" not in resent    # nothing was dropped: they were in flight
+
+
+def test_a_gap_widened_during_a_refused_gap_only_batch_is_kept(sync):
+    pub, coriqo, clock, policy, add = sync
+    pub.tick()
+    pub.state.sync_gap = {"from": "2026-09-01T00:00:00Z", "to": "2026-09-02T00:00:00Z"}
+    pub.state.sync_inflight = {"ids": [], "level": "events", "batch_id": "b1",
+                               "gap": dict(pub.state.sync_gap)}
+    pub.state.sync_gap = {"from": "2026-09-01T00:00:00Z", "to": "2026-09-09T00:00:00Z"}
+    coriqo.events_status = 422
+    clock.t += 3600
+    pub.tick()
+    assert pub.state.sync_gap == {"from": "2026-09-01T00:00:00Z", "to": "2026-09-09T00:00:00Z"}

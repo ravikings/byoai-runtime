@@ -1748,7 +1748,9 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
     from byoai.integrations.shield_publish import Publisher
     publisher = Publisher(feed.seals, cfg.key_dir, cfg.key_dir.parent,
                           protection=lambda: protection_state(cfg),
-                          managed_policy_path=cfg.managed_policy_path)
+                          managed_policy_path=cfg.managed_policy_path,
+                          policy=lambda: load_policy(cfg),
+                          events=lambda: feed.items)
     publisher.start()  # background; sends only when enrolled and due
     pruned = scrub_ledger(cfg, scrub_text=False)["deleted"]
     if pruned:
