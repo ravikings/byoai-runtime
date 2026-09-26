@@ -291,7 +291,12 @@ API: `/api/feed` (limit/offset pagination), `/api/verify`, `/api/policy`
 GET+POST (validated; a bad value is a 400 that names the field),
 `/api/privacy` (what the ledger holds right now), `POST /api/privacy/scrub`,
 and `/api/receipt/<seal>`, plus `POST /api/browser` for the Chrome
-extension (bulk rows, length-only), driven by
+extension (bulk rows, length-only) — and the read-only fleet-console API
+`/v1/console/fleet`, `/fleet/devices`, `/fleet/findings`, `/fleet/coverage`,
+answered from this Mac's own chain (`byoai.integrations.shield_console`: the
+chain is re-walked and the checkpoint signature re-checked on every read, and
+anything only the receiving server could know is served as null, never zero).
+Driven by
 recorder-core primitives: RFC 6962 MerkleTree, device Ed25519 keys in
 `~/.byoai/shield/keys` (mode 0600 — see `byoai.recorder.keys`), and
 `policy.json` verdict modes (`observe`/`redact`/`block`) + per-app toggles
@@ -374,7 +379,11 @@ capture gateway (`examples/mcp_capture/server.py`) writes rows the same way.
 Shield has one UI: the `/shield` route of the React app in `web/`. It is the
 screen for the person at one Mac, so it renders outside the admin console
 (`/console/{tenant}/…` is the fleet view; `/console/{tenant}/shield` now
-redirects here). It calls the shield API as `/shield-api/*`: Vite rewrites
+redirects here). Served by `byoai-shield`, the fleet screens see exactly one
+enrolled device — this Mac — and say so: integrity there is a fresh local
+walk of the seal chain rather than a deferred verify job, and the device row
+marks receiving-side facts as unknown on this host rather than guessing them.
+It calls the shield API as `/shield-api/*`: Vite rewrites
 that to `:17831/api/*` in dev, and `byoai-shield` answers it directly, so the
 same build works both ways. `byoai-shield` serves the built app
 (`byoai/console_static/`) and sends `/` to `/shield`; from a source checkout,

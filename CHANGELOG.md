@@ -90,6 +90,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loop: Coriqo now shows a specific host as "confirmed stopped" rather than
   only a control-plane "suspended" flag with no evidence any host applied it.
 
+- **The fleet console, served by one Mac.** `byoai-shield` now answers the
+  console's read-only fleet API (`GET /v1/console/fleet`, `/fleet/devices`,
+  `/fleet/findings`, `/fleet/coverage`) from its own seal chain, so
+  `/console/<tenant>/fleet` on :17831 shows this Mac's real ledger instead of
+  an empty screen. `byoai.integrations.shield_console` holds the rules: the
+  chain is re-walked and the checkpoint signature re-checked on every read —
+  the one host where "intact" is produced by the read path, not deferred to a
+  verify job — so the Integrity panel gains an optional `local` evidence block
+  (Merkle root, entry count, walk time, device id, and where the shipment goes).
+  Receiving-side facts (batches arrived, ship lag, countersignatures) are null,
+  never zero; the ship backlog is reported only while connected. Browser-relay
+  and desktop wall-clock stamps are resolved against the clock that actually
+  wrote each seal (`sent_at` is UTC, `wall_clock` is local). The fleet screen
+  gained a live auto-refresh chip; the Coverage screen now publishes the
+  shell's health dots and its real inclusion denominator instead of falling
+  back to "unknown". Contract note: `Device.batches_received` became nullable
+  in `web/src/api/schemas.ts`; every server that knows the number still sends
+  an int, so no existing backend changes.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added
