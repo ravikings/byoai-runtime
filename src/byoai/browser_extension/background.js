@@ -30,6 +30,16 @@ const PIN_KEY = 'pinned_shield'
 const LAST_CAPTURE_KEY = 'last_capture'
 const WITNESS_KEY = 'witness'
 const ROLLBACK_KEY = 'rollback'
+// The user's agreement to capture, given on the welcome page. Nothing is
+// queued, sent or counted until it exists; withdrawing it removes it again.
+const CONSENT_KEY = 'consent'
+const CONSENT_VERSION = 1
+const isGranted = (value) => value?.version === CONSENT_VERSION
+// A synchronous copy of the stored choice. Every gate reads this right before it
+// queues, counts or sends, with no await in between, so a withdrawal (which flips
+// it first) cannot slip behind a check that already passed.
+let consentOn = false
+const hasConsent = async () => { await restore(); return consentOn }
 const TODAY_KEY = 'today'
 const IDENTITY_PREFIX = 'byoai-shield-identity:'
 
@@ -152,28 +162,19 @@ const WATCHED_HOST = ['claude.ai', 'chatgpt.com', 'chat.openai.com', 'gemini.goo
 const WATCHED_BADGE = 'OK'
 const OFFLINE_BADGE = '-'
 
-chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status === 'complete' && tab?.url && isPageWatched(tab.url)) {
+// A watched page tells us it is open (content-relay.js), which needs no
+// "tabs" permission. Chrome clears a tab's own badge when it navigates away.
+async function markPageWatched(tabId) {
+  if (!tabId) return
+  if (await hasConsent()) {
     chrome.action.setBadgeText({ tabId, text: WATCHED_BADGE })
     chrome.action.setBadgeBackgroundColor({ tabId, color: '#16a34a' })
-    chrome.action.setTitle({ tabId, title: 'Shield records on this page: app, time, message length. No message content.' })
-  } else if (info.status === 'complete' && tab?.url && !isPageWatched(tab.url)) {
-    chrome.action.setBadgeText({ tabId, text: '' })
-    chrome.action.setTitle({ tabId, title: defaultTitle() })
+    chrome.action.setTitle({ tabId, title: WORKING_TITLE })
+  } else {
+    chrome.action.setBadgeText({ tabId, text: 'off' })
+    chrome.action.setBadgeBackgroundColor({ tabId, color: '#6b7280' })
+    chrome.action.setTitle({ tabId, title: 'Shield capture is off. Open this popup to review and turn it on.' })
   }
-})
-
-function isPageWatched(url) {
-  try {
-    const host = new URL(url).host
-    return WATCHED_HOST.includes(host)
-  } catch {
-    return false
-  }
-}
-
-function defaultTitle() {
-  return 'Coriqo Shield - Agent Capture'
 }
 
 const WORKING_TITLE = 'Shield records on this page: app, time, message length. No message content.'
@@ -200,6 +201,7 @@ function setRefused(why) {
 let rolledBack = false
 
 function setWorking() {
+  if (!consentOn) { chrome.action.setBadgeText({ text: '' }); return }
   if (rolledBack) { setRefused('shorter'); return }
   chrome.action.setBadgeText({ text: WATCHED_BADGE })
   chrome.action.setBadgeBackgroundColor({ color: '#16a34a' })
@@ -212,8 +214,16 @@ function setOfflineIfQueued() {
   else setWorking()
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   chrome.action.setBadgeText({ text: '' })
+  // First install: show exactly what this does and ask, before anything runs.
+  // Also for someone upgrading from a build that captured before asking: they
+  // were recording, and are now off until they choose, so tell them once.
+  const before = String(details?.previousVersion || '').split('.').map(Number)
+  const capturedBeforeAsking = details?.reason === 'update' && (before[0] === 0 && before[1] < 5)
+  if (details?.reason === 'install' || capturedBeforeAsking) {
+    chrome.tabs.create({ url: chrome.runtime.getURL('welcome.html') })
+  }
 })
 
 // A worker that starts fresh (cold start, after termination, after browser
@@ -223,22 +233,35 @@ chrome.runtime.onStartup.addListener(() => restore())
 restore()
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !(ROLLBACK_KEY in changes)) return
+  if (area !== 'local') return
+  if (CONSENT_KEY in changes) {
+    consentOn = isGranted(changes[CONSENT_KEY].newValue)
+    if (!consentOn) chrome.action.setBadgeText({ text: '' })
+  }
+  if (!(ROLLBACK_KEY in changes)) return
   rolledBack = !!changes[ROLLBACK_KEY].newValue
   if (rolledBack) setRefused('shorter'); else setOfflineIfQueued()
 })
 
 function restore() {
-  return (restoring ??= doRestore())
+  // A failed read leaves the safe defaults (capture off), never a rejected promise.
+  return (restoring ??= doRestore().catch(() => {}))
 }
 
 async function doRestore() {
-  rolledBack = !!(await chrome.storage.local.get(ROLLBACK_KEY))[ROLLBACK_KEY]
+  const kept = await chrome.storage.local.get([ROLLBACK_KEY, CONSENT_KEY])
+  rolledBack = !!kept[ROLLBACK_KEY]
+  consentOn = isGranted(kept[CONSENT_KEY])
   const store = chrome.storage?.session
   if (!store) return // test harness or older Chrome; memory-only mode
   const data = await store.get([QUEUE_KEY, RETRY_AT_KEY])
-  if (Array.isArray(data[QUEUE_KEY])) {
+  // Rows queued by a build from before consent existed are not sent on the
+  // strength of a choice the user never made.
+  if (Array.isArray(data[QUEUE_KEY]) && consentOn) {
     queue = data[QUEUE_KEY].slice(-MAX_QUEUED)
+  } else if (data[QUEUE_KEY]?.length) {
+    queue = []
+    await store.set({ [QUEUE_KEY]: [] })
   }
   const retry_at = data[RETRY_AT_KEY]
   if (retry_at && Date.now() < retry_at) {
@@ -268,12 +291,16 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       reply?.({ error: 'not the Shield capture relay' })
       return false
     }
-    noteCapture(sender.tab?.url, msg.row.kind)
-    queue.push({ ...msg.row, sent_at: new Date().toISOString(), row_id: crypto.randomUUID() })
-    if (queue.length > MAX_QUEUED) queue = queue.slice(-MAX_QUEUED)
-    persist()
-    scheduleFlush()
-    reply?.({ queued: queue.length })
+    restore().then(() => {
+      if (!consentOn) { reply?.({ error: 'capture is off' }); return }
+      noteCapture(sender.tab?.url, msg.row.kind)
+      queue.push({ ...msg.row, sent_at: new Date().toISOString(), row_id: crypto.randomUUID() })
+      if (queue.length > MAX_QUEUED) queue = queue.slice(-MAX_QUEUED)
+      persist()
+      scheduleFlush()
+      reply?.({ queued: queue.length })
+    }, () => reply?.({ error: 'failed' }))
+    return true
   } else if (msg?.type === 'agent.checkServer') {
     getEndpoint().then(async (endpoint) => {
       // Re-pairing is the user's decision, made in the popup. Anything coming
@@ -282,6 +309,24 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       const r = await checkServer(endpoint, { trustCurrent: msg.trustCurrent === true && isExtensionPage(sender) })
       reply?.({ ...r, endpoint })
     }).catch(() => reply?.({ state: 'unreachable' }))
+    return true
+  } else if (msg?.type === 'agent.pageWatched') {
+    if (sender.id === chrome.runtime.id && sender.tab) markPageWatched(sender.tab.id)
+    return false
+  } else if (msg?.type === 'agent.setConsent') {
+    if (!isExtensionPage(sender)) { reply?.({ error: 'not allowed' }); return false }
+    // After restore(), so a late restore cannot overwrite the new choice with the old one.
+    restore().then(() => {
+      consentOn = msg.granted === true          // first, before any other await
+      if (!consentOn) dropEverythingWaiting()
+      const done = consentOn
+        ? chrome.storage.local.set({ [CONSENT_KEY]: { version: CONSENT_VERSION, at: Date.now() } })
+        : chrome.storage.local.remove([CONSENT_KEY, LAST_CAPTURE_KEY, TODAY_KEY])
+      return done
+    }).then(() => reply?.({ ok: true }), () => reply?.({ error: 'failed' }))
+    return true
+  } else if (msg?.type === 'agent.getConsent') {
+    restore().then(() => reply?.({ granted: consentOn }))
     return true
   } else if (msg?.type === 'agent.noteWitness' || msg?.type === 'agent.acceptRecord') {
     // Only the popup (an extension page) may move the witness; a content
@@ -309,6 +354,15 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   return true // async reply
 })
 
+// Withdrawing means nothing waiting is sent later, and nothing is retried.
+function dropEverythingWaiting() {
+  queue = []
+  chrome.alarms?.clear('shield-retry')
+  clearTimeout(timer); timer = null
+  persist()
+  chrome.action.setBadgeText({ text: '' })
+}
+
 // One timestamp per app, overwritten on every send: enough for the popup to
 // say "last message noted 3 min ago" and to show when capture has gone quiet,
 // and nothing that grows into a usage history.
@@ -326,6 +380,7 @@ async function recordCapture(url, kind) {
     const host = new URL(url).host
     if (!WATCHED_HOST.includes(host)) return
     const store = await chrome.storage.local.get([LAST_CAPTURE_KEY, TODAY_KEY])
+    if (!consentOn) return // withdrawn while we were reading: write nothing back
     const seen = store[LAST_CAPTURE_KEY] || {}
     const day = new Date().toDateString()
     const today = store[TODAY_KEY]?.day === day ? store[TODAY_KEY].n : 0
@@ -367,6 +422,8 @@ chrome.alarms?.onAlarm?.addListener((alarm) => {
 
 async function flush() {
   timer = null
+  await restore()
+  if (!consentOn) { dropEverythingWaiting(); return }
   const batch = queue
   queue = []
   persist()
@@ -389,6 +446,7 @@ async function flush() {
     // Server not up yet: put the rows back, retry later — inside the same
     // cap, so an off-again server days out still means dropped rows, not
     // an ever-growing local record.
+    if (!consentOn) { dropEverythingWaiting(); return } // withdrawn mid-send: do not put rows back
     queue = [...batch, ...queue].slice(-MAX_QUEUED)
     const mismatch = err?.message === 'mismatch'
     const old = err?.message === 'unverifiable'

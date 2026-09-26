@@ -872,3 +872,24 @@ def test_a_mismatch_in_an_old_file_is_still_reported_as_tampering(tmp_path):
     cfg.seal_path.write_text(json.dumps(state))
     kinds = [i["what"] for i in SealChain(cfg).incidents]
     assert "checkpoint_mismatch" in kinds and "migrated" not in kinds
+
+
+def test_the_store_package_omits_the_dev_key_and_ships_what_the_manifest_names(tmp_path):
+    import importlib.util, zipfile
+    spec = importlib.util.spec_from_file_location(
+        "package_extension", Path(__file__).resolve().parents[2] / "scripts" / "package_extension.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    store = zipfile.ZipFile(mod.build(tmp_path / "s"))
+    dev = zipfile.ZipFile(mod.build(tmp_path / "d", keep_key=True))
+    assert "key" not in json.loads(store.read("manifest.json"))
+    assert "key" in json.loads(dev.read("manifest.json"))
+    m = json.loads(store.read("manifest.json"))
+    names = set(store.namelist())
+    wanted = {m["background"]["service_worker"], m["action"]["default_popup"], "welcome.html",
+              "welcome.js", "popup.js", "PRIVACY.md"}
+    for cs in m["content_scripts"]:
+        wanted.update(cs["js"])
+    assert wanted <= names
+    assert not any(n.endswith(".DS_Store") for n in names)
+    assert "tabs" not in m["permissions"]

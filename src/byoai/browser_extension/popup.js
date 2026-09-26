@@ -23,7 +23,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   await refresh()
 })
 
+let consented = false
+
 async function refresh() {
+  // A cold worker can miss the timeout; fall back to what is stored rather than
+  // showing "off" for someone whose capture is running.
+  const asked = await withTimeout(send({ type: 'agent.getConsent' }), 3000).catch(() => null)
+  consented = asked ? !!asked.granted : !!(await chrome.storage.local.get('consent')).consent
+  el('consent-box').hidden = !consented
+  if (!consented) {
+    // Nothing is checked or shown as "working" until the user has agreed.
+    const endpoint = (await withTimeout(send({ type: 'agent.getEndpoint' }), 1500).catch(() => null))?.endpoint
+      || FALLBACK_ENDPOINT
+    lastRender = { probed: { state: 'off', endpoint }, app: await currentApp() }
+    render(lastRender.probed, lastRender.app)
+    return
+  }
   const [probed, app] = await Promise.all([probe(), currentApp()])
   lastRender = { probed, app }
   render(probed, app)
@@ -105,6 +120,14 @@ function render({ state, endpoint, verify, apps, shorter }, app) {
   primary.textContent = 'Open Shield'
   el('tab').textContent = ''
 
+  if (state === 'off') {
+    set('wait', '•', 'Capture is off',
+      'Shield is not recording anything from your browser. Review what it does, then turn it on.')
+    primary.textContent = 'Review and turn on'
+    primary.dataset.welcome = '1'
+    return
+  }
+  delete primary.dataset.welcome
   if (state === 'mismatch') {
     set('bad', '!', "That isn't your Shield",
       "Something else on this Mac is answering at Shield's address, so nothing is being sent to it.")
@@ -168,6 +191,11 @@ function render({ state, endpoint, verify, apps, shorter }, app) {
 
 function wire() {
   el('open-shield').addEventListener('click', async (ev) => {
+    if (ev.currentTarget.dataset.welcome) {
+      chrome.tabs.create({ url: chrome.runtime.getURL('welcome.html') })
+      window.close()
+      return
+    }
     if (ev.currentTarget.dataset.retry) { await refresh(); return }
     const endpoint = el('endpoint').value || FALLBACK_ENDPOINT
     chrome.tabs.create({ url: baseOf(endpoint) + '/shield' })
@@ -187,6 +215,15 @@ function wire() {
     // Say so, rather than leaving the warning in place with no reaction.
     const label = button.textContent
     button.textContent = 'Shield did not answer, try again'
+    setTimeout(() => { button.textContent = label }, 2500)
+  })
+  el('turn-off').addEventListener('click', async () => {
+    const button = el('turn-off')
+    const done = await withTimeout(send({ type: 'agent.setConsent', granted: false }), 5000).catch(() => null)
+    await refresh() // shows the real state, even if the reply was slow
+    if ((done && !done.error) || !consented) return
+    const label = button.textContent
+    button.textContent = 'Could not turn off, try again'
     setTimeout(() => { button.textContent = label }, 2500)
   })
   el('open-privacy').addEventListener('click', (ev) => {
