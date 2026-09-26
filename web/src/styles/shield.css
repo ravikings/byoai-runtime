@@ -247,3 +247,6 @@
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--s2); }
 .btn.danger { background: var(--off-scope); border-color: var(--off-scope); color: var(--field); }
 .btn.danger:hover { background: var(--off-scope-soft); border-color: var(--off-scope-soft); }
+.coriqo-form.enrol { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+@media (max-width: 760px) { .coriqo-form.enrol { grid-template-columns: minmax(0, 1fr); } }
+.coriqo-status { margin: var(--s2) 0; }

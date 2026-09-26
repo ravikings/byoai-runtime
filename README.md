@@ -406,28 +406,71 @@ copy: Coriqo never asks the user to take its word for anything. The receipt
 math (`byoai.receipt.v2`, sha256 + Merkle proof + device checkpoint) is what
 settles it.
 
-### Publishing the shield seal to the Coriqo app
+### Sending the Shield seal to Coriqo
 
-The shield can publish its current signed seal to the Coriqo main app — the
-same online account the recorder feeds. Configure either way:
+Shield can send this Mac's seal to a Coriqo tenant, so it sits with the rest
+of that tenant's AI evidence. What leaves the Mac is only the chain's signed
+checkpoint (Merkle root, entry count, Ed25519 signature); no messages, no rule
+matches, no ledger rows.
 
-```bash
-# shell env (matches the recorder's publish triple)
-export BYOAI_CORIQO_URL=https://app.coriqo.com
-export BYOAI_CORIQO_API_KEY=...
-export BYOAI_CORIQO_TENANT_SLUG=acme
+**Setup, once.** A Coriqo admin creates an enrolment token (the same kind
+agent hosts use). In Shield's Settings → Coriqo, paste it with the Coriqo
+address and press *Connect this Mac*. Shield enrols its existing device key
+(`POST /v1/enroll`) and keeps nothing secret afterwards: every send is signed
+by the Mac's key. (`POST /api/coriqo/enrol` does the same without the UI.)
 
-# or in the shield Settings form (per-Mac, written to corioqo.json next to
-# the ledger — env takes precedence)
-```
+**After that, nothing to do.** A background publisher
+(`byoai.integrations.shield_publish`):
 
-`POST /api/coriqo` saves the triple without a shell; `POST /api/publish`
-ships `{kind: byoai.shield.publish.v1, height, root_hex, checkpoint}` and
-answers `{"shipped": true, "root": ...}`. Unconfigured requests get a typed
-503 the UI renders as setup instructions. `GET /api/coriqo` also returns
-`marketing_url` (`BYOAI_CORIQO_MARKETING_URL`, default `https://coriqo.com`)
-for the "what longer plans offer" link; realtime org-wide sync is the admin's
-enrollment step within the Coriqo app.
+* sends only when the chain has grown, and at most every 6 hours, to Coriqo's
+  existing device checkpoint route (`POST /v1/checkpoints/batch`, the one the
+  agent recorder uses), plus *Send now* in Settings;
+* is idempotent: each checkpoint has a stable id, so a resend after a crash is
+  a duplicate on Coriqo's side, never a second row;
+* backs off on failure (1 min, doubling, capped at 6 h, honouring
+  `Retry-After`) and retries on its own; state survives restarts;
+* never blocks, slows or stops checking.
+
+The only state that needs a person is Coriqo refusing the Mac (HTTP 401/403,
+e.g. the device was revoked): Settings says so and asks for a new token. One
+401 is different: when Coriqo says the request is stale or dated in the
+future, the Mac's clock is wrong. Settings then reads "This Mac's clock is
+wrong. Fix the date and time, and Shield will send again on its own.", and
+Shield keeps retrying with the usual backoff.
+`GET /api/coriqo` reports the connection, last and next send, and any error.
+
+**What each send tells Coriqo.** Besides the checkpoint, every request body
+(signed as a whole by the Mac's key) carries:
+
+* `sent_at`: when this request left, in UTC. Coriqo refuses one older than
+  10 minutes or more than 5 minutes ahead, so a captured request can't be
+  replayed later.
+* `shield`: `{"protecting", "reasons", "mode"}`, whether Shield is checking
+  traffic right now. It is protecting when the capture proxy is running, the
+  Mac's system HTTPS proxy points at it (checked with `scutil --proxy`; if
+  that can't be read, it isn't counted against), the policy redacts or blocks,
+  and at least one app Shield can read is switched on. Otherwise `reasons`
+  names what is missing: `capture_stopped`, `proxy_off`,
+  `policy_monitor_only`, `no_apps_enabled`. The browser extension doesn't
+  count towards protection: it records that a chat happened and never reads
+  or changes what is sent. Coriqo alerts on a Mac that reports it is not
+  protecting. Shield knows the proxy is running from
+  `shield_proxy.alive`, a small file (pid and listen port) the proxy writes
+  next to the ledger on start and removes on a clean stop. A file left by a
+  crashed proxy is ignored.
+
+A heartbeat changes only those two fields; its checkpoint entry is the one
+Coriqo already holds, byte for byte. Each new entry also carries:
+
+* `record_id`: a random id for this Mac's local record, stored in the seal
+  file when it is first created and kept across restarts and the 512-entry
+  window trim. A different id means the record was deleted and started again.
+* `prev_chain_hash`: the chain hash of the last entry Coriqo accepted from
+  this Mac (`null` for the first one after connecting).
+
+With these Coriqo can tell a record that grew from one that was wiped or
+skipped, and raises its record-contradicted alert on the latter. Older Shield
+versions send none of these fields and are accepted as before.
 
 ### 5. Semantic (intent) caching
 

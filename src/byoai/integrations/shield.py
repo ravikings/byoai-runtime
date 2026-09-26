@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from byoai.recorder.keys import load_or_create_device_key
+from byoai.recorder.keys import atomic_write_bytes, load_or_create_device_key
 from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
 
 # Shield's own port. Not 8300 (Consul), 8800 (the MCP demo gateway), 8080
@@ -394,7 +394,12 @@ class SealChain:
     WINDOW = 512
 
     def __init__(self, cfg: ShieldConfig) -> None:
+        import threading
         self.cfg = cfg
+        # The feed's watcher stamps entries while the Coriqo publisher and
+        # receipt requests sign checkpoints, each on its own thread. One lock
+        # keeps the entries, the checkpoint and the file in step.
+        self._lock = threading.RLock()
         self._key = load_or_create_device_key(cfg.key_dir)
         self.entries: list[dict] = []        # newest WINDOW entries, with payloads
         self.checkpoint: dict | None = None
@@ -405,6 +410,10 @@ class SealChain:
         # Things an examiner must be able to see, kept in the state file (a
         # reset that left no trace would be the easiest way to hide edits).
         self.incidents: list[dict] = []
+        #: Stable random id of this local record, made once with the seal file
+        #: and kept across restarts and window trims. A new id means the record
+        #: was wiped or recreated; Coriqo compares it between sends.
+        self.record_id: str = ""
         self._load()
 
     @property
@@ -470,8 +479,11 @@ class SealChain:
         self.incidents = list(state.get("incidents", [])) + self.incidents
         if "entries" in state:                # format 1: one JSON file, last 512
             self._migrate_v1(state)
-            state = {"incidents": self.incidents}
+            state = {"incidents": self.incidents, "record_id": state.get("record_id"),
+                     "checkpoint": None}
         self.checkpoint = state.get("checkpoint")
+        stored_id = state.get("record_id")
+        self.record_id = stored_id if isinstance(stored_id, str) and stored_id else uuid.uuid4().hex
         good: list[dict] = []
         for entry, problem in self._scan_log():
             if problem:
@@ -520,8 +532,8 @@ class SealChain:
 
     def _persist(self) -> None:
         atomic_write_private(self.cfg.seal_path, json.dumps({
-            "format": 2, "checkpoint": self.checkpoint, "total": self.total,
-            "incidents": self.incidents,
+            "format": 2, "record_id": self.record_id, "checkpoint": self.checkpoint,
+            "total": self.total, "incidents": self.incidents,
         }, indent=1))
 
     def _append_line(self, entry: dict) -> None:
@@ -551,6 +563,10 @@ class SealChain:
         return -1
 
     def stamp(self, payload: dict) -> str:
+        with self._lock:
+            return self._stamp(payload)
+
+    def _stamp(self, payload: dict) -> str:
         leaf = self._leaf(payload)
         if leaf in self._leaf_set:            # already sealed: replay adds nothing
             return leaf.hex()[:16]
@@ -569,6 +585,10 @@ class SealChain:
         return entry["seal"]
 
     def sign_checkpoint(self) -> dict:
+        with self._lock:
+            return self._sign_checkpoint()
+
+    def _sign_checkpoint(self) -> dict:
         if self._tree is None:
             self._rebuild_tree()
         assert self._tree is not None, "empty seal chain — at least one entry required"
@@ -600,6 +620,10 @@ class SealChain:
         return MerkleTree(self._leaves[:n]).root.hex() == cp.get("root_hex")
 
     def verify_chain(self) -> dict:
+        with self._lock:
+            return self._verify_chain()
+
+    def _verify_chain(self) -> dict:
         self._rebuild_tree()
         # If the log changed by anything but our own appends, re-read it all.
         if _stat_sig(self.log_path) != self._log_sig:
@@ -702,6 +726,10 @@ class SealChain:
         }
 
     def root_hex(self) -> str | None:
+        with self._lock:
+            return self._root_hex()
+
+    def _root_hex(self) -> str | None:
         self._rebuild_tree()
         return self._tree.root.hex() if self._tree else None
 
@@ -767,6 +795,106 @@ def read_policy(path: Path | None) -> dict:
 def is_less_private(policy: dict) -> bool:
     """Record-only mode or stored previews: weaker than the default."""
     return policy.get("mode") == "observe" or bool(policy.get("keep_text"))
+
+
+# The capture proxy writes this next to the ledger while it runs (pid and
+# listen port) and removes it on a clean stop. Shield reads it to know whether
+# anything is checking traffic right now.
+PROXY_ALIVE_FILE = "shield_proxy.alive"
+
+
+def proxy_alive_path(ledger: Path) -> Path:
+    return Path(ledger).parent / PROXY_ALIVE_FILE
+
+
+def _pid_running(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+def _port_open(port: int) -> bool:
+    """Something is listening on 127.0.0.1:port."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def read_proxy_alive(ledger: Path) -> dict | None:
+    """The running proxy's marker, or None when no proxy is running (no file,
+    unreadable, its process is gone after a crash, or nothing listens on its
+    port). The port check matters: after a crash macOS can hand the old pid to
+    another process, and a pid check alone would then claim protection."""
+    try:
+        data = json.loads(proxy_alive_path(ledger).read_text())
+        pid = int(data.get("pid"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if pid <= 0 or not _pid_running(pid):
+        return None
+    port = data.get("port")
+    if isinstance(port, int) and not _port_open(port):
+        return None
+    return data
+
+
+def macos_https_proxy() -> tuple[bool, int | None] | None:
+    """(enabled, port) of this Mac's system HTTPS proxy from ``scutil
+    --proxy``, or None when that can't be read (not a Mac, scutil missing)."""
+    import subprocess
+    import sys
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(["scutil", "--proxy"], capture_output=True,
+                             text=True, timeout=3, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = dict(m.groups() for m in re.finditer(r"(\w+)\s*:\s*(\S+)", out))
+    port = fields.get("HTTPSPort")
+    return (fields.get("HTTPSEnable") == "1",
+            int(port) if port and port.isdigit() else None)
+
+
+def protection_state(cfg: ShieldConfig, *, system_proxy=macos_https_proxy) -> dict:
+    """Is Shield checking traffic right now? Read from what is running, not
+    from what was configured.
+
+    Protecting means all of: the capture proxy is running; this Mac's system
+    HTTPS proxy points at it (when that can be read); the policy redacts or
+    blocks (record-only watches but checks nothing); and at least one app it
+    can read is switched on. The browser extension does not count: it records
+    that a chat happened, it never reads or changes what is sent.
+
+    ``reasons`` are short machine codes for Coriqo, empty when protecting."""
+    policy = load_policy(cfg)
+    reasons: list[str] = []
+    alive = read_proxy_alive(cfg.ledger)
+    if alive is None:
+        reasons.append("capture_stopped")
+    else:
+        sysproxy = system_proxy()
+        if sysproxy is not None:
+            enabled, port = sysproxy
+            want = alive.get("port")
+            if not enabled or (want and port and int(want) != port):
+                reasons.append("proxy_off")
+    if policy.get("mode") == "observe":
+        reasons.append("policy_monitor_only")
+    if not any(policy["apps"].get(app) for app in COVERED_APPS):
+        reasons.append("no_apps_enabled")
+    return {"protecting": not reasons, "reasons": reasons,
+            "mode": policy.get("mode")}
 
 
 def apply_policy_update(policy: dict, payload: dict) -> dict:
@@ -1355,6 +1483,10 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
             save_policy(cfg, merge_policy(upgrade_policy(disc)))
             print("policy: upgraded to privacy-first defaults (redact, no stored "
                   "text); app choices kept", flush=True)
+    from byoai.integrations.shield_publish import Publisher
+    publisher = Publisher(feed.seals, cfg.key_dir, cfg.key_dir.parent,
+                          protection=lambda: protection_state(cfg))
+    publisher.start()  # background; sends only when enrolled and due
     pruned = scrub_ledger(cfg, scrub_text=False)["deleted"]
     if pruned:
         print(f"retention: deleted {pruned} ledger rows past "
@@ -1393,30 +1525,13 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
             return {tag: any(b in apps for b in v) for tag, v in bundles.items()}
 
         def _coriqo(self) -> dict:
-            """Coriqo app config (the publish triple), env first, settings
-            file second — the Settings form writes this file so a
-            non-technical user never touches a shell."""
+            """Connection and publishing status for Settings, plus the
+            marketing link. Nothing secret is stored or returned: the Mac is
+            identified by its own key after a one-time enrolment."""
             import os
-            disc: dict = {}
-            if cfg.policy_path is not None:
-                cfg_file = cfg.policy_path.parent / "corioqo.json"
-                if cfg_file.exists():
-                    try:
-                        disc = json.loads(cfg_file.read_text())
-                    except Exception:
-                        disc = {}
-            return {
-                "app_url": os.environ.get("BYOAI_CORIQO_URL")
-                           or disc.get("app_url"),
-                "api_key": os.environ.get("BYOAI_CORIQO_API_KEY")
-                           or disc.get("api_key"),
-                "tenant": os.environ.get("BYOAI_CORIQO_TENANT_SLUG")
-                          or disc.get("tenant"),
-                "marketing_url": os.environ.get("BYOAI_CORIQO_MARKETING_URL")
-                                 or "https://coriqo.com",
-                "configured": bool(
-                    os.environ.get("BYOAI_CORIQO_URL") or disc.get("app_url")),
-            }
+            return {**publisher.status(),
+                    "marketing_url": os.environ.get("BYOAI_CORIQO_MARKETING_URL")
+                    or "https://coriqo.com"}
 
         def _api(self):
             from urllib.parse import urlparse, parse_qs
@@ -1534,11 +1649,11 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
             if self.path.split("?")[0] == "/api/browser":
                 self._browser_ingest()
                 return
-            if self.path.split("?")[0] == "/api/coriqo":
-                self._save_coriqo_config()
+            if self.path.split("?")[0] == "/api/coriqo/enrol":
+                self._enrol()
                 return
             if self.path.split("?")[0] == "/api/publish":
-                self._publish_to_coriqo()
+                self._publish_now()
                 return
             if self.path.split("?")[0] == "/api/privacy/scrub":
                 result = scrub_ledger(cfg)
@@ -1617,72 +1732,50 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
             self._send(200, json.dumps(
                 {"accepted": accepted, "sealed_total": feed.seals.total}).encode())
 
-        def _save_coriqo_config(self) -> None:
-            """The Settings form writes the app_url/api_key/tenant here instead
-            of exporting shell env vars — same effect on publish, no shell."""
-            import os
+        def _enrol(self) -> None:
+            """One-time setup: exchange a Coriqo enrolment token for this
+            Mac's device identity. The token is used once and not kept."""
+            from byoai.recorder.enroll import EnrollmentError
             n = int(self.headers.get("Content-Length", 0))
             try:
                 payload = json.loads(self.rfile.read(n) or b"{}")
-            except Exception:
+            except ValueError:
                 self._send(400, b'{"error":"invalid json"}')
                 return
-            out = {}
-            for key in ("app_url", "api_key", "tenant"):
-                if isinstance(payload.get(key), str) and payload[key].strip():
-                    out[key] = payload[key].strip()
-            if cfg.policy_path is not None:
-                target = cfg.policy_path.parent / "corioqo.json"
-                existing = {}
-                if target.exists():
-                    try:
-                        existing = json.loads(target.read_text())
-                    except Exception:
-                        existing = {}
-                existing.update(out)
-                target.write_text(json.dumps(existing, indent=1))
-            info = self._coriqo()
-            self._send(200, json.dumps(info).encode())
+            try:
+                status = publisher.enrol(str(payload.get("base_url") or ""),
+                                         str(payload.get("token") or ""))
+            except ValueError as exc:
+                self._send(400, json.dumps({"error": str(exc)}).encode())
+                return
+            except EnrollmentError as exc:
+                msg = str(exc)
+                if "already enrolled" in msg or "HTTP 409" in msg:
+                    hint = ("This Mac is already connected to Coriqo with its current key, "
+                            "so it doesn't need a new token. The token hasn't been used.")
+                elif "rejected" in msg:
+                    hint = ("Coriqo didn't accept that token. It may be used, expired "
+                            "or revoked; ask your Coriqo admin for a new one.")
+                else:
+                    hint = "Couldn't reach Coriqo at that address. Check it and try again."
+                self._send(400, json.dumps({"error": hint}).encode())
+                return
+            self._send(200, json.dumps(status).encode())
 
-        def _publish_to_coriqo(self) -> None:
-            """Ship the current signed shield seal to Coriqo's main app. Same
-            env triple as the recorder (`BYOAI_CORIQO_URL/_API_KEY/_TENANT_SLUG`).
-            Unconfigured answers a typed 503 the UI renders plainly."""
-            import httpx
-            info = self._coriqo()
-            base = info["app_url"]
-            if not base or not info["api_key"]:
-                self._send(503, json.dumps({
-                    "error": "publish_disabled",
-                    "how": "Set BYOAI_CORIQO_URL, BYOAI_CORIQO_API_KEY and "
-                           "BYOAI_CORIQO_TENANT_SLUG to publish this Mac's seal.",
+        def _publish_now(self) -> None:
+            """"Send now": publish the current seal immediately. Failures are
+            recorded in the status (and retried on their own), not raised."""
+            try:
+                status = publisher.send()
+            except ValueError as exc:
+                self._send(409, json.dumps({"error": str(exc)}).encode())
+                return
+            except Exception:  # noqa: BLE001 - always answer, never drop the request
+                self._send(500, json.dumps({
+                    "error": "Couldn't send right now. Shield will try again on its own."
                 }).encode())
                 return
-            state = feed.seals.verify_chain()
-            doc = {
-                "kind": "byoai.shield.publish.v1",
-                "height": state.get("entries"),
-                "root_hex": state.get("merkle_root"),
-                "checkpoint": feed.seals.checkpoint,
-                "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-            try:
-                http = httpx.Client(trust_env=False)
-                resp = http.post(
-                    base.rstrip("/") + "/api/v1/shield/seals",
-                    json=doc,
-                    headers={
-                        "x-coriqo-api-key": info["api_key"],
-                        "x-coriqo-tenant": info["tenant"] or "",
-                    },
-                    timeout=10.0,
-                )
-                self._send(resp.status_code if resp.status_code < 500 else 502,
-                           json.dumps({"shipped": resp.is_success,
-                                       "root": doc["root_hex"],
-                                       "height": doc["height"]}).encode())
-            except Exception as exc:  # noqa: BLE001
-                self._send(502, json.dumps({"shipped": False, "error": str(exc)}).encode())
+            self._send(200, json.dumps(status).encode())
 
         def log_message(self, *a):  # per-request rlog silenced
             return

@@ -82,9 +82,59 @@ class ShipError(RuntimeError):
     """Network failure or non-2xx after this attempt's retries (there are none
     inside :meth:`Shipper.ship_once` — the caller/run loop owns retry policy)."""
 
-    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+    def __init__(self, message: str, *, retry_after: float | None = None,
+                 status_code: int | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        #: HTTP status of a rejected request; None for a network failure.
+        self.status_code = status_code
+
+
+
+def post_signed_batch(client: httpx.Client, base_url: str, key: DeviceKey,
+                      path: str, body: dict) -> dict:
+    """Canonicalize, sign with the device key, gzip, and POST ``body`` to
+    ``base_url + path``; return the parsed JSON response.
+
+    The one way a device talks to Coriqo's device-authenticated routes. Shared
+    by the recorder's shipper and by Coriqo Shield's checkpoint publisher, so
+    both sign, compress and treat failure identically. Raises
+    :class:`ShipError` on network failure, a non-2xx status (carrying any
+    ``Retry-After``) or a non-JSON response; never retries itself.
+    """
+    canonical_body = canonicalize(body)
+    signature = key.sign(canonical_body)
+    payload = gzip.compress(canonical_body)
+
+    try:
+        response = client.post(
+            f"{base_url}{path}",
+            content=payload,
+            headers={
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+                "x-coriqo-device": key.device_id,
+                "x-coriqo-signature": signature,
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise ShipError(f"request to {path} failed: {exc}") from exc
+
+    if response.status_code // 100 != 2:
+        retry_after = _parse_retry_after(response.headers.get("retry-after"))
+        raise ShipError(
+            f"request to {path} rejected: HTTP {response.status_code} {response.text}",
+            retry_after=retry_after,
+            status_code=response.status_code,
+        )
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise ShipError(
+            f"response from {path} was not valid JSON: {response.text}"
+        ) from exc
+
 
 
 class Shipper:
@@ -403,46 +453,8 @@ class Shipper:
             ) from exc
 
     def _post_signed_batch(self, path: str, body: dict) -> dict:
-        """Canonicalize, sign, gzip, and POST ``body`` to ``path``; return the
-        parsed JSON response.
-
-        Shared by :meth:`ship_once` and :meth:`ship_checkpoints_once`: both
-        batch kinds sign/gzip/POST the same way, use the same headers, and
-        treat network failure / non-2xx / non-JSON responses identically.
-        Raises :class:`ShipError` in all of those cases; does not retry
-        internally.
-        """
-        canonical_body = canonicalize(body)
-        signature = self._key.sign(canonical_body)
-        payload = gzip.compress(canonical_body)
-
-        try:
-            response = self._client.post(
-                f"{self._base_url}{path}",
-                content=payload,
-                headers={
-                    "content-type": "application/json",
-                    "content-encoding": "gzip",
-                    "x-coriqo-device": self._key.device_id,
-                    "x-coriqo-signature": signature,
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise ShipError(f"request to {path} failed: {exc}") from exc
-
-        if response.status_code // 100 != 2:
-            retry_after = _parse_retry_after(response.headers.get("retry-after"))
-            raise ShipError(
-                f"request to {path} rejected: HTTP {response.status_code} {response.text}",
-                retry_after=retry_after,
-            )
-
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise ShipError(
-                f"response from {path} was not valid JSON: {response.text}"
-            ) from exc
+        """See :func:`post_signed_batch`; bound to this shipper's device."""
+        return post_signed_batch(self._client, self._base_url, self._key, path, body)
 
     def _advance_watermark(
         self,

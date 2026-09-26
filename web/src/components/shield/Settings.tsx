@@ -6,8 +6,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import {
-  RETENTION_DAYS, fetchCoriqo, fetchInstalledApps, fetchPolicy, fetchPrivacy,
-  publishSeal, saveCoriqo, savePolicy, scrubStoredText,
+  RETENTION_DAYS, enrolWithCoriqo, fetchCoriqo, fetchInstalledApps, fetchPolicy, fetchPrivacy,
+  publishSeal, savePolicy, scrubStoredText,
 } from '@/api/shield'
 import type { ShieldPolicy } from '@/api/shield'
 import { APP_NAME, ConfirmDialog, SectionHead, plural } from './shared'
@@ -214,75 +214,122 @@ function PrivacySettings({ policy, save, saving }: {
   )
 }
 
-/** The optional link to a Coriqo account: save the connection, then ship the
- * seal. Shipping sends the root and signed checkpoint only. */
+function ago(epochSeconds: number) {
+  const mins = Math.max(0, Math.round((Date.now() / 1000 - epochSeconds) / 60))
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins} min ago`
+  const h = Math.round(mins / 60)
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`
+}
+
+function whenNext(epochSeconds: number) {
+  const mins = Math.round((epochSeconds - Date.now() / 1000) / 60)
+  if (mins <= 1) return 'within a minute'
+  if (mins < 60) return `in about ${mins} min`
+  return `in about ${Math.round(mins / 60)} h`
+}
+
+/** The link to a Coriqo tenant. Set up once with an enrolment token; after
+ * that it sends this Mac's signed seal on its own, rarely, and retries by
+ * itself. The only state that asks for a person is Coriqo refusing the Mac. */
 function CoriqoLink() {
   const qc = useQueryClient()
-  const info = useQuery({ queryKey: ['shield-coriqo'], queryFn: fetchCoriqo, refetchInterval: 15_000 })
-  const [form, setForm] = useState({ app_url: '', api_key: '', tenant: '' })
-  const save = useMutation({
-    mutationFn: () => saveCoriqo(form),
-    onSuccess: data => {
-      qc.setQueryData(['shield-coriqo'], data)
-      setForm(f => ({ ...f, api_key: '' }))
+  const info = useQuery({ queryKey: ['shield-coriqo'], queryFn: fetchCoriqo, refetchInterval: 30_000 })
+  const [form, setForm] = useState({ base_url: '', token: '' })
+  const [reconnect, setReconnect] = useState(false)
+  const enrol = useMutation({
+    mutationFn: () => enrolWithCoriqo(form),
+    onSuccess: () => {
+      setForm({ base_url: '', token: '' })
+      setReconnect(false)
+      void qc.invalidateQueries({ queryKey: ['shield-coriqo'] })
     },
   })
-  const publish = useMutation({
+  const send = useMutation({
     mutationFn: publishSeal,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['shield-verify'] }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['shield-coriqo'] }),
   })
   const ci = info.data
+  const showForm = !ci?.connected || reconnect || ci.needs_attention
+
   return (
     <section className="settings-block coriqo" aria-labelledby="coriqo-h">
-      <SectionHead id="coriqo-h" title="Coriqo account" help="Optional." />
-      <p className="muted setting-help">
-        {ci?.configured
-          ? `Connected to ${ci.app_url ?? 'Coriqo'}${ci.tenant ? `, tenant ${ci.tenant}` : ''}. Shipping sends the seal's root, entry count and signed checkpoint. No messages and no rule matches.`
-          : 'Not connected. Shield works on its own; connecting lets you ship this Mac\'s seal to your Coriqo tenant so it sits with the rest of your evidence.'}
-      </p>
-      <form className="coriqo-form" onSubmit={e => { e.preventDefault(); save.mutate() }}>
-        <label>
-          <span className="fkey">App URL</span>
-          <input value={form.app_url} placeholder={ci?.app_url ?? 'https://app.coriqo.com'}
-            onChange={e => setForm({ ...form, app_url: e.target.value })} />
-        </label>
-        <label>
-          <span className="fkey">API key</span>
-          <input type="password" autoComplete="off" value={form.api_key}
-            placeholder={ci?.configured ? 'Saved. Enter a new one to replace it.' : 'cq_sa_…'}
-            onChange={e => setForm({ ...form, api_key: e.target.value })} />
-        </label>
-        <label>
-          <span className="fkey">Tenant</span>
-          <input value={form.tenant} placeholder={ci?.tenant ?? 'acme_bank'}
-            onChange={e => setForm({ ...form, tenant: e.target.value })} />
-        </label>
-        <button className="btn" type="submit"
-          disabled={save.isPending || !(form.app_url || form.api_key || form.tenant)}>
-          {save.isPending ? 'Saving…' : 'Save connection'}
-        </button>
-      </form>
-      {save.isError && <p className="setting-help" role="alert">Not saved: {save.error.message}</p>}
-      <div className="coriqo-row">
-        <button className="btn ghost" disabled={!ci?.configured || !ci?.app_url}
-          onClick={() => window.open(ci?.app_url ?? '', '_blank', 'noopener')}>Open Coriqo →</button>
-        <button className="btn primary" disabled={publish.isPending || !ci?.configured}
-          onClick={() => publish.mutate()}>
-          {publish.isPending ? 'Shipping…' : 'Ship seal now'}
-        </button>
-      </div>
-      {!ci?.configured && (
-        <p className="muted setting-help">Ship seal now turns on once a connection is saved.</p>
+      <SectionHead id="coriqo-h" title="Coriqo" help="Optional. Sends this Mac's seal to your Coriqo tenant so it sits with the rest of your AI evidence." />
+
+      {info.isPending && <p className="muted setting-help" role="status">Checking the connection…</p>}
+
+      {ci?.connected && (
+        <dl className="keeps-list stacked coriqo-status">
+          <dt>Connected to</dt>
+          <dd>{ci.tenant ?? 'your tenant'} · <span className="mono">{ci.base_url}</span></dd>
+          <dt>Last sent</dt>
+          <dd>
+            {ci.last_sent_at
+              ? `${ago(ci.last_sent_at)}, covering ${plural(ci.last_height, 'entry', 'entries')}`
+              : 'Not yet. The first send happens within a minute.'}
+          </dd>
+          <dt>Next</dt>
+          <dd>
+            {!ci.has_new
+              ? `Nothing new to send. Shield sends at most every ${ci.every_hours} hours, and only when there's something new.`
+              : ci.next_attempt_at
+                ? `New activity, sending ${whenNext(ci.next_attempt_at)}.`
+                : 'New activity, sending within a minute.'}
+          </dd>
+        </dl>
       )}
-      {publish.isSuccess && (
-        <p className="setting-help" role="status">
-          Shipped: {publish.data.height ?? 0} entries, root {(publish.data.root ?? '').slice(0, 12)}…
-        </p>
+
+      {ci?.last_error && (
+        <div className={`banner ${ci.needs_attention ? 'bad' : 'warn'}`} role={ci.needs_attention ? 'alert' : 'status'}>
+          <span>{ci.last_error}</span>
+        </div>
       )}
-      {publish.isError && <p className="setting-help" role="alert">Not shipped. {publish.error.message}</p>}
+
+      {ci?.connected && !showForm && (
+        <div className="coriqo-row">
+          <button className="btn" disabled={send.isPending || !ci.has_new}
+            onClick={() => send.mutate()}>
+            {send.isPending ? 'Sending…' : 'Send now'}
+          </button>
+          <button className="btn ghost" onClick={() => window.open(ci.base_url ?? '', '_blank', 'noopener')}>
+            Open Coriqo →
+          </button>
+          <button className="btn ghost sm" onClick={() => setReconnect(true)}>Connect again</button>
+        </div>
+      )}
+      {send.isError && <p className="setting-help" role="alert">Not sent: {send.error.message}</p>}
+
+      {showForm && (
+        <>
+          <p className="muted setting-help">
+            In Coriqo, an admin creates an enrolment token for this Mac. Paste it below with your
+            Coriqo address. The token works once; after that this Mac identifies itself with its
+            own key, so there's no password or API key to keep.
+          </p>
+          <form className="coriqo-form enrol" onSubmit={e => { e.preventDefault(); enrol.mutate() }}>
+            <label>
+              <span className="fkey">Coriqo address</span>
+              <input value={form.base_url} placeholder={ci?.base_url ?? 'https://app.coriqo.com'}
+                inputMode="url" autoComplete="url"
+                onChange={e => setForm({ ...form, base_url: e.target.value })} />
+            </label>
+            <label>
+              <span className="fkey">Enrolment token</span>
+              <input type="password" autoComplete="off" value={form.token} placeholder="cik_live_…"
+                onChange={e => setForm({ ...form, token: e.target.value })} />
+            </label>
+            <button className="btn primary" type="submit"
+              disabled={enrol.isPending || !form.base_url.trim() || !form.token.trim()}>
+              {enrol.isPending ? 'Connecting…' : 'Connect this Mac'}
+            </button>
+          </form>
+          {enrol.isError && <p className="setting-help" role="alert">Not connected: {enrol.error.message}</p>}
+          {reconnect && <button className="btn ghost sm" onClick={() => setReconnect(false)}>Cancel</button>}
+        </>
+      )}
+
       <p className="muted setting-help">
-        For every Mac in your organisation to report on its own, your Coriqo admin enrols the
-        device from Coriqo. This form covers this Mac only.
+        What leaves this Mac: the seal's root, its entry count and the signature. No messages and no rule matches.
       </p>
     </section>
   )

@@ -184,51 +184,47 @@ export function fetchPrivacy() {
   return get('/privacy', ShieldPrivacy)
 }
 
+/** This Mac's link to a Coriqo tenant. Nothing secret: after a one-time
+ * enrolment the Mac signs every request with its own key. */
 export const ShieldCoriqo = z.object({
-  app_url: z.string().nullish(),
+  connected: z.boolean(),
+  base_url: z.string().nullish(),
   tenant: z.string().nullish(),
+  device_id: z.string().nullish(),
+  enrolled_at: z.string().nullish(),
+  last_sent_at: z.number().nullish(),
+  last_height: z.number().int().nonnegative(),
+  /** Something was sealed since the last accepted send. */
+  has_new: z.boolean(),
+  next_attempt_at: z.number().nullish(),
+  every_hours: z.number(),
+  last_error: z.string().nullish(),
+  needs_attention: z.boolean(),
   marketing_url: z.string().nullish(),
-  configured: z.boolean(),
 })
+export type ShieldCoriqo = z.infer<typeof ShieldCoriqo>
+/** What enrol and "Send now" answer with: the same status, minus the link. */
+const ShieldCoriqoStatus = ShieldCoriqo.omit({ marketing_url: true })
 
 export function fetchCoriqo() {
   return get('/coriqo', ShieldCoriqo)
 }
 
-/** Save the Coriqo connection for this Mac. Blank fields keep what's saved;
- * environment variables still win over the file. */
-export function saveCoriqo(next: { app_url?: string; api_key?: string; tenant?: string }) {
-  return post('/coriqo', next, ShieldCoriqo)
+/** One-time setup: a Coriqo admin mints an enrolment token; paste it here. */
+export function enrolWithCoriqo(next: { base_url: string; token: string }) {
+  return post('/coriqo/enrol', next, ShieldCoriqoStatus)
+}
+
+/** Send the current seal now instead of waiting for the next scheduled send.
+ * A failure is recorded in the status and retried on its own. */
+export function publishSeal() {
+  return post('/publish', {}, ShieldCoriqoStatus)
 }
 
 /** Which of the known AI apps are installed on this Mac (read from
  * /Applications on each call). */
 export function fetchInstalledApps() {
   return get('/apps', z.record(z.boolean()))
-}
-
-const PublishResult = z.object({
-  shipped: z.boolean(),
-  root: z.string().nullish(),
-  height: z.number().nullish(),
-  error: z.string().nullish(),
-  how: z.string().nullish(),
-})
-
-/** Ship this Mac's current seal (root + signed checkpoint) to Coriqo. Throws
- * with the server's own explanation when it wasn't shipped. */
-export async function publishSeal() {
-  // JSON even with nothing to say: the shield refuses other POSTs (see
-  // request_problem in shield.py).
-  const res = await fetch('/shield-api/publish', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-  })
-  const body = PublishResult.safeParse(await res.json().catch(() => ({})))
-  if (!res.ok || !body.success || !body.data.shipped) {
-    const d = body.success ? body.data : undefined
-    throw new Error(d?.how ?? d?.error ?? `${res.status} publishing the seal`)
-  }
-  return body.data
 }
 
 /** Replace stored message text with fingerprints and apply retention. */

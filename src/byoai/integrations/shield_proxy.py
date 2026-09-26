@@ -33,6 +33,7 @@ from byoai.integrations.shield import (
     append_row,
     inspect_text,
     message_text,
+    proxy_alive_path,
     read_policy,
     redact_json_body,
 )
@@ -166,6 +167,37 @@ class ShieldProxy:
         if app not in COVERED_APPS or not self.policy()["apps"].get(app, False):
             return None
         return app
+
+    # -- liveness ---------------------------------------------------------
+    def running(self) -> None:
+        """mitmproxy is up: leave a marker (pid, listen port) next to the
+        ledger, so Shield can tell Coriqo whether traffic is being checked."""
+        import os
+
+        from byoai.recorder.keys import atomic_write_bytes
+        port = None
+        try:
+            from mitmproxy import ctx
+            port = int(ctx.options.listen_port or 8080)
+        except Exception:  # noqa: BLE001 - outside mitmproxy, or no port option
+            pass
+        try:
+            atomic_write_bytes(proxy_alive_path(self.ledger), json.dumps({
+                "pid": os.getpid(), "port": port,
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }).encode(), mode=0o644, prefix=".shield-proxy-")
+        except OSError:
+            pass  # never stop the proxy over its own marker
+
+    def done(self) -> None:
+        """Clean stop: remove our marker (only ours, not a newer proxy's)."""
+        import os
+        path = proxy_alive_path(self.ledger)
+        try:
+            if json.loads(path.read_text()).get("pid") == os.getpid():
+                path.unlink()
+        except (OSError, ValueError, AttributeError):
+            pass
 
     # -- mitmproxy hooks --------------------------------------------------
     def request(self, flow) -> None:
