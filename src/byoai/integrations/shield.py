@@ -40,6 +40,7 @@ from pathlib import Path
 
 from byoai.recorder.keys import atomic_write_bytes, load_or_create_device_key
 from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
+from byoai.integrations.shield_sync import SYNC_LEVELS, level_words, sync_level
 
 # Shield's own port. Not 8300 (Consul), 8800 (the MCP demo gateway), 8080
 # (the proxy) or any other number a dev stack likes; the browser extension
@@ -842,6 +843,10 @@ def default_policy() -> dict:
         "keep_text": False,
         "retention_days": 30,
         "notice": True,
+        # What Coriqo may receive about activity: "seal" (integrity only),
+        # "daily" totals, or per-message "events". Only a signed managed
+        # policy moves it; see byoai.integrations.shield_sync.
+        "sync": "seal",
     }
 
 
@@ -857,6 +862,10 @@ def load_policy(cfg: ShieldConfig) -> dict:
     and the console read this, not the local file directly, so managed mode
     can't be bypassed by only patching one caller."""
     local = read_policy(cfg.policy_path)
+    # Only a signed managed policy moves how much activity leaves the device:
+    # a value in the local file (hand-edited, or left over from a policy that
+    # was later revoked) is ignored.
+    local["sync"] = "seal"
     managed = load_managed_policy(cfg.managed_policy_path)
     if not managed:
         return local
@@ -885,7 +894,8 @@ def load_policy(cfg: ShieldConfig) -> dict:
 # device — capture, redaction, sealing — is unaffected by whether a device is
 # managed at all.
 
-MANAGED_LOCKABLE_KEYS = ("mode", "apps", "keep_text", "retention_days", "notice")
+MANAGED_LOCKABLE_KEYS = ("mode", "apps", "keep_text", "retention_days", "notice",
+                         "sync")
 
 
 def load_managed_policy(path: Path | None = None) -> dict | None:
@@ -936,6 +946,9 @@ def _validate_managed_policy(policy: dict) -> None:
     for key in ("keep_text", "notice"):
         if key in policy and not isinstance(policy[key], bool):
             raise ValueError(f"{key} must be true or false")
+    if "sync" in policy and policy["sync"] not in SYNC_LEVELS:
+        raise ValueError("sync must be " + ", ".join(SYNC_LEVELS[:-1])
+                         + " or " + SYNC_LEVELS[-1])
 
 
 def apply_managed_envelope(envelope: dict, *, tenant_slug: str | None, device_id: str,
@@ -1817,6 +1830,18 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                         **(summary or {"by": None, "version": None,
                                        "locked": [], "fetched_at": None}),
                         "error": pol_error,
+                    }
+                level = sync_level(out)
+                by = (summary or {}).get("by")
+                if by or level != "seal":
+                    # Invariant 4: whoever receives activity is always named,
+                    # in plain words, and can't be policy-hidden: a level above
+                    # seal is disclosed even when no organisation is named.
+                    by = by or "Your administrator"
+                    out["sharing"] = {
+                        "level": level, "by": by,
+                        "since": (summary or {}).get("fetched_at"),
+                        "words": level_words(level, by),
                     }
                 return out
             if path == "/api/privacy":

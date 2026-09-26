@@ -1106,3 +1106,38 @@ def test_interop_vector_matches_coriqos_canonical_bytes_and_signature(tmp_path):
                                     public_key=pub_hex, path=path)
     assert result == {"ok": True, "error": None}
     del seed  # not needed to verify; recorded for anyone regenerating the vector
+
+
+def _managed_sync(tmp_path, cfg, *, by, sync, locked=("sync",)):
+    (tmp_path / "managed_policy.json").write_text(json.dumps({
+        "fetched_at": "2026-09-26T09:00:00Z",
+        "envelope": {"signature": "x", "document": {
+            "version": 1, "managed_by": by, "locked": list(locked),
+            "policy": {"sync": sync}}}}))
+
+
+def test_sharing_is_disclosed_even_when_no_organisation_is_named(tmp_path):
+    cfg = make_cfg(tmp_path)
+    _managed_sync(tmp_path, cfg, by=None, sync="events")
+    got = json.loads(_get(_serve(cfg) + "/api/policy")[2])
+    assert got["sync"] == "events"
+    assert got["sharing"]["by"] == "Your administrator"
+    assert "Never what you wrote" in got["sharing"]["words"]
+
+
+def test_sharing_names_the_organisation_at_seal_level(tmp_path):
+    cfg = make_cfg(tmp_path)
+    _managed_sync(tmp_path, cfg, by="Contoso IT", sync="seal")
+    got = json.loads(_get(_serve(cfg) + "/api/policy")[2])
+    assert got["sharing"]["level"] == "seal" and got["sharing"]["by"] == "Contoso IT"
+
+
+def test_local_file_cannot_turn_sync_on(tmp_path):
+    cfg = make_cfg(tmp_path)
+    (tmp_path / "policy.json").write_text(json.dumps({"sync": "events"}))
+    got = json.loads(_get(_serve(cfg) + "/api/policy")[2])
+    assert got["sync"] == "seal" and "sharing" not in got
+    # ...nor can an unlocked managed value
+    _managed_sync(tmp_path, cfg, by="Contoso IT", sync="events", locked=("mode",))
+    from byoai.integrations.shield import load_policy
+    assert load_policy(cfg)["sync"] == "seal"

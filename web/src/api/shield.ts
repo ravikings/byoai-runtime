@@ -111,6 +111,17 @@ export const ShieldManaged = z.object({
 })
 export type ShieldManaged = z.infer<typeof ShieldManaged>
 
+/** Who receives this device's activity, and what, in the words the person
+ * reads. Present when a managed policy names an organisation, or the level is
+ * above seal (``by`` is then "Your administrator" if none is named). */
+export const ShieldSharing = z.object({
+  level: z.enum(['seal', 'daily', 'events']),
+  by: z.string(),
+  since: z.string().nullable(),
+  words: z.string(),
+})
+export type ShieldSharing = z.infer<typeof ShieldSharing>
+
 export const ShieldPolicy = z.object({
   mode: z.enum(['observe', 'redact', 'block']),
   apps: z.record(z.boolean()),
@@ -121,6 +132,7 @@ export const ShieldPolicy = z.object({
    * be turned on yet. */
   covered_apps: z.array(z.string()).optional(),
   managed: ShieldManaged.optional(),
+  sharing: ShieldSharing.optional(),
 })
 export type ShieldPolicy = z.infer<typeof ShieldPolicy>
 
