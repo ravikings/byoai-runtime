@@ -302,6 +302,57 @@ export const VerifyJob = z.object({
 })
 
 /* ------------------------------------------------------------------ *
+ * Mandate — the verdict stream, §6.5
+ * ------------------------------------------------------------------ */
+
+export const VerdictEvent = z.object({
+  device_id: z.string(),
+  /** The sealed height this verdict is addressable at — null when the
+   *  verdict is not in the chain window the host keeps. Never rendered as
+   *  a bare number: a seq is only an address with its device (§2). */
+  seq: z.number().int().nonnegative().nullable(),
+  ts: z.string(),
+  surface: z.string(),
+  tool: z.string().nullable(),
+  agent_id: z.string().nullable(),
+  verdict: VerdictKind,
+  reason: z.string().nullable(),
+  chars: z.number().int().nullable(),
+})
+export type VerdictEvent = z.infer<typeof VerdictEvent>
+
+export const VerdictLatch = z.object({
+  device_id: z.string(),
+  surface: z.string(),
+  tool: z.string().nullable(),
+  /** Repeat attempts after the first denial — a lone denial is not a latch,
+   *  which is why this counts attempts, not denials. */
+  attempts: z.number().int(),
+  first_seq: z.number().int().nonnegative().nullable(),
+})
+export type VerdictLatch = z.infer<typeof VerdictLatch>
+
+export const VerdictStream = z.object({
+  tenant: z.string(),
+  window: z.object({ from: z.string(), to: z.string() }),
+  inclusion: Inclusion,
+  rollup: z.object({
+    allowed: z.number().int(),
+    flagged: z.number().int(),
+    denied: z.number().int(),
+  }),
+  /** Observe mode never blocks, so "would have been stopped" is the whole
+   *  story; under enforcement the count is meaningless and the host sends
+   *  null, not 0 — an absent measurement is not a zero. */
+  enforcement: Enforcement,
+  observe_flagged: z.number().int().nullable(),
+  latches: z.array(VerdictLatch),
+  verdicts: z.array(VerdictEvent),
+  next_cursor: z.string().nullable(),
+})
+export type VerdictStream = z.infer<typeof VerdictStream>
+
+/* ------------------------------------------------------------------ *
  * Runtime (proxy) — existing endpoints, §1.1
  * ------------------------------------------------------------------ */
 

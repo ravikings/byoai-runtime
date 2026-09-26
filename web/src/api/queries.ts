@@ -20,6 +20,7 @@ import {
   DeviceList,
   FindingList,
   FleetSummary,
+  VerdictStream,
   type Scope,
 } from './schemas'
 
@@ -39,6 +40,10 @@ const CADENCE = {
    */
   coverage: { staleTime: 60_000, refetchInterval: 120_000 },
   findings: { staleTime: 30_000, refetchInterval: 60_000 },
+  /** A verdict stream moves with traffic, so it is watched like the
+   *  overview — but a fleet that is idle really is idle, and 30 s is
+   *  honest against a recorder that ships on a timer. */
+  verdicts: { staleTime: 15_000, refetchInterval: 30_000 },
 } as const
 
 /** What every console hook returns: the query result plus an explicit stamp. */
@@ -79,6 +84,7 @@ export const consoleKeys = {
   devices: (scope: Scope) => ['console', 'fleet', 'devices', scopeKey(scope)] as const,
   coverage: (scope: Scope) => ['console', 'fleet', 'coverage', scopeKey(scope)] as const,
   findings: (scope: Scope) => ['console', 'fleet', 'findings', scopeKey(scope)] as const,
+  verdicts: (scope: Scope) => ['console', 'verdicts', scopeKey(scope)] as const,
 } as const
 
 export function useFleetSummary(scope: Scope): ConsoleQuery<FleetSummary> {
@@ -121,3 +127,15 @@ export function useFindings(scope: Scope): ConsoleQuery<FindingListPayload> {
   )
 }
 
+
+export type VerdictStreamPayload = import('zod').z.infer<typeof VerdictStream>
+
+export function useVerdicts(scope: Scope): ConsoleQuery<VerdictStreamPayload> {
+  return wrap(
+    useQuery({
+      queryKey: consoleKeys.verdicts(scope),
+      queryFn: ({ signal }) => apiFetch('/verdicts', VerdictStream, { scope, signal }),
+      ...CADENCE.verdicts,
+    }),
+  )
+}

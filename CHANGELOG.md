@@ -135,6 +135,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads `unknown`, not green, because the list cannot tell a clean walk from
   no walk.
 
+- **Mandate verdict stream — `GET /v1/console/verdicts` and
+  `/console/<tenant>/mandate/verdicts` (spec §6.5).** The `mandate stream →`
+  link off the denial panel now opens a real screen. On this host every
+  sealed interaction already carries its outcome, so the stream is the ledger
+  read by decision: a stop is `denied`, a rule hit that still passed is
+  `flagged`, the rest `allowed`, each addressed by device·seq. The posture
+  banner is read from the live (managed-locked) policy mode, and
+  `observe_flagged` is the whole value of observe — "N actions would have
+  been stopped" — sent as `null` under enforcement rather than a `0` that
+  would claim a counter that mode never runs. `latches` groups repeat denials
+  after a first, the fact a flat verdict table hides. The page's shell dot
+  says "observing" or "enforcing" from what the stream read, and the empty
+  window is silence, not a clean pass.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added

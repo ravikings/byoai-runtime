@@ -293,7 +293,8 @@ GET+POST (validated; a bad value is a 400 that names the field),
 and `/api/receipt/<seal>`, plus `POST /api/browser` for the Chrome
 extension (bulk rows, length-only) — and the read-only fleet-console API
 `/v1/console/fleet`, `/fleet/devices`, `/fleet/findings`, `/fleet/coverage`,
-answered from this Mac's own chain (`byoai.integrations.shield_console`: the
+and `/verdicts`, answered from this Mac's own chain
+(`byoai.integrations.shield_console`: the
 chain is re-walked and the checkpoint signature re-checked on every read, and
 anything only the receiving server could know is served as null, never zero).
 Driven by
