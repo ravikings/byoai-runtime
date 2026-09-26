@@ -122,6 +122,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carry, is left un-claimed rather than borrowing yesterday's green. Works
   on every host that answers the contract, local Shield included.
 
+- **Findings list — `/console/<tenant>/evidence/findings`.** The `all N →`
+  link off the overview now opens the full list: every open finding as a
+  `.finding` row — severity dot, the CLI's own plain-language sentence, a
+  device link, and its seq/range/session ref rendered through the shared
+  `finding.ts` helper so the overview panel and this page can never drift on
+  how a finding is addressed. The empty state says which of the two kinds of
+  "no findings" you are reading: the local host re-hashed every entry on the
+  read that produced the list; a fleet server's empty list can equally mean
+  no verify job ran, and an absent check is not a pass. The shell's
+  integrity dot published from this page keeps the same rule — an empty list
+  reads `unknown`, not green, because the list cannot tell a clean walk from
+  no walk.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added
