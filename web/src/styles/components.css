@@ -749,6 +749,14 @@ tr.row-broken td { background-color: var(--off-scope-bg); }
 .register-foot { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-top: var(--hairline-soft); font-family: var(--font-mono); font-size: var(--t-mono); color: var(--ink-soft); }
 .register-foot .spacer { flex: 1; }
 
+/* PROPOSED COMPONENT: .cellstack — a few mono lines in one table cell, tight
+   leading (agents, and any value whose sub-line is a hash or a quiet-time).
+   Layout only; colour comes from .mono / .hash. */
+.cellstack { display: flex; flex-direction: column; gap: 2px; }
+/* The register's row-link caret: quiet until the row is hovered. */
+.go { color: var(--ice-dim); text-decoration: none; }
+tbody tr:hover .go { color: var(--azure); }
+
 
 /* ============================================================
    SHELL — added by the app-shell pass. Everything below is a

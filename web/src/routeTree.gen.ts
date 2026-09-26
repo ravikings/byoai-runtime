@@ -20,6 +20,7 @@ import { Route as ConsoleTenantShieldRouteImport } from './routes/console.$tenan
 import { Route as ConsoleTenantShieldServerRouteImport } from './routes/console.$tenant.shield-server'
 import { Route as ConsoleTenantFleetIndexRouteImport } from './routes/console.$tenant.fleet.index'
 import { Route as ConsoleTenantFleetCoverageRouteImport } from './routes/console.$tenant.fleet.coverage'
+import { Route as ConsoleTenantFleetDevicesRouteImport } from './routes/console.$tenant.fleet.devices'
 import { Route as ConsoleTenantShieldServerDevicesRouteImport } from './routes/console.$tenant.shield-server.devices'
 import { Route as ConsoleTenantShieldServerEnrolRouteImport } from './routes/console.$tenant.shield-server.enrol'
 import { Route as ConsoleTenantShieldServerPolicyRouteImport } from './routes/console.$tenant.shield-server.policy'
@@ -81,6 +82,12 @@ const ConsoleTenantFleetCoverageRoute =
     path: '/coverage',
     getParentRoute: () => ConsoleTenantFleetRoute,
   } as any)
+const ConsoleTenantFleetDevicesRoute =
+  ConsoleTenantFleetDevicesRouteImport.update({
+    id: '/devices',
+    path: '/devices',
+    getParentRoute: () => ConsoleTenantFleetRoute,
+  } as any)
 const ConsoleTenantShieldServerDevicesRoute =
   ConsoleTenantShieldServerDevicesRouteImport.update({
     id: '/devices',
@@ -111,6 +118,7 @@ export interface FileRoutesByFullPath {
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
+  '/console/$tenant/fleet/devices': typeof ConsoleTenantFleetDevicesRoute
   '/console/$tenant/shield-server/devices': typeof ConsoleTenantShieldServerDevicesRoute
   '/console/$tenant/shield-server/enrol': typeof ConsoleTenantShieldServerEnrolRoute
   '/console/$tenant/shield-server/policy': typeof ConsoleTenantShieldServerPolicyRoute
@@ -125,6 +133,7 @@ export interface FileRoutesByTo {
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant': typeof ConsoleTenantIndexRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
+  '/console/$tenant/fleet/devices': typeof ConsoleTenantFleetDevicesRoute
   '/console/$tenant/shield-server/devices': typeof ConsoleTenantShieldServerDevicesRoute
   '/console/$tenant/shield-server/enrol': typeof ConsoleTenantShieldServerEnrolRoute
   '/console/$tenant/shield-server/policy': typeof ConsoleTenantShieldServerPolicyRoute
@@ -142,6 +151,7 @@ export interface FileRoutesById {
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
+  '/console/$tenant/fleet/devices': typeof ConsoleTenantFleetDevicesRoute
   '/console/$tenant/shield-server/devices': typeof ConsoleTenantShieldServerDevicesRoute
   '/console/$tenant/shield-server/enrol': typeof ConsoleTenantShieldServerEnrolRoute
   '/console/$tenant/shield-server/policy': typeof ConsoleTenantShieldServerPolicyRoute
@@ -160,6 +170,7 @@ export interface FileRouteTypes {
     | '/console/$tenant/shield-server'
     | '/console/$tenant/'
     | '/console/$tenant/fleet/coverage'
+    | '/console/$tenant/fleet/devices'
     | '/console/$tenant/shield-server/devices'
     | '/console/$tenant/shield-server/enrol'
     | '/console/$tenant/shield-server/policy'
@@ -174,6 +185,7 @@ export interface FileRouteTypes {
     | '/console/$tenant/shield-server'
     | '/console/$tenant'
     | '/console/$tenant/fleet/coverage'
+    | '/console/$tenant/fleet/devices'
     | '/console/$tenant/shield-server/devices'
     | '/console/$tenant/shield-server/enrol'
     | '/console/$tenant/shield-server/policy'
@@ -190,6 +202,7 @@ export interface FileRouteTypes {
     | '/console/$tenant/shield-server'
     | '/console/$tenant/'
     | '/console/$tenant/fleet/coverage'
+    | '/console/$tenant/fleet/devices'
     | '/console/$tenant/shield-server/devices'
     | '/console/$tenant/shield-server/enrol'
     | '/console/$tenant/shield-server/policy'
@@ -282,6 +295,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleTenantFleetCoverageRouteImport
       parentRoute: typeof ConsoleTenantFleetRoute
     }
+    '/console/$tenant/fleet/devices': {
+      id: '/console/$tenant/fleet/devices'
+      path: '/devices'
+      fullPath: '/console/$tenant/fleet/devices'
+      preLoaderRoute: typeof ConsoleTenantFleetDevicesRouteImport
+      parentRoute: typeof ConsoleTenantFleetRoute
+    }
     '/console/$tenant/shield-server/devices': {
       id: '/console/$tenant/shield-server/devices'
       path: '/devices'
@@ -308,11 +328,13 @@ declare module '@tanstack/react-router' {
 
 interface ConsoleTenantFleetRouteChildren {
   ConsoleTenantFleetCoverageRoute: typeof ConsoleTenantFleetCoverageRoute
+  ConsoleTenantFleetDevicesRoute: typeof ConsoleTenantFleetDevicesRoute
   ConsoleTenantFleetIndexRoute: typeof ConsoleTenantFleetIndexRoute
 }
 
 const ConsoleTenantFleetRouteChildren: ConsoleTenantFleetRouteChildren = {
   ConsoleTenantFleetCoverageRoute: ConsoleTenantFleetCoverageRoute,
+  ConsoleTenantFleetDevicesRoute: ConsoleTenantFleetDevicesRoute,
   ConsoleTenantFleetIndexRoute: ConsoleTenantFleetIndexRoute,
 }
 

@@ -52,6 +52,7 @@ export function stamp(iso: string): string {
 /** Route hrefs. Plain strings so this screen does not depend on the generated
  *  route tree for links to screens that may not be built yet. */
 export const href = {
+  fleet: (tenant: string) => `/console/${tenant}/fleet`,
   coverage: (tenant: string) => `/console/${tenant}/fleet/coverage`,
   devices: (tenant: string) => `/console/${tenant}/fleet/devices`,
   device: (tenant: string, deviceId: string) =>

@@ -109,6 +109,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `web/src/api/schemas.ts`; every server that knows the number still sends
   an int, so no existing backend changes.
 
+- **Devices register — `/console/<tenant>/fleet/devices` (design frame 10).**
+  The overview's and the health dots' `Devices →` target is now a real screen:
+  one row per enrolled device from the same `/v1/console/fleet/devices`
+  contract, sorted quietest-first (never-heard-from above gone-quiet above
+  reporting). A seq never renders without its device — the `.seq-scoped`
+  token carries the device tail inline — and each liveness and key state
+  keeps its own words ("never" is not a zero duration, "unverified — not a
+  pass" is not red, the unchecked key note names the missing pubkey rather
+  than implying a failure). The register publishes the shell's coverage and
+  integrity dots from its own rows; ingest, which the endpoint does not
+  carry, is left un-claimed rather than borrowing yesterday's green. Works
+  on every host that answers the contract, local Shield included.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added
