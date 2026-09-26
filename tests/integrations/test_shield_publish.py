@@ -264,19 +264,18 @@ def test_a_failed_send_is_retried_unchanged(setup):
     assert pub.state.outbox is None and pub.status()["has_new"] is True
 
 
-def test_publishing_continues_after_a_restart_trims_the_chain(setup, tmp_path):
-    """The seal chain reloads only its last 512 entries, so after a restart its
-    count drops below what was last sent. Change is detected by root, so new
-    activity still goes out; comparing counts would stall until the count
-    climbed past the old value."""
+def test_publishing_continues_after_a_restart(setup, tmp_path):
+    """The chain now reloads in full (no 512-entry window), so the count after
+    a restart is the count that was sent. Change is still detected by root, so
+    new activity goes out, and an unchanged chain sends only a heartbeat."""
     seals, coriqo, clock, pub, cfg = setup
     _enrol(cfg, coriqo)
     _grow(seals, 523)
     pub.tick()
-    reloaded = SealChain(cfg)                       # restart: window of 512
-    assert reloaded.height == 512
+    reloaded = SealChain(cfg)                       # restart: everything is kept
+    assert reloaded.height == 523
     again = Publisher(reloaded, cfg.key_dir, tmp_path, now=clock, client_factory=coriqo.client)
-    _grow(reloaded, 3)                              # 515 < 523 last sent
+    _grow(reloaded, 3)
     clock.t += 7 * 3600
     assert again.tick() is True and len(coriqo.batches) == 2
 
@@ -409,7 +408,7 @@ def test_a_failing_protection_check_does_not_stop_the_send(setup, tmp_path):
     assert coriqo.batches[0]["shield"]["protecting"] is False
 
 
-def test_record_id_is_stable_across_restart_and_trim(setup, tmp_path):
+def test_record_id_is_stable_across_restart(setup, tmp_path):
     seals, coriqo, clock, pub, cfg = setup
     _enrol(cfg, coriqo)
     _grow(seals, 520)
@@ -417,8 +416,8 @@ def test_record_id_is_stable_across_restart_and_trim(setup, tmp_path):
     assert rid
     pub.tick()
     assert coriqo.batches[0]["checkpoints"][0]["record_id"] == rid
-    reloaded = SealChain(cfg)                       # restart, trimmed to 512
-    assert reloaded.height == 512 and reloaded.record_id == rid
+    reloaded = SealChain(cfg)                       # restart
+    assert reloaded.height == 520 and reloaded.record_id == rid
     again = Publisher(reloaded, cfg.key_dir, tmp_path, now=clock, client_factory=coriqo.client)
     _grow(reloaded)
     clock.t += 7 * 3600

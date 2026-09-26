@@ -1,33 +1,74 @@
 /**
- * Popup: is Shield reachable, where does the record land, open the full UI.
- * State is asked of the running service worker — the popup renders machine
- * facts, it never invents them. Rendering happens after exactly one probe;
- * it must never be able to hang on "Checking Shield…".
+ * Popup: is Shield running, is it YOUR Shield, is this tab covered, one button
+ * to open Shield. State is asked of the service worker and the local server;
+ * the popup renders those facts, it never invents them. It checks once and
+ * must never be able to hang on "Checking Shield".
  */
 const el = (id) => document.getElementById(id)
 
+const FALLBACK_ENDPOINT = 'http://127.0.0.1:17831/api/browser'
+const APPS = {
+  'claude.ai': 'Claude',
+  'chatgpt.com': 'ChatGPT',
+  'chat.openai.com': 'ChatGPT',
+  'gemini.google.com': 'Gemini',
+  'copilot.microsoft.com': 'Copilot',
+}
+let lastRender = null
+const STALE_AFTER_MS = 7 * 24 * 3600 * 1000
+
 document.addEventListener('DOMContentLoaded', async () => {
-  render(await probe())
-  wire()
   el('ext-id').textContent = chrome.runtime.id
+  wire()
+  await refresh()
 })
 
+async function refresh() {
+  const [probed, app] = await Promise.all([probe(), currentApp()])
+  lastRender = { probed, app }
+  render(probed, app)
+}
+
 async function probe() {
-  const config = await send({ type: 'agent.getEndpoint' })
-  const endpoint = config?.endpoint
-  if (!endpoint) {
-    return { up: false, endpoint: 'http://127.0.0.1:8300/api/browser' }
-  }
+  const check = await withTimeout(send({ type: 'agent.checkServer' }), 2500).catch(() => undefined)
+  const endpoint = check?.endpoint || FALLBACK_ENDPOINT
+  const state = check?.state || 'unreachable'
+  if (state !== 'ok' && state !== 'paired') return { state, endpoint }
   try {
-    const base = endpoint.replace(/\/api\/browser$/, '')
-    const res = await withTimeout(fetch(base + '/api/verify', { cache: 'no-store' }), 1500)
+    const res = await withTimeout(fetch(baseOf(endpoint) + '/api/verify', { cache: 'no-store' }), 1500)
     if (!res.ok) throw new Error(String(res.status))
     const verify = await res.json()
-    return { up: true, endpoint, verify }
+    const seen = (await chrome.storage.local.get('witness')).witness?.total ?? 0
+    const total = verify.sealed_total
+    if (Number.isInteger(total)) {
+      if (total < seen) return { state, endpoint, verify, apps: {}, shorter: { was: seen, now: total } }
+      if (total > seen) await chrome.storage.local.set({ witness: { total } })
+    }
+    let apps = {}
+    try {
+      const policy = await withTimeout(fetch(baseOf(endpoint) + '/api/policy', { cache: 'no-store' }), 1500)
+      apps = (await policy.json()).apps || {}
+    } catch { /* an older Shield: say nothing rather than guess */ }
+    return { state, endpoint, verify, apps }
   } catch {
-    return { up: false, endpoint }
+    return { state: 'unreachable', endpoint }
   }
 }
+
+async function currentApp() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const host = tab?.url ? new URL(tab.url).host : ''
+    const seen = (await chrome.storage.local.get('last_capture')).last_capture || {}
+    const today = (await chrome.storage.local.get('today')).today
+    return { host, name: APPS[host] || null, lastSeen: seen[host] || null,
+      seen, notedToday: today?.day === new Date().toDateString() ? today.n : 0 }
+  } catch {
+    return { host: '', name: null, lastSeen: null, seen: {}, notedToday: 0 }
+  }
+}
+
+const baseOf = (endpoint) => endpoint.replace(/\/api\/browser$/, '')
 
 function withTimeout(promise, ms) {
   return Promise.race([
@@ -36,47 +77,157 @@ function withTimeout(promise, ms) {
   ])
 }
 
-function render({ up, endpoint, verify }) {
-  const dot = el('dot'); const title = el('state-title'); const detail = el('state-detail')
-  el('endpoint').value = endpoint ?? ''
-  if (up) {
-    dot.className = 'dot on'
-    const v = verify || {}
-    title.textContent = 'Shield is running locally'
-    const n = v.entries
-    detail.textContent =
-      (typeof n === 'number' ? `${n} sealed entr${n === 1 ? 'y' : 'ies'}. ` : '') +
-      (v.tamper_evident === false ? 'WARNING: seal chain does not verify.' : 'Seal chain intact.')
+function ago(ms) {
+  const mins = Math.max(1, Math.round((Date.now() - ms) / 60000))
+  if (mins < 60) return `${mins} min ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 48) return `${hours} h ago`
+  return `${Math.round(hours / 24)} days ago`
+}
+
+const shortAddress = (endpoint) => { try { return new URL(endpoint).host } catch { return endpoint } }
+
+function render({ state, endpoint, verify, apps, shorter }, app) {
+  el('endpoint').value = endpoint
+  el('addr').textContent = shortAddress(endpoint)
+  el('addr').title = baseOf(endpoint)
+  el('version').textContent = `Version ${chrome.runtime.getManifest?.().version ?? ''}`.trim()
+  const set = (kind, icon, title, detail) => {
+    el('status').className = `status ${kind}`
+    el('icon').textContent = icon
+    el('state-title').textContent = title
+    el('state-detail').textContent = detail
+  }
+  const primary = el('open-shield')
+  el('help').hidden = true
+  el('trust').hidden = true
+  el('accept').hidden = true
+  primary.hidden = false
+  primary.textContent = 'Open Shield'
+  el('tab').textContent = ''
+
+  if (state === 'mismatch') {
+    set('bad', '!', "That isn't your Shield",
+      "Something else on this Mac is answering at Shield's address, so nothing is being sent to it.")
+    primary.hidden = true
+    el('trust').hidden = false
+    return
+  }
+  if (state === 'unverifiable') {
+    set('bad', '!', "Shield can't prove who it is",
+      'This Shield is too old to pair with the extension. Update it, then reopen this window.')
+    primary.hidden = true
+    return
+  }
+  if (state === 'unreachable') {
+    set('bad', '!', "Shield isn't running",
+      'Messages you send now are held here for a short while, up to 50, then dropped.')
+    el('help').hidden = false
+    primary.textContent = 'Check again'
+    primary.dataset.retry = '1'
+    return
+  }
+  delete primary.dataset.retry
+  const v = verify || {}
+  const n = v.entries
+  if (shorter) {
+    set('bad', '!', "Shield's record is shorter than it was",
+      `It held ${shorter.was} sealed entries and now holds ${shorter.now}. Something deleted or reset it.`)
+    el('accept').hidden = false
+  } else if (v.incidents && v.incidents.length) {
+    set('bad', '!', 'The record was reset',
+      `${v.incidents[0].at}: Shield could not read its record file and started a new one. The old file was kept.`)
+  } else if (v.tamper_evident === false) {
+    set('bad', '!', 'The record does not check out',
+      'An entry no longer matches the signed checkpoint. Open Shield to see where.')
   } else {
-    dot.className = 'dot off'
-    title.textContent = "Shield isn't running"
-    detail.textContent = "Rows are queued locally (max 50) and dropped after that. Start it with: byoai-shield"
+    set('ok', '✓', state === 'paired' ? 'Paired with your Shield' : 'Shield is on',
+      typeof n === 'number'
+        ? `${n} sealed ${n === 1 ? 'entry' : 'entries'}, all verified.`
+        : 'The record is intact.')
+  }
+  const tab = el('tab')
+  const appKey = { Claude: 'claude', ChatGPT: 'chatgpt', Gemini: 'gemini', Copilot: 'copilot' }[app.name]
+  if (app.name && apps && apps[appKey] === false) {
+    tab.textContent = `Shield is set not to record ${app.name}. Turn it on in Shield's settings and messages here will be noted.`
+  } else if (app.name) {
+    const b = Object.assign(document.createElement('b'), { textContent: app.name })
+    if (app.lastSeen && Date.now() - app.lastSeen < STALE_AFTER_MS) {
+      tab.append('Shield watches ', b, ` on this tab. Last message noted ${ago(app.lastSeen)}.`)
+    } else {
+      tab.append('Shield watches ', b, app.lastSeen
+        ? ` on this tab, but has not noted a message in over a week. Send one to check it still works.`
+        : ' on this tab. No message noted yet. Send one to check it works.')
+    }
+  } else if (app.host) {
+    tab.textContent = `This tab (${app.host}) is not one Shield covers.`
+  }
+  if (app.notedToday > 0) {
+    tab.append(` Noted today across all apps: ${app.notedToday}.`)
   }
 }
 
 function wire() {
-  el('copy-id').addEventListener('click', () => {
-    navigator.clipboard.writeText(chrome.runtime.id)
-    el('copy-id').textContent = 'Copied'
-    setTimeout(() => { el('copy-id').textContent = 'Copy id' }, 1200)
-  })
-  el('save').addEventListener('click', async () => {
-    const msg = el('msg')
-    const r = await send({ type: 'agent.setEndpoint', endpoint: el('endpoint').value.trim() })
-    msg.className = `msg ${r && r.ok ? 'ok' : 'bad'}`
-    msg.textContent = r && r.ok ? 'Saved.' : (r?.error || 'Not a localhost Shield endpoint.')
-  })
   el('open-shield').addEventListener('click', async (ev) => {
-    ev.preventDefault()
-    const endpoint = el('endpoint').value
-    const base = endpoint?.replace(/\/api\/browser$/, '') || 'http://127.0.0.1:8300'
-    chrome.tabs.create({ url: base + '/shield' })
+    if (ev.currentTarget.dataset.retry) { await refresh(); return }
+    const endpoint = el('endpoint').value || FALLBACK_ENDPOINT
+    chrome.tabs.create({ url: baseOf(endpoint) + '/shield' })
     window.close()
+  })
+  el('trust').addEventListener('click', async () => {
+    await send({ type: 'agent.checkServer', trustCurrent: true })
+    await refresh()
+  })
+  el('accept').addEventListener('click', async () => {
+    const check = await withTimeout(fetch(baseOf(el('endpoint').value || FALLBACK_ENDPOINT) + '/api/verify', { cache: 'no-store' }).then((r) => r.json()), 1500).catch(() => null)
+    if (check && Number.isInteger(check.sealed_total)) {
+      await chrome.storage.local.set({ witness: { total: check.sealed_total } })
+    }
+    await refresh()
   })
   el('open-privacy').addEventListener('click', (ev) => {
     ev.preventDefault()
     chrome.tabs.create({ url: chrome.runtime.getURL('PRIVACY.md') })
     window.close()
+  })
+  el('copy-id').addEventListener('click', () => {
+    navigator.clipboard.writeText(chrome.runtime.id)
+    el('copy-id').textContent = 'Copied'
+    setTimeout(() => { el('copy-id').textContent = 'Copy id' }, 1200)
+  })
+  el('change-addr').addEventListener('click', (ev) => {
+    ev.preventDefault()
+    el('change-box').hidden = false
+    el('endpoint').focus()
+  })
+  el('copy-addr').addEventListener('click', () => {
+    navigator.clipboard.writeText(el('addr').title)
+    el('copy-addr').textContent = 'Copied'
+    setTimeout(() => { el('copy-addr').textContent = 'Copy' }, 1200)
+  })
+  el('copy-diag').addEventListener('click', () => {
+    const { probed, app } = lastRender || {}
+    const lines = [
+      `Coriqo Shield extension ${chrome.runtime.getManifest?.().version ?? '?'}`,
+      `Extension id: ${chrome.runtime.id}`,
+      `Browser: ${navigator.userAgent}`,
+      `Shield address: ${probed?.endpoint ?? '?'}`,
+      `State: ${probed?.state ?? '?'}`,
+      `Sealed entries: ${probed?.verify?.sealed_total ?? '?'}  Record intact: ${probed?.verify?.tamper_evident ?? '?'}`,
+      `Apps on in Shield: ${JSON.stringify(probed?.apps ?? {})}`,
+      `Noted today: ${app?.notedToday ?? 0}`,
+      `Last noted: ${JSON.stringify(Object.fromEntries(Object.entries(app?.seen ?? {}).map(([h, ms]) => [h, new Date(ms).toISOString()])))}`,
+    ]
+    navigator.clipboard.writeText(lines.join('\n'))
+    el('copy-diag').textContent = 'Copied'
+    setTimeout(() => { el('copy-diag').textContent = 'Copy details for a bug report' }, 1400)
+  })
+  el('save').addEventListener('click', async () => {
+    const msg = el('msg')
+    const r = await send({ type: 'agent.setEndpoint', endpoint: el('endpoint').value.trim() })
+    msg.className = `msg ${r && r.ok ? 'ok' : 'bad'}`
+    msg.textContent = r && r.ok ? 'Saved.' : (r?.error || 'That is not a Shield address on this Mac.')
+    if (r && r.ok) await refresh()
   })
 }
 

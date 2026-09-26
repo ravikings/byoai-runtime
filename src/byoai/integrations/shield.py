@@ -7,7 +7,7 @@ MCP connector gateway and the desktop capture proxy. This module keeps the
 behavioral rules in one place so the console (``web/``) and the demo UI read
 the same analyzer.
 
-    python -m byoai.integrations.shield          # serves UI + API on :8300
+    python -m byoai.integrations.shield          # serves UI + API on :17831
 
 Components:
 
@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import time
 import uuid
 from collections import deque
@@ -40,7 +41,95 @@ from pathlib import Path
 from byoai.recorder.keys import atomic_write_bytes, load_or_create_device_key
 from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
 
+# Shield's own port. Not 8300 (Consul), 8800 (the MCP demo gateway), 8080
+# (the proxy) or any other number a dev stack likes; the browser extension
+# ships the same default (browser_extension/background.js). Override with
+# BYOAI_SHIELD_PORT and enter the same port in the extension popup.
+import os as _os
+import sys as _sys
+DEFAULT_PORT = int(_os.environ.get("BYOAI_SHIELD_PORT", "17831"))
+
+# What /api/identity signs (prefix + caller's nonce); the extension checks the
+# same bytes. Changing it breaks pairing with installed extensions.
+IDENTITY_PREFIX = b"byoai-shield-identity:"
+
 MAX_INTERACTIONS = 400
+
+
+# ------------------------------------------------- private files, portable
+#
+# Shield's files hold a usage record, and the seal chain is the evidence. They
+# are private to the user by default (0600 on POSIX; on Windows the user-profile
+# ACL already limits them to the user, SYSTEM and administrators), written
+# atomically so a crash or a reader never sees half a file, and locked with the
+# platform's own primitive so this runs on Windows and Linux as well as macOS.
+
+import contextlib as _contextlib
+
+
+def atomic_write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` via a same-directory temp file: fsync, then
+    replace. Readers see the old file or the new one, never a torn one."""
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")  # 0600
+    try:
+        with _os.fdopen(fd, "w") as fh:
+            fh.write(text)
+            fh.flush()
+            _os.fsync(fh.fileno())
+        _os.replace(tmp, path)
+    except BaseException:
+        with _contextlib.suppress(OSError):
+            _os.unlink(tmp)
+        raise
+
+
+def harden_files(*paths: Path | None) -> None:
+    """Tighten files Shield owns to owner-only. Best effort; POSIX only, since
+    chmod means nothing on Windows."""
+    if _os.name != "posix":
+        return
+    for path in paths:
+        if path is not None and path.exists():
+            with _contextlib.suppress(OSError):
+                path.chmod(0o600)
+    # Shield's own data folder is owner-only too. A folder the user chose (a
+    # repo checkout, say) is left as they made it.
+    with _contextlib.suppress(OSError):
+        if DATA_DIR.is_dir():
+            DATA_DIR.chmod(0o700)
+
+
+@_contextlib.contextmanager
+def file_lock(fh):
+    """Exclusive lock on an open file, restored to its position on release."""
+    if _os.name == "nt":
+        import msvcrt
+        pos = fh.tell()
+        fh.seek(0)
+        while True:
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # retries ~10 s
+                break
+            except OSError:
+                continue
+        fh.seek(pos)
+        try:
+            yield
+        finally:
+            pos = fh.tell()
+            fh.seek(0)
+            with _contextlib.suppress(OSError):
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            fh.seek(pos)
+    else:
+        import fcntl
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 PII_RULES = [
     ("emails",        re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I)),
@@ -274,14 +363,11 @@ def redact_json_body(raw: str) -> tuple[str, list[str]]:
 def append_row(ledger: Path, rec: dict) -> None:
     """Append one ledger row under an exclusive lock, so a scrub rewriting the
     file can't drop a row the proxy writes at the same moment."""
-    import fcntl
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    with ledger.open("a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
+    fd = _os.open(ledger, _os.O_WRONLY | _os.O_APPEND | _os.O_CREAT, 0o600)
+    with _os.fdopen(fd, "a") as fh:
+        with file_lock(fh):
             fh.write(json.dumps(rec, default=str, sort_keys=True) + "\n")
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 class SealChainError(RuntimeError):
@@ -292,11 +378,20 @@ class SealChain:
     """RFC 6962-graded tamper evidence on recorder-core primitives.
 
     leaf = sha256(0x00 || canonical(payload)) per entry (via
-    :data:`byoai.recorder.merkle.checkpoint_leaf_hash`), binary MerkleTree
-    over those leaves, and PerSigEvery entries a checkpoint
-    {root, height, device_id} Ed25519-signed with a locally-held DeviceKey
-    (same trust root as recorder/receipts.py).
+    :data:`byoai.recorder.merkle.checkpoint_leaf_hash`), a binary MerkleTree
+    over all leaves, and a checkpoint {root, height, device_id} Ed25519-signed
+    with a locally-held DeviceKey (same trust root as recorder/receipts.py).
+
+    Storage is an append-only log, one entry per line (``log_path``), plus a
+    small state file (``cfg.seal_path``: latest checkpoint, incidents). An
+    append is O(1), nothing is ever trimmed, and every entry back to the first
+    is covered by the signed checkpoint. Only the newest ``WINDOW`` payloads
+    are kept in memory; every leaf hash is, which is what the tree needs.
+    Sealing is idempotent: a payload already in the chain is not added again,
+    so replaying the ledger after a restart adds nothing.
     """
+
+    WINDOW = 512
 
     def __init__(self, cfg: ShieldConfig) -> None:
         import threading
@@ -306,55 +401,164 @@ class SealChain:
         # keeps the entries, the checkpoint and the file in step.
         self._lock = threading.RLock()
         self._key = load_or_create_device_key(cfg.key_dir)
-        self.entries: list[dict] = []
+        self.entries: list[dict] = []        # newest WINDOW entries, with payloads
         self.checkpoint: dict | None = None
+        self._leaves: list[bytes] = []       # every leaf, in order
+        self._leaf_set: set[bytes] = set()
         self._tree: MerkleTree | None = None
+        self._log_sig: tuple = (0, 0)
+        # Things an examiner must be able to see, kept in the state file (a
+        # reset that left no trace would be the easiest way to hide edits).
+        self.incidents: list[dict] = []
         #: Stable random id of this local record, made once with the seal file
         #: and kept across restarts and window trims. A new id means the record
         #: was wiped or recreated; Coriqo compares it between sends.
         self.record_id: str = ""
         self._load()
 
+    @property
+    def log_path(self) -> Path:
+        return self.cfg.seal_path.with_name(self.cfg.seal_path.stem + ".log.jsonl")
+
+    @property
+    def height(self) -> int:
+        return len(self._leaves)
+
+    @property
+    def total(self) -> int:
+        """Sealed entries ever. Only goes up, so a chain that comes back
+        shorter than a witness remembers (the extension keeps one) has been
+        rolled back or wiped."""
+        return len(self._leaves)
+
     # -- persistence ------------------------------------------------------
+    def _note(self, what: str, detail: str) -> None:
+        self.incidents.append({"at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                               "what": what, "detail": detail})
+
+    def _quarantine(self, path: Path, tag: str) -> Path:
+        moved = path.with_name(f"{path.name}.{tag}-{int(time.time())}")
+        _os.replace(path, moved)
+        return moved
+
+    def _scan_log(self):
+        """Yield ``(entry, problem)`` for each log line, in order. A problem
+        ends the scan: nothing after a bad line can be trusted. A torn final
+        line (a crash mid-write) is dropped without a problem."""
+        try:
+            raw = self.log_path.read_bytes()
+        except FileNotFoundError:
+            return
+        lines = raw.split(b"\n")
+        torn = lines.pop() if lines and lines[-1] else b""   # no trailing newline
+        del torn
+        for i, line in enumerate(lines):
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+                ok = (e["height"] == i + 1
+                      and self._leaf(e["payload"]).hex() == e["leaf_hash"]
+                      and e["leaf_hash"][:16] == e["seal"])
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok:
+                yield None, f"entry {i + 1} does not match its own hash"
+                return
+            yield e, None
+
     def _load(self) -> None:
-        stored_id = None
+        state: dict = {}
         if self.cfg.seal_path.exists():
             try:
                 state = json.loads(self.cfg.seal_path.read_text())
-                self.entries = state.get("entries", [])[-512:]
-                self.checkpoint = state.get("checkpoint")
-                stored_id = state.get("record_id")
-            except Exception:
-                self.entries = []
-        self._rebuild_tree()
-        if isinstance(stored_id, str) and stored_id:
-            self.record_id = stored_id
+            except Exception as exc:  # noqa: BLE001
+                moved = self._quarantine(self.cfg.seal_path, "unreadable")
+                self._note("chain_unreadable",
+                           f"{type(exc).__name__}; the old file was kept as {moved.name}")
+        self.incidents = list(state.get("incidents", [])) + self.incidents
+        if "entries" in state:                # format 1: one JSON file, last 512
+            self._migrate_v1(state)
+            state = {"incidents": self.incidents, "record_id": state.get("record_id"),
+                     "checkpoint": None}
+        self.checkpoint = state.get("checkpoint")
+        stored_id = state.get("record_id")
+        self.record_id = stored_id if isinstance(stored_id, str) and stored_id else uuid.uuid4().hex
+        good: list[dict] = []
+        for entry, problem in self._scan_log():
+            if problem:
+                moved = self._quarantine(self.log_path, "broken")
+                self._note("chain_broken", f"{problem}; the log was kept as {moved.name} "
+                           f"and its {len(good)} intact entries carried over")
+                self._rewrite_log(good)
+                break
+            good.append(entry)
         else:
-            self.record_id = uuid.uuid4().hex
-            if self.entries:
-                # A seal file from before record ids: give it one now and keep
-                # it, so the next restart does not look like a new record.
-                self._persist()
+            self._trim_torn_tail()
+        self._leaves = [bytes.fromhex(e["leaf_hash"]) for e in good]
+        self._leaf_set = set(self._leaves)
+        self.entries = good[-self.WINDOW:]
+        self._tree = None
+        self._log_sig = _stat_sig(self.log_path)
+        if self.checkpoint and self._checkpoint_matches() is False:
+            self._note("checkpoint_mismatch",
+                       "the signed checkpoint no longer matches the entries it covered "
+                       "(entries were edited or removed while Shield was off)")
+        self._persist()
+
+    def _migrate_v1(self, state: dict) -> None:
+        entries = state.get("entries") or []
+        lines = []
+        for i, e in enumerate(entries, 1):
+            leaf = self._leaf(e["payload"])
+            lines.append(json.dumps({"height": i, "payload": e["payload"],
+                                     "seal": leaf.hex()[:16], "leaf_hash": leaf.hex()},
+                                    sort_keys=True))
+        if lines:
+            atomic_write_private(self.log_path, "\n".join(lines) + "\n")
+
+    def _rewrite_log(self, entries: list[dict]) -> None:
+        atomic_write_private(self.log_path, "".join(
+            json.dumps(e, sort_keys=True) + "\n" for e in entries))
+
+    def _trim_torn_tail(self) -> None:
+        try:
+            raw = self.log_path.read_bytes()
+        except FileNotFoundError:
+            return
+        if raw and not raw.endswith(b"\n"):
+            keep = raw[: raw.rfind(b"\n") + 1]
+            atomic_write_private(self.log_path, keep.decode("utf-8", "replace"))
 
     def _persist(self) -> None:
-        # Atomic (temp file + fsync + rename): a crash or a full disk mid-write
-        # can't leave a half-written chain for the next start to misread as
-        # tampering.
-        atomic_write_bytes(self.cfg.seal_path, json.dumps({
-            "record_id": self.record_id,
-            "entries": self.entries[-512:], "checkpoint": self.checkpoint,
-        }, indent=1).encode(), mode=0o644, prefix=".sealchain-")
+        atomic_write_private(self.cfg.seal_path, json.dumps({
+            "format": 2, "record_id": self.record_id, "checkpoint": self.checkpoint,
+            "total": self.total, "incidents": self.incidents,
+        }, indent=1))
 
+    def _append_line(self, entry: dict) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = _os.open(self.log_path, _os.O_WRONLY | _os.O_APPEND | _os.O_CREAT, 0o600)
+        with _os.fdopen(fd, "a") as fh:
+            fh.write(json.dumps(entry, sort_keys=True) + "\n")
+            fh.flush()
+            _os.fsync(fh.fileno())
+        self._log_sig = _stat_sig(self.log_path)
+
+    # -- chain ------------------------------------------------------------
     def _leaf(self, payload: dict) -> bytes:
         return checkpoint_leaf_hash(payload)
 
     def _rebuild_tree(self) -> None:
-        leaves = [self._leaf(e["payload"]) for e in self.entries]
-        self._tree = MerkleTree(leaves) if leaves else None
+        self._tree = MerkleTree(self._leaves) if self._leaves else None
 
     def _leaf_index(self, seal: str) -> int:
-        for i, e in enumerate(self.entries):
-            if e["seal"] == seal:
+        try:
+            prefix = bytes.fromhex(seal)
+        except ValueError:
+            return -1
+        for i, leaf in enumerate(self._leaves):
+            if leaf.startswith(prefix):
                 return i
         return -1
 
@@ -364,19 +568,21 @@ class SealChain:
 
     def _stamp(self, payload: dict) -> str:
         leaf = self._leaf(payload)
-        entry: dict = {"height": len(self.entries) + 1, "payload": payload,
+        if leaf in self._leaf_set:            # already sealed: replay adds nothing
+            return leaf.hex()[:16]
+        entry: dict = {"height": len(self._leaves) + 1, "payload": payload,
                        "seal": leaf.hex()[:16], "leaf_hash": leaf.hex()}
+        self._append_line(entry)
+        self._leaves.append(leaf)
+        self._leaf_set.add(leaf)
         self.entries.append(entry)
+        del self.entries[:-self.WINDOW]
         self._tree = None  # lazily rebuilt on demand
         if self.height % self.cfg.sig_every == 0:
             self.sign_checkpoint()
         else:
             self._persist()
         return entry["seal"]
-
-    @property
-    def height(self) -> int:
-        return len(self.entries)
 
     def sign_checkpoint(self) -> dict:
         with self._lock:
@@ -399,22 +605,52 @@ class SealChain:
         self._persist()
         return cp
 
+    def _checkpoint_matches(self) -> bool | None:
+        """Does the signed checkpoint still describe the entries it covered?
+        The seal is an unkeyed hash, so someone who edits an entry can
+        recompute it; what they can't redo is the signature."""
+        cp = self.checkpoint
+        if not cp:
+            return None
+        n = int(cp.get("height", 0))
+        if n > len(self._leaves):
+            return False                       # entries were cut off the end
+        if n == 0:
+            return None
+        return MerkleTree(self._leaves[:n]).root.hex() == cp.get("root_hex")
+
     def verify_chain(self) -> dict:
         with self._lock:
             return self._verify_chain()
 
     def _verify_chain(self) -> dict:
         self._rebuild_tree()
+        # If the log changed by anything but our own appends, re-read it all.
+        if _stat_sig(self.log_path) != self._log_sig:
+            for _entry, problem in self._scan_log():
+                if problem:
+                    self._note("chain_broken", f"{problem} (found while running)")
+                    self._persist()
+                    break
+            else:
+                fresh = [e["leaf_hash"] for e, _ in self._scan_log()]
+                if fresh != [leaf.hex() for leaf in self._leaves]:
+                    self._note("chain_changed", "the log was changed while Shield was running")
+                    self._persist()
+            self._log_sig = _stat_sig(self.log_path)
         for e in self.entries:
             if self._leaf(e["payload"]).hex()[:16] != e["seal"]:
                 return {"tamper_evident": False, "broken_at": e["height"],
                         "reason": "content hash mismatch"}
         cp = self.checkpoint
-        sig_ok = None
-        if cp:
-            sig_ok = self._sig_valid(cp)
+        sig_ok = self._sig_valid(cp) if cp else None
+        matches = self._checkpoint_matches()
         return {
-            "tamper_evident": cp is None or bool(sig_ok),
+            "tamper_evident": (cp is None or bool(sig_ok)) and matches is not False
+                              and not self.incidents,
+            "checkpoint_matches_entries": matches,
+            "incidents": self.incidents,
+            "sealed_total": self.total,
             "entries": self.height,
             "merkle_root": self._tree.root.hex() if self._tree else None,
             "checkpoint": None if not cp else {
@@ -429,9 +665,27 @@ class SealChain:
                                        {k: v for k, v in cp.items() if k != "sig"}),
                                    cp.get("sig", ""))
 
+    def _find_entry(self, seal: str) -> dict | None:
+        found = next((e for e in self.entries if e["seal"] == seal), None)
+        if found is not None:
+            return found
+        for e, _problem in self._scan_log():   # older than the in-memory window
+            if e and e["seal"] == seal:
+                return e
+        return None
+
+    def count_with_text(self) -> int:
+        """Entries whose payload carries a redacted preview (keep_text was on)."""
+        return sum(1 for e, _ in self._scan_log()
+                   if e and (e.get("payload") or {}).get("text_redacted"))
+
     def proof_for(self, seal: str) -> dict | None:
         idx = self._leaf_index(seal)
-        if idx < 0 or self._tree is None:
+        if idx < 0:
+            return None
+        if self._tree is None:
+            self._rebuild_tree()
+        if self._tree is None:
             return None
         p = self._tree.proof(idx)
         return {
@@ -444,7 +698,7 @@ class SealChain:
 
     def receipt(self, seal: str) -> dict | None:
         """Portable receipt — verifies fully offline given the checkpoint."""
-        entry = next((e for e in self.entries if e["seal"] == seal), None)
+        entry = self._find_entry(seal)
         if entry is None:
             return None
         cp = self.sign_checkpoint()  # fresh, so the root covers this entry
@@ -712,8 +966,7 @@ def privacy_report(cfg: ShieldConfig, seals: "SealChain | None" = None) -> dict:
     dates = [d for d in (_row_date(r) for r in rows) if d]
     sealed_with_text = 0
     if seals is not None:
-        sealed_with_text = sum(1 for e in seals.entries
-                               if (e.get("payload") or {}).get("text_redacted"))
+        sealed_with_text = seals.count_with_text()
     return {
         "ledger_rows": len(rows),
         "rows_with_text": sum(1 for r in rows
@@ -737,7 +990,6 @@ def scrub_ledger(cfg: ShieldConfig, key_path: Path = FINGERPRINT_KEY, *,
     """Replace stored message text with fingerprint + length, and delete rows
     past retention (``scrub_text=False``: retention only, as at startup). Holds the ledger lock for the whole rewrite so the proxy
     can't append into a file that is about to be replaced."""
-    import fcntl
     import os
     policy = load_policy(cfg)
     cutoff = _cutoff(policy["retention_days"])
@@ -745,8 +997,7 @@ def scrub_ledger(cfg: ShieldConfig, key_path: Path = FINGERPRINT_KEY, *,
     if not cfg.ledger.exists():
         return {"scrubbed": 0, "deleted": 0, "ledger_rows": 0}
     with cfg.ledger.open("r+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
+        with file_lock(fh):
             kept: list[str] = []
             for line in fh.read().splitlines():
                 try:
@@ -776,14 +1027,12 @@ def scrub_ledger(cfg: ShieldConfig, key_path: Path = FINGERPRINT_KEY, *,
             fh.truncate()
             fh.flush()
             os.fsync(fh.fileno())
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
     return {"scrubbed": scrubbed, "deleted": deleted, "ledger_rows": len(kept)}
 
 
 def save_policy(cfg: ShieldConfig, p: dict) -> None:
     if cfg.policy_path:
-        cfg.policy_path.write_text(json.dumps(p, indent=1))
+        atomic_write_private(cfg.policy_path, json.dumps(p, indent=1))
 
 
 # --------------------------------------------------------------------- feed
@@ -828,6 +1077,16 @@ class Interaction(dict):
     """One user-visible activity event, already flag-evaluated."""
 
 
+def _stat_sig(path) -> tuple:
+    if path is None:
+        return (0, 0)
+    try:
+        st = Path(path).stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, 0)
+
+
 class Feed:
     """Turns ledger rows into shield interactions and re-flags replies."""
 
@@ -838,6 +1097,9 @@ class Feed:
         self._offset = 0
         self._policy = load_policy(cfg)
         self._scanned = False
+        self._poll_lock = threading.Lock()
+        self._seen_rows: dict[str, int] = {}
+        self._current_id = ""
         # The browser extension never reads message text, so it can't supply
         # rule hits — it always ships length only. Recorded clean here; if the
         # request also crosses the desktop proxy for the same app, that side
@@ -869,8 +1131,17 @@ class Feed:
     def poll(self) -> int:
         # A watcher thread can start before the first scan; reading from
         # offset 0 then would absorb (and seal) every row twice.
+        with self._poll_lock:
+            return self._poll_locked()
+
+    def _poll_locked(self) -> int:
         if not self._scanned:
             return 0
+        # Idle is the common case: two stat() calls, no read, no parse.
+        sig = (_stat_sig(self.cfg.ledger), _stat_sig(self.cfg.policy_path))
+        if sig == getattr(self, "_poll_sig", None):
+            return 0
+        self._poll_sig = sig
         self._policy = load_policy(self.cfg)
         try:
             lines = self.cfg.ledger.read_text().splitlines()
@@ -890,7 +1161,18 @@ class Feed:
                 continue
         return len(new)
 
+    def _row_id_for(self, r: dict) -> str:
+        """The same ledger row gets the same interaction id on every restart,
+        so sealing it again is a no-op. Text and scrub markers are left out of
+        the key: a scrub rewrites them, and must not make the row look new."""
+        skip = set(TEXT_FIELDS) | {"text_hmac", "scrubbed", "flags"}
+        key = json.dumps({k: v for k, v in r.items() if k not in skip},
+                         sort_keys=True, default=str)
+        n = self._seen_rows[key] = self._seen_rows.get(key, 0) + 1
+        return hashlib.sha256(f"{key}#{n}".encode()).hexdigest()[:10]
+
     def _absorb(self, r: dict) -> None:
+        self._current_id = self._row_id_for(r)
         kind = r.get("kind", "")
         wall = r.get("wall_clock", "")
         ts = wall.split()[-1] if wall else ""
@@ -993,7 +1275,7 @@ class Feed:
              tool=None, identity=None, flags_box, verdict=None, text_hmac=None,
              chars=None, redactions=None):
         item = {
-            "id": uuid.uuid4().hex[:10], "source": source, "surface": surface,
+            "id": self._current_id, "source": source, "surface": surface,
             "ts": ts, "date": date, "verb": redact(verb), "status": status,
             "tool": tool, "identity": identity or {},
             "flags": [{"tier": t, "rule": ru} for t, ru, _ in flags_box],
@@ -1188,7 +1470,7 @@ def clean_browser_row(row: object) -> dict | None:
     return out
 
 
-def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
+def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
           feed: Feed | None = None) -> None:
     """Run the capture shield (API + static UI) until interrupted."""
     feed = feed or Feed(cfg)
@@ -1266,6 +1548,16 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                         "items": page}
             if path == "/api/verify":
                 return feed.seals.verify_chain()
+            if path == "/api/identity":
+                # Proof that this is the Shield holding this device's key, not
+                # another process that got to the port first. The caller picks
+                # the nonce, so a recorded answer can't be replayed.
+                nonce = parse_qs(urlparse(self.path).query).get("nonce", [""])[0]
+                if not re.fullmatch(r"[0-9a-f]{16,64}", nonce):
+                    return None
+                key = feed.seals._key
+                return {"device_id": key.device_id, "public_key": key.public_key_b64,
+                        "sig": key.sign(IDENTITY_PREFIX + nonce.encode())}
             if path == "/api/policy":
                 return {**load_policy(cfg), "covered_apps": list(COVERED_APPS)}
             if path == "/api/privacy":
@@ -1336,7 +1628,7 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                 self._send(200, json.dumps(self._coriqo()).encode())
                 return
             if path in ("/api/feed", "/api/verify", "/api/policy",
-                        "/api/privacy"):
+                        "/api/privacy") or (path == "/api/identity" and api):
                 self._send(200, json.dumps(api).encode())
                 return
             if path.startswith("/api/receipt/"):
@@ -1431,9 +1723,14 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
                     continue
                 append_row(cfg.ledger, clean)
                 accepted += 1
-            # The watcher thread picks new rows up within ~1.5 s. Polling here
-            # as well would race it and could absorb (and seal) a row twice.
-            self._send(200, json.dumps({"accepted": accepted}).encode())
+            # Seal now, not on the watcher's next tick: the gap between "a row
+            # is on disk" and "a row is sealed" is where an edit costs nothing.
+            # poll() is locked, so this can't race the watcher into sealing a
+            # row twice.
+            if accepted:
+                feed.poll()
+            self._send(200, json.dumps(
+                {"accepted": accepted, "sealed_total": feed.seals.total}).encode())
 
         def _enrol(self) -> None:
             """One-time setup: exchange a Coriqo enrolment token for this
@@ -1483,7 +1780,16 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = 8300,
         def log_message(self, *a):  # per-request rlog silenced
             return
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    harden_files(cfg.ledger, cfg.seal_path, cfg.policy_path)
+    try:
+        server = ThreadingHTTPServer((host, port), Handler)
+    except OSError as exc:
+        # Never slide to another port: the extension and bookmarks look for
+        # Shield at one address, and a silent move would hide it from them.
+        raise SystemExit(
+            f"Shield cannot listen on {host}:{port} ({exc.strerror}). Something "
+            f"else is using that port. Set BYOAI_SHIELD_PORT (or --port) to a "
+            f"free one and enter the same address in the extension popup.") from exc
     print(f"Coriqo Shield → http://{host}:{port}/shield", flush=True)
     print(f"seal chain: {feed.seals.height} entries, root "
           f"{(feed.seals.root_hex() or '')[:10]}", flush=True)
@@ -1501,7 +1807,7 @@ def default_paths(ledger: str | Path) -> ShieldConfig:
         seal_path=ledger.parent / "sealchain.json",
         key_dir=DATA_DIR / "keys",
         policy_path=ledger.parent / "policy.json",
-        sig_every=8, max_interactions=MAX_INTERACTIONS,
+        sig_every=1, max_interactions=MAX_INTERACTIONS,
     )
 
 
@@ -1510,12 +1816,27 @@ def main() -> None:  # console-script entrypoint: byoai-shield
 
     ap = argparse.ArgumentParser(prog="byoai-shield", description=__doc__)
     ap.add_argument("ledger", nargs="?",
-                    default="examples/mcp_capture/captures.jsonl",
-                    help="path to captures.jsonl (default: ./examples/mcp_capture)")
+                    default=str(DATA_DIR / "captures.jsonl"),
+                    help="path to captures.jsonl (default: ~/.byoai/shield/captures.jsonl)")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8300)
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--daemonize-watch", action="store_true", default=True)
+    ap.add_argument("--install-login-item", action="store_true",
+                    help="start Shield when you log in (macOS), then exit")
+    ap.add_argument("--remove-login-item", action="store_true",
+                    help="stop starting Shield at login (macOS), then exit")
     args = ap.parse_args()
+    if _sys.stdout is None or _sys.stderr is None:
+        # Started without a console (Windows pythonw, a service): print() would
+        # raise on a missing stdout, so send output to the log instead.
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        log = open(DATA_DIR / "shield.log", "a", buffering=1)  # noqa: SIM115
+        _sys.stdout = _sys.stdout or log
+        _sys.stderr = _sys.stderr or log
+    if args.install_login_item or args.remove_login_item:
+        from byoai.integrations import shield_login
+        raise SystemExit(shield_login.run(
+            install=args.install_login_item, ledger=args.ledger, port=args.port))
     cfg = default_paths(args.ledger)
     feed = Feed(cfg)
 

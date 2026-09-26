@@ -28,7 +28,7 @@
 
   const CHAT_PATHS = [
     /\/chat_conversations\//, // claude.ai message send
-    /\/backend-api\/conversation/, // chatgpt.com message send
+    /\/backend-(api|anon)\/(f\/)?conversation(\?|$)/, // chatgpt.com message send (plain and /f/ paths)
     /\/v1\/messages/, // Messages-API agent wire
     /\/v1\/chat\/completions/,
   ]
@@ -37,16 +37,20 @@
     const url = typeof input === 'string' ? input : (input && input.url) || ''
     const path = url.replace(/^https?:\/\/[^/]+/, '')
     try {
-      if (init && init.body && typeof init.body === 'string' &&
+      const isRequestObject = typeof Request !== 'undefined' && input instanceof Request
+      if (((init && init.body && typeof init.body === 'string') || isRequestObject) &&
           CHAT_PATHS.some((p) => p.test(path))) {
-        let chars = 0
+        // A Request object carries its body as a stream; counting it would mean
+        // consuming or cloning it, so those sends are noted without a length.
+        let chars = isRequestObject && !(init && init.body) ? null : 0
         try {
+          if (chars === null) throw new Error('length unknown')
           const body = JSON.parse(init.body)
           const last = (body.messages || [])[body.messages.length - 1]
           const text = (last && typeof last.content === 'string' && last.content) ||
             (last && last.content?.[0]?.text) || ''
           chars = typeof text === 'string' ? text.length : (init.body || '').length
-        } catch { chars = (init.body || '').length }
+        } catch { chars = chars === null ? null : (init.body || '').length }
         window.dispatchEvent(new CustomEvent('shield-agent-capture', {
           detail: { kind: 'browser.chat.request', app, chars, wire: path.slice(0, 60) },
         }))

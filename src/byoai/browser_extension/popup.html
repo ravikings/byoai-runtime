@@ -2,87 +2,117 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <title>Coriqo Shield</title>
   <style>
-    :root { color-scheme: light dark; }
-    * { box-sizing: border-box; }
-    body {
-      width: 320px; margin: 0; padding: 14px;
-      font: 13px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif;
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff; --panel: #f6f7f9; --line: #e3e6eb; --text: #14181f; --muted: #5d6675;
+      --ok: #15803d; --ok-bg: #e8f6ed; --bad: #b42318; --bad-bg: #fdecea; --wait: #8a6100; --wait-bg: #fff4d6;
+      --btn: #14181f; --btn-text: #ffffff; --link: #1d4ed8;
     }
-    .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-    .dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; flex: none; }
-    .dot.on { background: #16a34a; }
-    .dot.off { background: #dc2626; }
-    h1 { font-size: 14px; margin: 0; }
-    .sub { color: #6b7280; margin: 2px 0 12px; font-size: 12px; }
-    .state { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
-    .state b { display: block; margin-bottom: 2px; }
-    .state span.muted { color: #6b7280; font-size: 12px; }
-    .row { display: flex; gap: 6px; margin-top: 8px; }
-    input[type=text] {
-      flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid #d1d5db;
-      border-radius: 6px; font: inherit; font-size: 12px;
-    }
-    button {
-      padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px;
-      background: #f9fafb; font: inherit; font-size: 12px; cursor: pointer;
-    }
-    button.primary { background: #111827; border-color: #111827; color: #fff; }
-    .msg { font-size: 12px; margin-top: 6px; min-height: 15px; }
-    .msg.ok { color: #15803d; } .msg.bad { color: #b91c1c; }
-    ul { margin: 0 0 10px; padding-left: 18px; }
-    li { margin-bottom: 3px; font-size: 12px; }
-    a { color: inherit; }
-    .foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #6b7280; }
-    details.pin { margin-top: 12px; font-size: 12px; }
-    details.pin summary { cursor: pointer; }
-    details.pin .mono { font: 11px/1.4 ui-monospace, monospace; word-break: break-all; margin: 6px 0; }
-    details.pin .hint { color: #6b7280; font-size: 11px; margin: 4px 0 8px; }
     @media (prefers-color-scheme: dark) {
-      body { background: #111827; color: #e5e7eb; }
-      .state, input[type=text], button { border-color: #374151; }
-      .state { background: #1f2937; }
-      .state span.muted, .sub, .msg:not(.ok):not(.bad), .foot { color: #9ca3af; }
-      a { color: #93c5fd; }
-      input[type=text], button { background: #1f2937; color: #e5e7eb; }
-      button.primary { background: #f9fafb; border-color: #f9fafb; color: #111827; }
+      :root {
+        --bg: #0f141b; --panel: #171d26; --line: #2a3340; --text: #e8ebf0; --muted: #9aa4b2;
+        --ok: #4ade80; --ok-bg: #12291b; --bad: #f87171; --bad-bg: #2d1615; --wait: #fbbf24; --wait-bg: #2b2210;
+        --btn: #e8ebf0; --btn-text: #0f141b; --link: #93b4ff;
+      }
     }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { width: 340px; margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+      font: 13px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif; }
+    .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+    .brand svg { flex: none; }
+    .status { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 12px; padding: 12px;
+      border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+    .status .icon { width: 26px; height: 26px; border-radius: 50%; flex: none; display: grid; place-items: center;
+      font-weight: 700; font-size: 14px; }
+    .status.ok .icon { background: var(--ok-bg); color: var(--ok); }
+    .status.bad .icon { background: var(--bad-bg); color: var(--bad); }
+    .status.wait .icon { background: var(--wait-bg); color: var(--wait); }
+    .status h1 { margin: 0 0 2px; font-size: 14px; }
+    .status p { margin: 0; color: var(--muted); font-size: 12px; }
+    .tab { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+    .tab b { color: var(--text); font-weight: 600; }
+    .primary { display: block; width: 100%; padding: 9px 12px; border: 0; border-radius: 8px; cursor: pointer;
+      background: var(--btn); color: var(--btn-text); font: inherit; font-weight: 600; text-align: center; }
+    .primary:focus-visible, button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+    .help { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+    .help code { font: 11px ui-monospace, monospace; background: var(--panel); padding: 1px 5px; border-radius: 4px; user-select: all; }
+    .promise { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+    .promise a { color: var(--link); }
+    details { margin-top: 12px; font-size: 12px; }
+    summary { cursor: pointer; color: var(--muted); }
+    details .body { margin-top: 8px; }
+    label { display: block; margin: 8px 0 4px; color: var(--muted); }
+    .row { display: flex; gap: 6px; }
+    input[type=text] { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+      background: var(--bg); color: var(--text); font: 12px ui-monospace, monospace; }
+    button.small { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+      color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+    #trust, #accept { margin: 0 0 12px; }
+    .msg { min-height: 16px; margin: 6px 0 0; font-size: 12px; }
+    .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+    .addr { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+      background: var(--panel); font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mono { font: 11px/1.4 ui-monospace, monospace; word-break: break-all; margin: 4px 0 6px; }
   </style>
 </head>
 <body>
-  <div class="head">
-    <span class="dot" id="dot"></span>
-    <h1>Coriqo Shield — Agent Capture</h1>
+  <div class="brand">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>
+    Coriqo Shield
   </div>
-  <p class="sub">For claude.ai and chatgpt.com, Shield keeps a record of which app you sent to, when, and the message length. It never sees message content.</p>
 
-  <div class="state">
-    <b id="state-title">Checking Shield…</b>
-    <span class="muted" id="state-detail"></span>
-    <div class="row" style="margin-bottom:0">
-      <input type="text" id="endpoint" spellcheck="false" aria-label="Shield server endpoint" />
-      <button class="primary" id="save">Save</button>
+  <div class="status wait" id="status" role="status">
+    <span class="icon" id="icon" aria-hidden="true">…</span>
+    <div>
+      <h1 id="state-title">Checking Shield</h1>
+      <p id="state-detail"></p>
     </div>
-    <p class="msg" id="msg"></p>
   </div>
 
-  <ul>
-    <li><a id="open-shield" href="#" target="_blank">Open Shield timeline</a> — today's counters, full activity, receipts</li>
-    <li><a id="open-privacy" href="#" target="_blank">What this extension records</a> — the privacy record</li>
-  </ul>
+  <p class="tab" id="tab"></p>
+  <button class="small" id="trust" hidden>I reinstalled Shield. Trust this one.</button>
 
-  <details class="pin">
-    <summary>Trust only this extension</summary>
-    <p class="mono" id="ext-id"></p>
-    <p class="hint">To make Shield accept rows only from this install, run
-    <span class="mono">BYOAI_SHIELD_EXTENSION_IDS=&lt;this id&gt; byoai-shield …</span> with the id above.</p>
-    <button id="copy-id">Copy id</button>
-  </details>
+  <button class="small" id="accept" hidden>I reset it on purpose. Accept the current record.</button>
+  <button class="primary" id="open-shield">Open Shield</button>
+  <p class="help" id="help" hidden>Start it with <code>byoai-shield</code>. To have it start every time you log in, run <code>byoai-shield --install-login-item</code>.</p>
 
-  <p class="foot">
-    This extension sends facts (app, time, length) to your local Shield server only.
-    Nothing leaves this Mac.
+  <p class="promise">
+    Shield notes that you sent a message, to which app, when, and how long it was. It does not read what you wrote.
+    <a id="open-privacy" href="#">Read exactly what is recorded</a>
   </p>
+
+  <details>
+    <summary>Details</summary>
+    <div class="body">
+      <label>Shield address on this Mac</label>
+      <div class="row">
+        <code class="addr" id="addr"></code>
+        <button class="small" id="copy-addr">Copy</button>
+      </div>
+      <p class="help">Set by Shield. You only change it if you started Shield on a different port.
+        <a id="change-addr" href="#">Change address</a></p>
+      <div id="change-box" hidden>
+        <div class="row">
+          <input type="text" id="endpoint" spellcheck="false" aria-label="Shield address" />
+          <button class="small" id="save">Save</button>
+        </div>
+        <p class="msg" id="msg"></p>
+      </div>
+
+      <label>This install's id</label>
+      <p class="mono" id="ext-id"></p>
+      <button class="small" id="copy-id">Copy id</button>
+      <p class="help">To accept records only from this install, start Shield with <code>BYOAI_SHIELD_EXTENSION_IDS=&lt;id&gt;</code>.</p>
+
+      <label>Something wrong?</label>
+      <button class="small" id="copy-diag">Copy details for a bug report</button>
+      <p class="help">Copies the version, the state above and when each app was last noted. It never includes anything you wrote.</p>
+      <p class="help" id="version"></p>
+    </div>
+  </details>
   <script src="popup.js"></script>
 </body>
 </html>

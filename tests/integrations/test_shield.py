@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from byoai.integrations.shield import (
     ShieldConfig, Feed, flags_for, redact, default_policy, load_policy,
@@ -53,9 +54,11 @@ def test_seal_chain_roundtrip_and_tamper(tmp_path):
     assert proof["root_hex"] == rc["merkle"]["checkpoint"]["root_hex"]
     assert rc["merkle"]["checkpoint"]["sig"].startswith("ed25519:")
 
-    state = json.loads((tmp_path / "sealchain.json").read_text())
-    state["entries"][0]["payload"]["ts"] = "EDITED"
-    (tmp_path / "sealchain.json").write_text(json.dumps(state))
+    lines = chain.log_path.read_text().splitlines()
+    first = json.loads(lines[0])
+    first["payload"]["ts"] = "EDITED"                # edit, seal left as it was
+    lines[0] = json.dumps(first)
+    chain.log_path.write_text("\n".join(lines) + "\n")
     reborn = SealChain(make_cfg(tmp_path))
     assert reborn.verify_chain()["tamper_evident"] is False
 
@@ -265,7 +268,8 @@ def test_feed_shows_and_seals_no_text_by_default(tmp_path, key_path):
     assert legacy["verb"] == "Message to Claude · sent before privacy settings"
     assert blocked["status"] == "blocked" and blocked["tier"] == "bad"
     assert "stopped" in blocked["verb"]
-    sealed = (tmp_path / "sealchain.json").read_text()
+    sealed = ((tmp_path / "sealchain.json").read_text()
+              + (tmp_path / "sealchain.log.jsonl").read_text())
     assert "j.rivers" not in sealed and "hunter2" not in sealed
     assert "text_redacted" not in sealed
     assert feed.seals.verify_chain()["tamper_evident"] is True
@@ -281,6 +285,27 @@ def test_poll_before_first_scan_does_not_double_absorb(tmp_path):
     feed.scan_initial()
     feed.poll()
     assert feed.counts()["checked"] == 1 and feed.seals.height == 1
+
+
+def test_idle_poll_skips_the_read_and_still_sees_new_rows(tmp_path):
+    cfg = make_cfg(tmp_path)
+    row = {"wall_clock": "2026-09-25 09:00:00", "kind": "desktop.chat.request",
+           "app": "claude", "chars": 5}
+    cfg.ledger.write_text(json.dumps(row) + "\n")
+    feed = Feed(cfg)
+    feed.scan_initial()
+    assert feed.poll() == 0
+    reads = []
+    real = Path.read_text
+    Path.read_text = lambda self, *a, **k: (reads.append(self), real(self, *a, **k))[1]
+    try:
+        assert feed.poll() == 0 and feed.poll() == 0
+        assert [r for r in reads if r == cfg.ledger] == []   # nothing changed: no read
+    finally:
+        Path.read_text = real
+    with cfg.ledger.open("a") as f:
+        f.write(json.dumps(row) + "\n")
+    assert feed.poll() == 1
 
 
 # -------------------------------------------------------- review follow-ups
@@ -442,7 +467,7 @@ def test_a_web_page_cannot_weaken_shield(tmp_path):
     assert code == 403
     # DNS rebinding: the page's own hostname pointed at 127.0.0.1
     code, _ = _post(base + "/api/policy", weaken, {
-        "Content-Type": "application/json", "Host": "evil.example:8300"})
+        "Content-Type": "application/json", "Host": "evil.example:17831"})
     assert code == 403
     assert json.loads(_get(base + "/api/policy")[2])["mode"] == "redact"
     # Shield's own page still can
@@ -484,16 +509,220 @@ def test_browser_rows_keep_only_known_fields():
 
 
 def test_request_problem_allows_local_pages_and_get():
-    ok_host = {"Host": "127.0.0.1:8300"}
+    ok_host = {"Host": "127.0.0.1:17831"}
     assert request_problem("GET", "/api/feed", ok_host) is None
     assert request_problem("GET", "/api/feed", {"Host": "attacker.test"}) is not None
     # Same-origin write: the origin must name the very host:port the request
     # was addressed to — Shield's own page — not merely "some localhost port".
     assert request_problem("POST", "/api/policy", {
         **ok_host, "Content-Type": "application/json; charset=utf-8",
-        "Origin": "http://127.0.0.1:8300"}) is None
+        "Origin": "http://127.0.0.1:17831"}) is None
     # A different localhost port is another process, not Shield's page —
     # anything running there can't weaken Shield.
     assert request_problem("POST", "/api/policy", {
         **ok_host, "Content-Type": "application/json",
         "Origin": "http://localhost:9999"}) is not None
+
+
+# ------------------------------------------- identity + login item
+
+
+def test_identity_proves_the_device_key_over_the_callers_nonce(tmp_path):
+    from byoai.integrations.shield import IDENTITY_PREFIX
+    from byoai.recorder.keys import DeviceKey
+    base = _serve(make_cfg(tmp_path))
+    nonce = "ab" * 16
+    code, _, body = _get(f"{base}/api/identity?nonce={nonce}")
+    doc = json.loads(body)
+    assert code == 200
+    assert DeviceKey.verify(doc["public_key"], IDENTITY_PREFIX + nonce.encode(), doc["sig"])
+    # a recorded answer does not verify against a different nonce
+    assert not DeviceKey.verify(doc["public_key"], IDENTITY_PREFIX + b"cd" * 16, doc["sig"])
+    # no nonce, or a malformed one, is refused rather than signed
+    assert _get(f"{base}/api/identity")[0] == 404
+    assert _get(f"{base}/api/identity?nonce=zz")[0] == 404
+
+
+def test_login_item_plist_is_low_priority_and_backs_off(tmp_path):
+    from byoai.integrations.shield_login import build_plist
+    plist = build_plist(tmp_path / "captures.jsonl", 17831, python="/usr/bin/python3",
+                        log_dir=tmp_path)
+    assert plist["ProgramArguments"][-2:] == ["--port", "17831"]
+    assert plist["RunAtLoad"] is True
+    assert plist["KeepAlive"] == {"SuccessfulExit": False}   # restart on failure only
+    assert plist["ThrottleInterval"] >= 30                   # a taken port is not a busy loop
+    assert plist["LowPriorityIO"] is True and plist["Nice"] > 0
+
+
+# ------------------------------------------------------------ hardening
+
+
+def _stamped_chain(tmp_path, n=6):
+    cfg = make_cfg(tmp_path)
+    chain = SealChain(cfg)
+    for i in range(n):
+        chain.stamp({"interaction": f"i{i}", "chars": i})
+    chain.sign_checkpoint()
+    return cfg, chain
+
+
+def _rewrite_log(chain, mutate):
+    lines = [json.loads(x) for x in chain.log_path.read_text().splitlines()]
+    mutate(lines)
+    chain.log_path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+
+
+def test_an_edited_entry_with_a_recomputed_seal_is_still_caught(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path)
+    assert chain.verify_chain()["tamper_evident"] is True
+
+    def edit(lines):
+        e = lines[2]
+        e["payload"]["chars"] = 999                       # the edit
+        leaf = chain._leaf(e["payload"])
+        e["leaf_hash"], e["seal"] = leaf.hex(), leaf.hex()[:16]   # the cover-up
+    _rewrite_log(chain, edit)
+    v = SealChain(cfg).verify_chain()
+    assert v["tamper_evident"] is False
+    assert v["checkpoint_matches_entries"] is False
+
+
+def test_the_whole_history_is_covered_not_just_the_last_512(tmp_path):
+    cfg = make_cfg(tmp_path)
+    chain = SealChain(cfg)
+    for i in range(700):
+        chain.stamp({"interaction": f"i{i}", "chars": i})
+    assert chain.verify_chain()["tamper_evident"] is True
+
+    def edit(lines):
+        e = lines[3]                                       # far outside the window
+        e["payload"]["chars"] = -1
+        leaf = chain._leaf(e["payload"])
+        e["leaf_hash"], e["seal"] = leaf.hex(), leaf.hex()[:16]
+    _rewrite_log(chain, edit)
+    assert SealChain(cfg).verify_chain()["tamper_evident"] is False
+
+
+def test_cutting_entries_off_the_end_is_caught(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path, n=6)
+    _rewrite_log(chain, lambda lines: lines.__delitem__(slice(-2, None)))
+    v = SealChain(cfg).verify_chain()
+    assert v["tamper_evident"] is False and v["checkpoint_matches_entries"] is False
+
+
+def test_a_torn_last_line_from_a_crash_is_dropped_quietly(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path, n=3)
+    with chain.log_path.open("a") as fh:
+        fh.write('{"height": 4, "pay')                    # power cut mid-write
+    reborn = SealChain(cfg)
+    assert reborn.height == 3 and reborn.incidents == []
+    reborn.stamp({"interaction": "next"})
+    assert SealChain(cfg).height == 4
+
+
+def test_a_broken_log_is_kept_and_the_intact_part_carried_over(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path, n=5)
+    lines = chain.log_path.read_text().splitlines()
+    lines[3] = lines[3].replace('"chars": 3', '"chars": 33')
+    chain.log_path.write_text("\n".join(lines) + "\n")
+    reborn = SealChain(cfg)
+    assert reborn.height == 3
+    assert reborn.incidents[0]["what"] == "chain_broken"
+    assert list(tmp_path.glob("sealchain.log.jsonl.broken-*"))
+    assert reborn.verify_chain()["tamper_evident"] is False
+
+
+def test_an_unreadable_state_file_is_kept_and_recorded_not_silently_reset(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path)
+    cfg.seal_path.write_text("{ not json")
+    reborn = SealChain(cfg)
+    assert reborn.incidents[0]["what"] == "chain_unreadable"
+    assert reborn.verify_chain()["tamper_evident"] is False
+    kept = list(tmp_path.glob("sealchain.json.unreadable-*"))
+    assert len(kept) == 1 and kept[0].read_text() == "{ not json"
+    assert SealChain(cfg).incidents                    # and it survives a restart
+
+
+def test_an_edit_made_while_shield_is_running_is_found(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path)
+    assert chain.verify_chain()["tamper_evident"] is True
+    _rewrite_log(chain, lambda lines: lines[1]["payload"].__setitem__("chars", 555))
+    assert chain.verify_chain()["tamper_evident"] is False
+
+
+def test_a_format_1_chain_file_is_carried_over(tmp_path):
+    cfg = make_cfg(tmp_path)
+    from byoai.recorder.merkle import checkpoint_leaf_hash
+    old = [{"height": i, "payload": {"interaction": f"o{i}"},
+            "seal": checkpoint_leaf_hash({"interaction": f"o{i}"}).hex()[:16],
+            "leaf_hash": checkpoint_leaf_hash({"interaction": f"o{i}"}).hex()}
+           for i in (1, 2, 3)]
+    cfg.seal_path.write_text(json.dumps({"entries": old, "checkpoint": None}))
+    chain = SealChain(cfg)
+    assert chain.height == 3 and chain.verify_chain()["tamper_evident"] is True
+    assert SealChain(cfg).height == 3
+
+
+def test_the_sealed_total_never_shrinks_and_nothing_is_trimmed(tmp_path):
+    cfg, chain = _stamped_chain(tmp_path, n=5)
+    for i in range(600):
+        chain.stamp({"interaction": f"x{i}"})
+    assert chain.total == 605 and chain.verify_chain()["sealed_total"] == 605
+    assert SealChain(cfg).total == 605
+
+
+def test_restarting_does_not_seal_the_ledger_again(tmp_path):
+    cfg = make_cfg(tmp_path)
+    rows = [{"wall_clock": "2026-09-25 09:00:00", "kind": "desktop.chat.request",
+             "app": "claude", "chars": n} for n in (5, 5, 9)]   # two identical sends
+    cfg.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    feed = Feed(cfg)
+    feed.scan_initial()
+    assert feed.seals.total == 3
+    for _ in range(3):                                          # three restarts
+        again = Feed(cfg)
+        again.scan_initial()
+        assert again.seals.total == 3
+    with cfg.ledger.open("a") as fh:                            # a new row still seals
+        fh.write(json.dumps(rows[0]) + "\n")
+    again.poll()
+    assert again.seals.total == 4
+
+
+def test_shield_files_are_written_private_and_atomically(tmp_path):
+    import os
+    from byoai.integrations.shield import atomic_write_private
+    target = tmp_path / "state.json"
+    atomic_write_private(target, "one")
+    atomic_write_private(target, "two")
+    assert target.read_text() == "two"
+    assert [p.name for p in tmp_path.iterdir()] == ["state.json"]   # no temp left
+    if os.name == "posix":
+        assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_browser_row_is_sealed_before_the_request_returns(tmp_path):
+    base = _serve(make_cfg(tmp_path))
+    ext = {"Content-Type": "application/json",
+           "Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"}
+    code, out = _post(base + "/api/browser", {"rows": [{
+        "kind": "browser.chat.request", "app": "claude", "chars": 7,
+        "row_id": "r-1"}]}, ext)
+    assert code == 200 and out["accepted"] == 1 and out["sealed_total"] == 1
+    assert json.loads(_get(base + "/api/verify")[2])["sealed_total"] == 1
+
+
+def test_linux_unit_and_windows_task_are_low_priority_and_run_as_the_user(tmp_path):
+    from byoai.integrations.shield_login import (
+        build_unit, windows_command, windows_create_args)
+    ledger = tmp_path / "my ledger" / "captures.jsonl"       # a space in the path
+    unit = build_unit(ledger, 17831, python="/usr/bin/python3", log_dir=tmp_path)
+    assert f'ExecStart="/usr/bin/python3" "-m" "byoai.integrations.shield" "{ledger}" "--port" "17831"' in unit
+    assert "Restart=on-failure" in unit and "RestartSec=30" in unit
+    assert "Nice=5" in unit and "IOSchedulingClass=idle" in unit
+    assert "WantedBy=default.target" in unit                  # user unit, no root
+    cmd = windows_command(Path("C:/data/captures.jsonl"), 17831, python="C:/Py/python.exe")
+    assert cmd.endswith('"--port" "17831"') and '"byoai.integrations.shield"' in cmd
+    args = windows_create_args(Path("C:/data/captures.jsonl"), 17831, python="C:/Py/python.exe")
+    assert args[:2] == ["schtasks", "/Create"]
+    assert "ONLOGON" in args and args[args.index("/RL") + 1] == "LIMITED"   # no elevation

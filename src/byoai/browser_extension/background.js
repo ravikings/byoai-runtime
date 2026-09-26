@@ -18,7 +18,75 @@
  */
 const ENDPOINT_KEY = 'endpoint'
 
-const DEFAULT_ENDPOINT = 'http://127.0.0.1:8300/api/browser'
+const DEFAULT_ENDPOINT = 'http://127.0.0.1:17831/api/browser'
+// Earlier builds defaulted to :8300, which Consul and others also use. A saved
+// copy of that old default is treated as "never customised" and follows the
+// new default; any other saved endpoint is the user's choice and is kept.
+const LEGACY_DEFAULT_ENDPOINT = 'http://127.0.0.1:8300/api/browser'
+const resolveEndpoint = (saved) =>
+  !saved || saved === LEGACY_DEFAULT_ENDPOINT ? DEFAULT_ENDPOINT : saved
+
+const PIN_KEY = 'pinned_shield'
+const LAST_CAPTURE_KEY = 'last_capture'
+const WITNESS_KEY = 'witness'
+const TODAY_KEY = 'today'
+const IDENTITY_PREFIX = 'byoai-shield-identity:'
+
+const b64bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+
+/*
+ * A port is not exclusive: another process on this Mac can listen on Shield's
+ * address before Shield does and answer "ok" to anything. So before rows are
+ * sent, Shield must prove it holds the device key this extension paired with:
+ * it signs a fresh nonce, and the signature is checked against the public key
+ * pinned on first contact. First contact is trust-on-first-use; after that, a
+ * different server is refused until the user chooses to trust it.
+ * Returns 'ok' | 'paired' | 'mismatch' | 'unverifiable' | 'unreachable'.
+ */
+async function checkServer(endpoint, { trustCurrent = false } = {}) {
+  let identity
+  try {
+    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+      (b) => b.toString(16).padStart(2, '0')).join('')
+    const base = endpoint.replace(/\/api\/browser$/, '')
+    const res = await fetch(`${base}/api/identity?nonce=${nonce}`, { cache: 'no-store' })
+    if (res.status === 404) return { state: 'unverifiable' }
+    if (!res.ok) return { state: 'unreachable' }
+    identity = await res.json()
+    const key = await crypto.subtle.importKey(
+      'raw', b64bytes(identity.public_key), { name: 'Ed25519' }, false, ['verify'])
+    const sig = b64bytes(String(identity.sig).replace(/^ed25519:/, ''))
+    const signed = new TextEncoder().encode(IDENTITY_PREFIX + nonce)
+    if (!(await crypto.subtle.verify({ name: 'Ed25519' }, key, sig, signed))) {
+      return { state: 'mismatch' }
+    }
+  } catch (err) {
+    return { state: err instanceof TypeError && !identity ? 'unreachable' : 'unverifiable' }
+  }
+  const saved = (await chrome.storage.local.get(PIN_KEY))[PIN_KEY]
+  if (!saved || trustCurrent) {
+    await chrome.storage.local.set({ [PIN_KEY]: identity.public_key })
+    await chrome.storage.local.remove(WITNESS_KEY) // a different Shield has its own count
+    return { state: 'paired', deviceId: identity.device_id }
+  }
+  return { state: saved === identity.public_key ? 'ok' : 'mismatch', deviceId: identity.device_id }
+}
+
+/*
+ * Shield's record lives in files the user's own account can edit. The browser
+ * profile is a second place, so the extension remembers the highest count of
+ * sealed entries Shield has reported (a single number, never content). If
+ * Shield later reports fewer, its record was deleted or rolled back, and the
+ * popup says so. Re-pairing with a different Shield starts a fresh witness.
+ * Returns true when the reported total is lower than what was seen before.
+ */
+async function noteWitness(total) {
+  if (!Number.isInteger(total)) return false
+  const seen = (await chrome.storage.local.get(WITNESS_KEY))[WITNESS_KEY]?.total ?? 0
+  if (total < seen) return true
+  if (total > seen) await chrome.storage.local.set({ [WITNESS_KEY]: { total } })
+  return false
+}
 
 // Even length-only facts are personal data once they accumulate over time
 // (a length timeline is still a usage pattern). A queue without a cap keeps
@@ -76,6 +144,14 @@ function setOffline() {
   chrome.action.setBadgeText({ text: OFFLINE_BADGE })
   chrome.action.setBadgeBackgroundColor({ color: '#dc2626' })
   chrome.action.setTitle({ title: 'Shield is offline on this Mac — start it with byoai-shield. Rows are being dropped after 50 queued.' })
+}
+
+function setRefused(why) {
+  chrome.action.setBadgeText({ text: '!' })
+  chrome.action.setBadgeBackgroundColor({ color: '#b42318' })
+  chrome.action.setTitle({ title: why === 'shorter'
+    ? "Shield's record is shorter than it was. Open this popup."
+    : "The server on Shield's address isn't your Shield. Nothing is being sent. Open this popup." })
 }
 
 function setWorking() {
@@ -136,14 +212,24 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       reply?.({ error: 'not the Shield capture relay' })
       return false
     }
+    noteCapture(sender.tab?.url, msg.row.kind)
     queue.push({ ...msg.row, sent_at: new Date().toISOString(), row_id: crypto.randomUUID() })
     if (queue.length > MAX_QUEUED) queue = queue.slice(-MAX_QUEUED)
     persist()
     scheduleFlush()
     reply?.({ queued: queue.length })
+  } else if (msg?.type === 'agent.checkServer') {
+    getEndpoint().then(async (endpoint) => {
+      // Re-pairing is the user's decision, made in the popup. Anything coming
+      // from a web page's tab (content scripts) can ask for a check, never
+      // for a change of who is trusted.
+      const r = await checkServer(endpoint, { trustCurrent: msg.trustCurrent === true && !sender.tab })
+      reply?.({ ...r, endpoint })
+    }).catch(() => reply?.({ state: 'unreachable' }))
+    return true
   } else if (msg?.type === 'agent.getEndpoint') {
     chrome.storage.local.get(ENDPOINT_KEY, (v) =>
-      reply?.({ endpoint: v[ENDPOINT_KEY] || DEFAULT_ENDPOINT }))
+      reply?.({ endpoint: resolveEndpoint(v[ENDPOINT_KEY]) }))
   } else if (msg?.type === 'agent.setEndpoint') {
     // The batcher carries Shield metadata; redirecting it anywhere but the
     // local Shield server would exfiltrate that record off the machine.
@@ -156,6 +242,25 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   return true // async reply
 })
+
+// One timestamp per app, overwritten on every send: enough for the popup to
+// say "last message noted 3 min ago" and to show when capture has gone quiet,
+// and nothing that grows into a usage history.
+async function noteCapture(url, kind) {
+  try {
+    const host = new URL(url).host
+    if (!WATCHED_HOST.includes(host)) return
+    const store = await chrome.storage.local.get([LAST_CAPTURE_KEY, TODAY_KEY])
+    const seen = store[LAST_CAPTURE_KEY] || {}
+    const day = new Date().toDateString()
+    const today = store[TODAY_KEY]?.day === day ? store[TODAY_KEY].n : 0
+    await chrome.storage.local.set({
+      [LAST_CAPTURE_KEY]: { ...seen, [host]: Date.now() },
+      // Messages only (a request row), not the status row that follows each one.
+      [TODAY_KEY]: { day, n: today + (kind === 'browser.chat.request' ? 1 : 0) },
+    })
+  } catch { /* the badge and queue matter more than this note */ }
+}
 
 function isLocalEndpoint(candidate) {
   try {
@@ -191,27 +296,34 @@ async function flush() {
   if (!batch.length) { return }
   try {
     const endpoint = await getEndpoint()
+    const check = await checkServer(endpoint)
+    if (check.state !== 'ok' && check.state !== 'paired') throw new Error(check.state)
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ rows: batch }),
     })
     if (!res.ok) throw new Error(String(res.status))
-    setWorking() // synced: green check
+    const reply = await res.json().catch(() => null)
+    if (await noteWitness(reply?.sealed_total)) setRefused('shorter')
+    else setWorking() // synced: green check
     chrome.alarms?.clear('shield-retry')
-  } catch {
+  } catch (err) {
     // Server not up yet: put the rows back, retry later — inside the same
     // cap, so an off-again server days out still means dropped rows, not
     // an ever-growing local record.
     queue = [...batch, ...queue].slice(-MAX_QUEUED)
-    timer = setTimeout(flush, 10000)
+    const refused = err?.message === 'mismatch' || err?.message === 'unverifiable'
+    // A server that failed the identity check is not going to fix itself in
+    // 10 s; leave it to the slow alarm instead of asking it again and again.
+    if (!refused) timer = setTimeout(flush, 10000)
     chrome.alarms?.create('shield-retry', { delayInMinutes: 1.1 })
-    setOffline() // red dash: server unreachable
+    if (refused) setRefused(); else setOffline()
     persist()
   }
 }
 
 function getEndpoint() {
   return new Promise((resolve) =>
-    chrome.storage.local.get(ENDPOINT_KEY, (v) => resolve(v[ENDPOINT_KEY] || DEFAULT_ENDPOINT)))
+    chrome.storage.local.get(ENDPOINT_KEY, (v) => resolve(resolveEndpoint(v[ENDPOINT_KEY]))))
 }
