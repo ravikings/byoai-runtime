@@ -38,7 +38,11 @@
     const path = url.replace(/^https?:\/\/[^/]+/, '')
     try {
       const isRequestObject = typeof Request !== 'undefined' && input instanceof Request
-      if (((init && init.body && typeof init.body === 'string') || isRequestObject) &&
+      // Only sends: chat wires take a POST. A GET (a read), or a PUT/PATCH/DELETE
+      // to a matching path (a rename, a delete), is not a message.
+      const method = String((init && init.method) || (isRequestObject ? input.method : 'POST')).toUpperCase()
+      const isSend = method === 'POST'
+      if (((init && init.body && typeof init.body === 'string') || isRequestObject) && isSend &&
           CHAT_PATHS.some((p) => p.test(path))) {
         // A Request object carries its body as a stream; counting it would mean
         // consuming or cloning it, so those sends are noted without a length.

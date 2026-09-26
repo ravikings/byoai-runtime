@@ -726,3 +726,149 @@ def test_linux_unit_and_windows_task_are_low_priority_and_run_as_the_user(tmp_pa
     args = windows_create_args(Path("C:/data/captures.jsonl"), 17831, python="C:/Py/python.exe")
     assert args[:2] == ["schtasks", "/Create"]
     assert "ONLOGON" in args and args[args.index("/RL") + 1] == "LIMITED"   # no elevation
+
+
+# ------------------------------------------------------- review follow-ups
+
+
+def _ledger_rows(n):
+    return [{"wall_clock": "2026-09-25 09:00:00", "kind": "desktop.chat.request",
+             "app": "claude", "chars": 10 + i} for i in range(n)]
+
+
+def test_rows_lost_to_a_broken_log_line_are_sealed_again_from_the_ledger(tmp_path):
+    cfg = make_cfg(tmp_path)
+    cfg.ledger.write_text("".join(json.dumps(r) + "\n" for r in _ledger_rows(6)))
+    feed = Feed(cfg)
+    feed.scan_initial()
+    assert feed.seals.total == 6
+    log = feed.seals.log_path
+    lines = log.read_text().splitlines()
+    lines[2] = lines[2].replace('"chars": 12', '"chars": 99')       # one bad line
+    log.write_text("\n".join(lines) + "\n")
+    again = Feed(cfg)
+    again.scan_initial()
+    # the entries after the bad line are back in the live chain, not just the prefix
+    assert again.seals.total == 6
+    assert any(i["what"] == "chain_broken" for i in again.seals.incidents)
+    assert list(tmp_path.glob("sealchain.log.jsonl.broken-*"))
+
+
+@pytest.mark.parametrize("value", ["", "abc", "70000", "-1", " "])
+def test_a_bad_port_setting_does_not_crash_the_import(value):
+    import subprocess, sys
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import byoai.integrations.shield as s; print(s.DEFAULT_PORT)"],
+        env={**os.environ, "BYOAI_SHIELD_PORT": value},
+        capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "17831"
+    assert "BYOAI_SHIELD_PORT" in out.stderr           # and says why
+
+
+def test_a_ledger_read_that_fails_once_is_retried_not_skipped(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    feed = Feed(cfg)
+    feed.scan_initial()
+    with cfg.ledger.open("a") as fh:
+        fh.write(json.dumps(_ledger_rows(1)[0]) + "\n")
+    real = Path.read_text
+    calls = {"n": 0}
+
+    def flaky(self, *a, **kw):
+        if self == cfg.ledger and calls["n"] == 0:
+            calls["n"] += 1
+            raise PermissionError("locked by another process")   # Windows file lock
+        return real(self, *a, **kw)
+    monkeypatch.setattr(Path, "read_text", flaky)
+    feed.poll()
+    feed.poll()
+    assert feed.seals.total == 1
+
+
+def test_a_burst_of_rows_signs_one_checkpoint_that_covers_them_all(tmp_path):
+    cfg = make_cfg(tmp_path)
+    cfg = ShieldConfig(ledger=cfg.ledger, seal_path=cfg.seal_path, key_dir=cfg.key_dir,
+                       policy_path=cfg.policy_path, sig_every=1, max_interactions=100)
+    feed = Feed(cfg)
+    feed.scan_initial()
+    signed = []
+    orig = feed.seals._sign_checkpoint
+    feed.seals._sign_checkpoint = lambda: signed.append(1) or orig()
+    with cfg.ledger.open("a") as fh:
+        for r in _ledger_rows(40):
+            fh.write(json.dumps(r) + "\n")
+    feed.poll()
+    assert feed.seals.total == 40
+    assert len(signed) <= 2
+    v = feed.seals.verify_chain()
+    assert v["tamper_evident"] is True and feed.seals.checkpoint["height"] == 40
+
+
+def _v1_file(cfg, n, *, signed_over=None, total=None, height=None):
+    from byoai.recorder.merkle import MerkleTree, checkpoint_leaf_hash
+    entries, leaves = [], []
+    for i in range(1, n + 1):
+        leaf = checkpoint_leaf_hash({"interaction": f"o{i}"})
+        leaves.append(leaf)
+        entries.append({"height": i, "payload": {"interaction": f"o{i}"},
+                        "seal": leaf.hex()[:16], "leaf_hash": leaf.hex()})
+    over = leaves if signed_over is None else leaves[:signed_over]
+    cp = {"kind": "byoai.shield.checkpoint.v1", "root_hex": MerkleTree(over).root.hex(),
+          "height": height or len(over), "ts": "2026-01-01T00:00:00Z", "device_id": "d",
+          "public_key_b64": "k", "sig": "s"}
+    cfg.seal_path.write_text(json.dumps({"entries": entries, "checkpoint": cp,
+                                         "total": total or n}))
+
+
+def test_an_upgrade_keeps_the_old_signed_checkpoint_when_it_still_matches(tmp_path):
+    cfg = make_cfg(tmp_path)
+    _v1_file(cfg, 4)
+    old = cfg.seal_path.read_text()
+    chain = SealChain(cfg)
+    assert chain.checkpoint and chain.checkpoint["height"] == 4
+    assert chain.incidents == []
+    assert [p.read_text() for p in tmp_path.glob("sealchain.json.v1-*")] == [old]
+
+
+def test_an_upgrade_says_so_when_the_old_checkpoint_cannot_be_kept(tmp_path):
+    cfg = make_cfg(tmp_path)
+    _v1_file(cfg, 4, height=7, total=7)                # signed over entries the old format trimmed
+    chain = SealChain(cfg)
+    kinds = [i["what"] for i in chain.incidents]
+    assert "checkpoint_mismatch" not in kinds          # not a false tamper alarm
+    assert "migrated" in kinds
+    assert list(tmp_path.glob("sealchain.json.v1-*"))
+
+
+def test_an_upgrade_does_not_make_the_sealed_total_shrink(tmp_path):
+    cfg = make_cfg(tmp_path)
+    _v1_file(cfg, 4, height=700, total=700)            # the extension remembers 700
+    chain = SealChain(cfg)
+    assert chain.total == 700 and chain.verify_chain()["sealed_total"] == 700
+    chain.stamp({"interaction": "next"})
+    assert SealChain(cfg).total == 701
+
+
+@pytest.mark.parametrize("bad_total", [10**12, "lots", None, True, 2])
+def test_an_edited_entry_count_in_the_old_file_is_not_trusted(tmp_path, bad_total):
+    cfg = make_cfg(tmp_path)
+    _v1_file(cfg, 4)
+    state = json.loads(cfg.seal_path.read_text())
+    state["total"] = bad_total
+    cfg.seal_path.write_text(json.dumps(state))
+    chain = SealChain(cfg)                              # starts, and counts what it holds
+    assert chain.total == 4
+
+
+def test_a_mismatch_in_an_old_file_is_still_reported_as_tampering(tmp_path):
+    cfg = make_cfg(tmp_path)
+    _v1_file(cfg, 4)
+    state = json.loads(cfg.seal_path.read_text())
+    state["entries"][1]["payload"]["interaction"] = "edited"       # covered by the checkpoint
+    leaf = SealChain._leaf(None, state["entries"][1]["payload"])
+    state["entries"][1]["leaf_hash"], state["entries"][1]["seal"] = leaf.hex(), leaf.hex()[:16]
+    cfg.seal_path.write_text(json.dumps(state))
+    kinds = [i["what"] for i in SealChain(cfg).incidents]
+    assert "checkpoint_mismatch" in kinds and "migrated" not in kinds
