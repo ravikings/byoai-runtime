@@ -45,16 +45,30 @@ export function Settings() {
   if (policy.isError) return <p className="empty-row" role="alert">Can't reach Shield on this Mac.</p>
   const p = policy.data
   const covered = new Set(p.covered_apps ?? Object.keys(p.apps))
+  const locked = new Set(p.managed?.locked ?? [])
 
   return (
     <div className="shield-split">
       <div className="shield-main">
+        {(p.managed?.by || locked.size > 0) && (
+          <div className="banner info" role="status">
+            <span>Managed by {p.managed?.by || 'your administrator'}. Locked settings can only be changed there.</span>
+          </div>
+        )}
+        {p.managed?.error && (
+          <div className="banner warn" role="status">
+            <span>Managed policy: {p.managed.error}</span>
+          </div>
+        )}
+
         <section className="settings-block" aria-labelledby="mode-h">
           <SectionHead id="mode-h" title="Before a message leaves" accent
             help="What Shield does to personal details in what you send." />
+          {locked.has('mode') && <p className="muted setting-help">Set by {p.managed?.by || 'your administrator'}.</p>}
           {MODES.map(([mode, title, note, recommended]) => (
             <label key={mode} className="mode-row">
               <input type="radio" name="shield-mode" checked={p.mode === mode}
+                disabled={locked.has('mode')}
                 onChange={() => change({ mode })} />
               <b>{title}{recommended && <> <span className="tag ok">Recommended</span></>}</b>
               <span>{note}</span>
@@ -62,11 +76,12 @@ export function Settings() {
           ))}
         </section>
 
-        <PrivacySettings policy={p} save={change} saving={save.isPending} />
+        <PrivacySettings policy={p} save={change} saving={save.isPending} locked={locked} />
 
         <section className="settings-block" aria-labelledby="apps-h">
           <SectionHead id="apps-h" title="Apps"
             help="On: Shield checks what the app sends. Off: its traffic passes through, unchecked and unrecorded." />
+          {locked.has('apps') && <p className="muted setting-help">Set by {p.managed?.by || 'your administrator'}.</p>}
           {Object.entries(p.apps).map(([app, on]) => {
             const where = installed.data
               ? installed.data[app] ? 'Installed on this Mac.' : 'Not found in Applications; the web version is still covered.'
@@ -77,7 +92,7 @@ export function Settings() {
                   <b>{APP_NAME[app] ?? app}</b>
                   {where && <span className="muted setting-help">{where}</span>}
                 </span>
-                <input type="checkbox" checked={Boolean(on)}
+                <input type="checkbox" checked={Boolean(on)} disabled={locked.has('apps')}
                   onChange={() => save.mutate({ apps: { ...p.apps, [app]: !on } })} />
               </label>
             ) : (
@@ -124,10 +139,11 @@ export function Settings() {
   )
 }
 
-function PrivacySettings({ policy, save, saving }: {
+function PrivacySettings({ policy, save, saving, locked }: {
   policy: ShieldPolicy
   save: (next: Partial<ShieldPolicy>) => void
   saving: boolean
+  locked: Set<string>
 }) {
   const qc = useQueryClient()
   const privacy = useQuery({ queryKey: ['shield-privacy'], queryFn: fetchPrivacy })
@@ -136,6 +152,7 @@ function PrivacySettings({ policy, save, saving }: {
     onSuccess: data => qc.setQueryData(['shield-privacy'], data),
   })
   const pv = privacy.data
+  const by = policy.managed?.by
   return (
     <section className="settings-block privacy-block" aria-labelledby="privacy-h">
       <SectionHead id="privacy-h" title="What Shield keeps" />
@@ -147,9 +164,10 @@ function PrivacySettings({ policy, save, saving }: {
             Off: Shield keeps the length and a fingerprint, never the words. On:
             it also keeps up to 200 characters with personal details removed,
             so you can see what was sent.
+            {locked.has('keep_text') && ` Set by ${by}.`}
           </span>
         </span>
-        <input type="checkbox" checked={policy.keep_text} disabled={saving}
+        <input type="checkbox" checked={policy.keep_text} disabled={saving || locked.has('keep_text')}
           onChange={() => save({ keep_text: !policy.keep_text })} />
       </label>
 
@@ -159,9 +177,10 @@ function PrivacySettings({ policy, save, saving }: {
           <span className="muted setting-help">
             Older records are deleted when Shield starts and when you remove stored text below.
             Sealed entries stay, so receipts keep working.
+            {locked.has('retention_days') && ` Set by ${by}.`}
           </span>
         </span>
-        <select value={policy.retention_days} disabled={saving}
+        <select value={policy.retention_days} disabled={saving || locked.has('retention_days')}
           onChange={e => save({ retention_days: Number(e.target.value) })}>
           {RETENTION_DAYS.map(d => (
             <option key={d} value={d}>{d === 365 ? '1 year' : `${d} days`}</option>
@@ -174,9 +193,10 @@ function PrivacySettings({ policy, save, saving }: {
           <b>Show the notice on this Mac</b>
           <span className="muted setting-help">
             The strip at the top of Shield that tells whoever uses this Mac what Shield checks and keeps.
+            {locked.has('notice') && ` Set by ${by}.`}
           </span>
         </span>
-        <input type="checkbox" checked={policy.notice} disabled={saving}
+        <input type="checkbox" checked={policy.notice} disabled={saving || locked.has('notice')}
           onChange={() => save({ notice: !policy.notice })} />
       </label>
 

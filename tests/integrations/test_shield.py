@@ -6,7 +6,7 @@ from pathlib import Path
 
 from byoai.integrations.shield import (
     ShieldConfig, Feed, flags_for, redact, default_policy, load_policy,
-    SealChain, MAX_INTERACTIONS,
+    SealChain, MAX_INTERACTIONS, save_policy, merge_policy,
 )
 
 
@@ -18,6 +18,8 @@ def make_cfg(tmp_path):
         seal_path=tmp_path / "sealchain.json",
         key_dir=tmp_path / "keys",
         policy_path=tmp_path / "policy.json",
+        # Never the real ~/.byoai/shield/managed_policy.json default in tests.
+        managed_policy_path=tmp_path / "managed_policy.json",
         sig_every=4, max_interactions=100,
     )
 
@@ -944,3 +946,214 @@ def test_the_extension_declares_icons_that_exist_at_the_stated_sizes():
         assert raw[:8] == b"\x89PNG\r\n\x1a\n"
         width, height = struct.unpack(">II", raw[16:24])
         assert (width, height) == (int(size), int(size))
+
+
+# ------------------------------------------------------- Shield managed mode
+#
+# Phase 1 of the Shield MSP plan (internal_doc/shield_msp_plan.md): Coriqo
+# signs a policy envelope, the device verifies and applies it. These tests
+# cover the pure verify/apply/effective-policy logic in shield.py; the
+# publisher's polling, key-pinning and HTTP-level (locked key, managed field)
+# behaviour is covered in test_shield_publish.py and further down here.
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from byoai.integrations.shield import apply_managed_envelope, load_managed_policy
+from byoai.recorder.canonical import canonicalize
+
+# Coriqo signs with its own server key, not a device key: lowercase hex of the
+# raw 32-byte public key and the raw 64-byte signature, no "ed25519:" prefix —
+# unlike byoai.recorder.keys.DeviceKey. These fixtures build server-shaped
+# envelopes so the tests exercise the real wire format, not DeviceKey's.
+
+
+def _server_key():
+    return Ed25519PrivateKey.generate()
+
+
+def _pub_hex(key) -> str:
+    return key.public_key().public_bytes_raw().hex()
+
+
+def _envelope(key, **doc_overrides):
+    doc = {
+        "policy_id": "pol_1", "version": 1, "tenant_slug": "acme",
+        "device_id": None, "issued_at": "2026-09-26T10:00:00Z",
+        "key_id": "coriqo-v1", "managed_by": "Acme IT",
+        "policy": {"mode": "block", "apps": {"claude": True}, "keep_text": False,
+                   "retention_days": 7, "notice": True},
+        "locked": ["mode", "apps", "keep_text", "retention_days", "notice"],
+    }
+    doc.update(doc_overrides)
+    return {"document": doc, "signature": key.sign(canonicalize(doc)).hex()}
+
+
+def test_a_good_signature_applies_and_locks_the_listed_keys(tmp_path):
+    key = _server_key()
+    path = tmp_path / "managed.json"
+    result = apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=path)
+    assert result == {"ok": True, "error": None}
+    stored = load_managed_policy(path)
+    assert stored["envelope"]["document"]["version"] == 1
+
+
+def test_a_device_override_applies_to_its_own_device(tmp_path):
+    key = _server_key()
+    path = tmp_path / "managed.json"
+    env = _envelope(key, device_id="dev-1")
+    result = apply_managed_envelope(env, tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=path)
+    assert result["ok"] is True
+
+
+def test_locked_keys_override_the_local_policy(tmp_path):
+    cfg = make_cfg(tmp_path)
+    key = _server_key()
+    save_policy(cfg, merge_policy({"mode": "redact"}))
+    apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                           public_key=_pub_hex(key), path=cfg.managed_policy_path)
+    p = load_policy(cfg)
+    assert p["mode"] == "block" and p["apps"]["claude"] is True and p["retention_days"] == 7
+
+
+def test_bad_signature_is_refused_and_keeps_the_previous_policy(tmp_path):
+    key = _server_key()
+    path = tmp_path / "managed.json"
+    apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                           public_key=_pub_hex(key), path=path)
+    bad = _envelope(key, version=2)
+    bad["signature"] = bad["signature"][:-4] + "abcd"
+    result = apply_managed_envelope(bad, tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=path)
+    assert result["ok"] is False and "signature" in result["error"]
+    assert load_managed_policy(path)["envelope"]["document"]["version"] == 1
+
+
+def test_wrong_tenant_is_refused_and_keeps_the_previous_policy(tmp_path):
+    key = _server_key()
+    path = tmp_path / "managed.json"
+    apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                           public_key=_pub_hex(key), path=path)
+    other = _envelope(key, version=2, tenant_slug="other_co")
+    result = apply_managed_envelope(other, tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=path)
+    assert result["ok"] is False and "tenant" in result["error"]
+    assert load_managed_policy(path)["envelope"]["document"]["version"] == 1
+
+
+def test_another_devices_override_is_refused(tmp_path):
+    key = _server_key()
+    path = tmp_path / "managed.json"
+    apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                           public_key=_pub_hex(key), path=path)
+    other = _envelope(key, version=2, device_id="dev-2")
+    result = apply_managed_envelope(other, tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=path)
+    assert result["ok"] is False and "device" in result["error"]
+    assert load_managed_policy(path)["envelope"]["document"]["version"] == 1
+
+
+def test_rollback_is_refused_and_keeps_the_previous_policy(tmp_path):
+    key = _server_key()
+    path = tmp_path / "managed.json"
+    apply_managed_envelope(_envelope(key, version=5), tenant_slug="acme", device_id="dev-1",
+                           public_key=_pub_hex(key), path=path)
+    older = _envelope(key, version=3)
+    result = apply_managed_envelope(older, tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=path)
+    assert result["ok"] is False and "rollback" in result["error"]
+    same = _envelope(key, version=5)
+    result = apply_managed_envelope(same, tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=path)
+    assert result["ok"] is False and "rollback" in result["error"]
+    assert load_managed_policy(path)["envelope"]["document"]["version"] == 5
+
+
+def test_an_unknown_key_id_is_refused(tmp_path):
+    key = _server_key()
+    path = tmp_path / "managed.json"
+    result = apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                                    public_key=None, path=path)
+    assert result["ok"] is False and "unknown key" in result["error"]
+    assert load_managed_policy(path) is None
+
+
+def test_policy_null_unmanages_the_device(tmp_path):
+    cfg = make_cfg(tmp_path)
+    key = _server_key()
+    save_policy(cfg, merge_policy({"mode": "redact"}))
+    apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                           public_key=_pub_hex(key), path=cfg.managed_policy_path)
+    assert load_policy(cfg)["mode"] == "block"
+    unmanage = _envelope(key, version=2, policy=None, locked=[])
+    result = apply_managed_envelope(unmanage, tenant_slug="acme", device_id="dev-1",
+                                    public_key=_pub_hex(key), path=cfg.managed_policy_path)
+    assert result["ok"] is True
+    # a signed policy:null still counts against rollback for the next envelope
+    stored = load_managed_policy(cfg.managed_policy_path)
+    assert stored["envelope"]["document"]["version"] == 2
+    assert load_policy(cfg)["mode"] == "redact"       # back to the local choice
+
+
+def test_get_policy_reports_managed_state(tmp_path):
+    cfg = make_cfg(tmp_path)
+    key = _server_key()
+    apply_managed_envelope(_envelope(key), tenant_slug="acme", device_id="dev-1",
+                           public_key=_pub_hex(key), path=cfg.managed_policy_path)
+    base = _serve(cfg)
+    body = json.loads(_get(base + "/api/policy")[2])
+    assert body["managed"]["by"] == "Acme IT"
+    assert body["managed"]["version"] == 1
+    assert set(body["managed"]["locked"]) == {"mode", "apps", "keep_text",
+                                              "retention_days", "notice"}
+
+
+def test_post_policy_refuses_a_locked_key(tmp_path):
+    cfg = make_cfg(tmp_path)
+    key = _server_key()
+    apply_managed_envelope(_envelope(key, locked=["mode"]), tenant_slug="acme",
+                           device_id="dev-1", public_key=_pub_hex(key),
+                           path=cfg.managed_policy_path)
+    base = _serve(cfg)
+    code, body = _post(base + "/api/policy", {"mode": "observe", "acknowledge": "less_private"},
+                       {"Content-Type": "application/json", "Origin": base})
+    assert code == 409 and "Acme IT" in body["error"]
+    # a key that isn't locked still saves
+    code, body = _post(base + "/api/policy", {"notice": False},
+                       {"Content-Type": "application/json", "Origin": base})
+    assert code == 200 and body["notice"] is False
+
+
+def test_interop_vector_matches_coriqos_canonical_bytes_and_signature(tmp_path):
+    """A fixed vector: a hardcoded seed, a hardcoded document, and the exact
+    hex signature Coriqo's ``canonical_bytes`` (``json.dumps(sort_keys=True,
+    separators=(",", ":"), ensure_ascii=False)``) produces for it — computed
+    independently of this codebase. If :func:`canonicalize` ever stops being
+    byte-identical to that for a policy document, this is the test that
+    catches it, not a round-trip through our own signer."""
+    seed = bytes(range(32))
+    pub_hex = "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+    sig_hex = ("4cd9984b0be1385acd08ac7ec6d4db211749c9d68dfbed0e5a07f16d8964cfa"
+              "9092cd261f4203b930753a8dc6205870fe68e1ce2b45a3401e92245ae461863"
+              "04")
+    doc = {
+        "policy_id": "pol_interop_1", "version": 1, "tenant_slug": "acme",
+        "device_id": None, "issued_at": "2026-09-26T10:00:00Z",
+        "key_id": "coriqo-v1", "managed_by": "Acme IT",
+        "policy": {"mode": "block", "apps": {"claude": True}, "keep_text": False,
+                   "retention_days": 7, "notice": True},
+        "locked": ["mode"],
+    }
+    assert canonicalize(doc) == (
+        b'{"device_id":null,"issued_at":"2026-09-26T10:00:00Z","key_id":"coriqo-v1",'
+        b'"locked":["mode"],"managed_by":"Acme IT","policy":{"apps":{"claude":true},'
+        b'"keep_text":false,"mode":"block","notice":true,"retention_days":7},'
+        b'"policy_id":"pol_interop_1","tenant_slug":"acme","version":1}'
+    )
+    envelope = {"document": doc, "signature": sig_hex}
+    path = tmp_path / "managed.json"
+    result = apply_managed_envelope(envelope, tenant_slug="acme", device_id="dev-1",
+                                    public_key=pub_hex, path=path)
+    assert result == {"ok": True, "error": None}
+    del seed  # not needed to verify; recorded for anyone regenerating the vector

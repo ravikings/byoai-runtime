@@ -47,6 +47,12 @@ class EnrollmentState:
     #: requests. ``None`` for state written before the field existed — see
     #: :func:`load_enrollment_state`.
     tenant_slug: str | None = None
+    #: The Ed25519 key Coriqo signs managed-mode policy envelopes with,
+    #: pinned once at enrolment: ``{"key_id": ..., "public_key": ...}``
+    #: (Coriqo sends raw hex; base64 is accepted and normalised to hex when pinned). ``None`` for state written before
+    #: Shield managed mode existed, or if the server didn't send one — Shield
+    #: falls back to fetching ``/api/v1/checkpoints/public-keys`` once.
+    policy_key: dict | None = None
 
 
 class EnrollmentError(RuntimeError):
@@ -116,11 +122,16 @@ def enroll(
         if owns_client:
             client.close()
 
+    policy_key = body.get("policy_key")
+    if not (isinstance(policy_key, dict) and policy_key.get("key_id")
+            and policy_key.get("public_key")):
+        policy_key = None
     state = EnrollmentState(
         device_id=device_id,
         coriqo_base_url=body.get("coriqo_base_url") or coriqo_base_url,
         enrolled_at=now_ts_device(),
         tenant_slug=body.get("tenant_slug") or tenant_slug or None,
+        policy_key=policy_key,
     )
     _write_enrollment_state(key_dir, state)
     return state
@@ -148,6 +159,8 @@ def load_enrollment_state(key_dir: Path) -> EnrollmentState | None:
             # and falls back to BYOAI_CORIQO_TENANT_SLUG, rather than crashing
             # or — worse — looking unenrolled and minting a second identity.
             tenant_slug=data.get("tenant_slug"),
+            # Same tolerance: absent on state written before managed mode.
+            policy_key=data.get("policy_key") if isinstance(data.get("policy_key"), dict) else None,
         )
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise EnrollmentError(f"enrollment state at {state_path} is corrupt: {exc}") from exc

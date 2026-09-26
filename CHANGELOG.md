@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Shield managed mode (Phase 1 of the MSP plan).** An enrolled Shield can
+  now be put under central policy: it polls `POST /v1/shield/policy` (signed
+  like the existing checkpoint post) every 10 minutes, at start, and on
+  "Send now"; verifies the signed envelope (Ed25519 over the canonical
+  document, tenant match, device null-or-own, version newer than what's
+  applied, a pinned signing key) and stores it at
+  `~/.byoai/shield/managed_policy.json`. Locked settings in the document
+  override the local choice everywhere Shield reads policy; everything else
+  stays the device's own. `POST /api/policy` refuses a change to a locked
+  key with `409 Set by <managed_by>`; `GET /api/policy` reports
+  `managed: {by, version, locked, fetched_at, error}`. A signed
+  `policy: null` document unmanages the device. Every failure mode (bad
+  signature, wrong tenant/device, rollback, unknown signing key, or just a
+  failed poll) keeps the previously applied policy — never fail-open. The
+  signing key is pinned from the enrolment response, or (already-enrolled
+  devices) fetched once from `GET /api/v1/checkpoints/public-keys`. The
+  Settings screen shows a "Managed by …" banner and disables locked
+  controls. Every checkpoint/heartbeat now also reports its applied
+  `policy_version` in the `shield` block, so drift is visible from Coriqo.
+
 - **Enforced budgets (AD-11).** Three new mandate fields —
   `max_run_cost_usd`, `max_calls_per_minute`, `max_run_steps` — checked
   entirely locally in `decide()`, no I/O, alongside suspension. A breach is

@@ -42,6 +42,7 @@ Coriqo can tell a record that restarted or skipped from one that grew.
 
 from __future__ import annotations
 
+import base64
 import json
 import random
 import threading
@@ -78,6 +79,49 @@ TIMEOUT_S = 15
 HEARTBEAT_MIN_S = 3600
 HEARTBEAT_MAX_S = 6 * 3600
 
+# -- managed policy (Shield MSP plan, Phase 1) -------------------------------
+#
+# Signed exactly like the checkpoint post above (post_signed_batch): the same
+# device key, the same canonicalize-then-sign scheme, the same "never block
+# capture, keep the last good state on failure" posture. Polled every 10 min,
+# at start (last_policy_poll_at == 0) and on "Send now" (poll_policy(force=True)
+# from send()).
+POLICY_PATH = "/v1/shield/policy"
+PUBLIC_KEYS_PATH = "/api/v1/checkpoints/public-keys"
+POLICY_POLL_S = 600
+
+
+def _public_key_hex(entry: dict) -> str | None:
+    """A public-keys list entry's key as lowercase hex of its raw 32 bytes —
+    the only form :func:`byoai.integrations.shield.apply_managed_envelope`
+    accepts. Coriqo's ``GET .../public-keys`` sends ``public_key_pem`` (an
+    SPKI PEM); an already-hex ``public_key`` is accepted too, for callers
+    (and tests) that already have the raw form. Malformed input is refused,
+    not raised — the caller treats a ``None`` result as "no usable key"."""
+    pem = entry.get("public_key_pem")
+    if isinstance(pem, str) and pem.strip():
+        try:
+            from cryptography.hazmat.primitives.serialization import load_pem_public_key
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+            key = load_pem_public_key(pem.encode())
+            if not isinstance(key, Ed25519PublicKey):
+                return None
+            return key.public_bytes_raw().hex()
+        except Exception:  # noqa: BLE001
+            return None
+    raw = entry.get("public_key")
+    if isinstance(raw, str) and raw.strip():
+        raw = raw.strip()
+        try:
+            key = bytes.fromhex(raw)
+        except ValueError:
+            try:
+                key = base64.b64decode(raw, validate=True)
+            except ValueError:
+                return None
+        return key.hex() if len(key) == 32 else None
+    return None
+
 
 @dataclass
 class PublishState:
@@ -96,6 +140,19 @@ class PublishState:
     next_attempt_at: float = 0.0  # epoch seconds; 0 = no backoff in force
     last_error: str | None = None
     needs_attention: bool = False  # Coriqo refused this Mac (401/403)
+    # -- managed policy ------------------------------------------------------
+    last_policy_poll_at: float = 0.0  # epoch seconds; 0 = never polled yet
+    #: This device's pinned policy-signing key, once found: an already-known
+    #: key_id (from enrolment) never triggers a lookup at all; an
+    #: already-enrolled device fetches PUBLIC_KEYS_PATH once (policy_key_tried)
+    #: and pins whichever entry matches the key_id the first envelope names.
+    policy_key_id: str | None = None
+    policy_public_key: str | None = None
+    policy_key_tried: bool = False
+    #: Set on a refused envelope (bad signature, wrong tenant/device, rollback,
+    #: unknown key) or a poll that couldn't reach Coriqo; cleared on the next
+    #: successful poll. Surfaced by GET /api/policy as managed.error.
+    policy_last_error: str | None = None
 
 
 class Publisher:
@@ -110,13 +167,19 @@ class Publisher:
                  every_hours: float = DEFAULT_EVERY_HOURS,
                  now: Callable[[], float] = time.time,
                  client_factory: Callable[[], httpx.Client] | None = None,
-                 protection: Callable[[], dict] | None = None) -> None:
+                 protection: Callable[[], dict] | None = None,
+                 managed_policy_path: Path | None = None) -> None:
         self.seals = seals
         self.key_dir = Path(key_dir)
         self.state_path = Path(state_dir) / STATE_FILE
+        #: Where verified managed policy is stored; see
+        #: byoai.integrations.shield.MANAGED_POLICY_PATH (the default, shared
+        #: with the proxy and console) and its ``managed_policy_path`` override.
+        self.managed_policy_path = managed_policy_path
         self.every_s = max(0.0, every_hours) * 3600
         self.heartbeat_s = min(HEARTBEAT_MAX_S, max(HEARTBEAT_MIN_S, self.every_s))
         self._now = now
+        self._key_fetch_failed = False
         # trust_env=False: never route through a proxy. On a Mac running
         # Shield, the system proxy IS Shield's capture proxy; going through it
         # would fail its certificate check on every send.
@@ -196,12 +259,131 @@ class Publisher:
     def tick(self) -> bool:
         """Send if due. Never raises. Returns whether a send was attempted."""
         try:
+            self.poll_policy()
+        except Exception:  # noqa: BLE001 - never blocks capture or checkpoint sending
+            pass
+        try:
             if not self.due():
                 return False
             self.send()
             return True
         except Exception:  # noqa: BLE001 - the loop must never die
             return True
+
+    def publish_now(self) -> dict:
+        """"Send now": force a policy poll (never blocking on its result) then
+        send the checkpoint, same as :meth:`send` otherwise."""
+        try:
+            self.poll_policy(force=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return self.send()
+
+    # -- managed policy -----------------------------------------------------
+    def _policy_key_path(self):
+        from byoai.integrations.shield import MANAGED_POLICY_PATH
+        return self.managed_policy_path or MANAGED_POLICY_PATH
+
+    def _trusted_key(self, key_id: str, enrollment) -> str | None:
+        """This device's pinned public key for ``key_id`` — always lowercase
+        hex of the raw 32-byte Ed25519 public key, however it was pinned — or
+        ``None`` if it isn't (or can't be found to be) trusted. Fetches
+        Coriqo's public-keys list at most once per device lifetime
+        (``policy_key_tried``); a key_id that still doesn't match after that
+        fetch is refused as unknown, not retried on every poll."""
+        if enrollment.policy_key and enrollment.policy_key.get("key_id") == key_id:
+            return _public_key_hex(enrollment.policy_key)
+        if self.state.policy_key_id == key_id and self.state.policy_public_key:
+            return self.state.policy_public_key
+        if self.state.policy_key_tried:
+            return None
+        self.state.policy_key_tried = True
+        try:
+            with self._client_factory() as client:
+                resp = client.get(f"{enrollment.coriqo_base_url}{PUBLIC_KEYS_PATH}")
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception:  # noqa: BLE001 - no key found this time; try again next poll? no —
+            # a fetch failure isn't "the key doesn't exist", so don't burn the
+            # one-shot attempt on a transient network error.
+            self.state.policy_key_tried = False
+            self._key_fetch_failed = True
+            self._save()
+            return None
+        keys = data.get("keys") if isinstance(data, dict) else data
+        for k in keys or []:
+            if not (isinstance(k, dict) and k.get("key_id") == key_id):
+                continue
+            if k.get("revoked"):
+                break  # a revoked entry is not trusted, even if the id matches
+            hexkey = _public_key_hex(k)
+            if hexkey:
+                self.state.policy_key_id = k["key_id"]
+                self.state.policy_public_key = hexkey
+            break
+        self._save()
+        if self.state.policy_key_id == key_id:
+            return self.state.policy_public_key
+        return None
+
+    def policy_due(self) -> bool:
+        s = self.state
+        return s.last_policy_poll_at == 0 or self._now() - s.last_policy_poll_at >= POLICY_POLL_S
+
+    def poll_policy(self, force: bool = False) -> None:
+        """Poll Coriqo for a changed managed policy. Never raises, never
+        blocks capture: a failure (network, bad signature, wrong tenant/
+        device, rollback, unknown key) just keeps the last good policy and is
+        recorded in ``policy_last_error`` for GET /api/policy to report."""
+        if not force and not self.policy_due():
+            return
+        enrollment = self.enrolment()
+        if enrollment is None:
+            return
+        with self._lock:
+            self.state.last_policy_poll_at = self._now()
+            from byoai.integrations.shield import load_managed_policy
+            current = load_managed_policy(self._policy_key_path())
+            have_version = None
+            if current:
+                v = (current["envelope"]["document"] or {}).get("version")
+                if isinstance(v, int) and not isinstance(v, bool):
+                    have_version = v
+            body = {"sent_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self._now())),
+                    "have_version": have_version}
+            try:
+                with self._client_factory() as client:
+                    resp = post_signed_batch(client, enrollment.coriqo_base_url,
+                                             self.seals._key, POLICY_PATH, body)
+            except Exception:  # noqa: BLE001 - network/ship failure: keep last good policy
+                self.state.policy_last_error = "Couldn't reach Coriqo for policy; keeping the current one."
+                self._save()
+                return
+            if not resp.get("changed"):
+                self.state.policy_last_error = None
+                self._save()
+                return
+            envelope = resp.get("envelope")
+            key_id = ((envelope or {}).get("document") or {}).get("key_id")
+            self._key_fetch_failed = False
+            public_key = self._trusted_key(key_id, enrollment) if key_id else None
+            if public_key is None and self._key_fetch_failed:
+                # Not an unknown key: Coriqo's key list couldn't be fetched.
+                # Say so, and try again in a minute rather than in ten.
+                self.state.policy_last_error = "Couldn't reach Coriqo for its signing key; retrying shortly."
+                self.state.last_policy_poll_at = self._now() - POLICY_POLL_S + 60
+                self._save()
+                return
+            from byoai.integrations.shield import apply_managed_envelope
+            result = apply_managed_envelope(
+                envelope, tenant_slug=enrollment.tenant_slug,
+                device_id=self.seals._key.device_id, public_key=public_key,
+                path=self._policy_key_path())
+            self.state.policy_last_error = result.get("error")
+            self._save()
+
+    def policy_status(self) -> dict:
+        return {"error": self.state.policy_last_error}
 
     def _build_entry(self) -> dict:
         """A new outbox entry: the current seal, numbered and signed so
@@ -286,16 +468,33 @@ class Publisher:
 
     def _shield_block(self) -> dict:
         """The protection state for this request. A failing check never stops
-        a send: it reports that the state is unknown."""
+        a send: it reports that the state is unknown. ``policy_version`` is
+        this device's currently applied managed-policy version (None if
+        unmanaged), so Coriqo can tell a device's policy has drifted."""
+        block: dict = dict(UNKNOWN_PROTECTION)
         try:
             p = self._protection()
             reasons = [str(r) for r in (p.get("reasons") or [])]
             mode = p.get("mode")
-            return {"protecting": bool(p.get("protecting")) and not reasons,
-                    "reasons": reasons,
-                    "mode": str(mode) if mode is not None else None}
+            block = {"protecting": bool(p.get("protecting")) and not reasons,
+                     "reasons": reasons,
+                     "mode": str(mode) if mode is not None else None}
         except Exception:  # noqa: BLE001
-            return dict(UNKNOWN_PROTECTION)
+            pass
+        block["policy_version"] = self._managed_policy_version()
+        return block
+
+    def _managed_policy_version(self) -> int | None:
+        try:
+            from byoai.integrations.shield import load_managed_policy
+            managed = load_managed_policy(self._policy_key_path())
+        except Exception:  # noqa: BLE001
+            return None
+        if not managed:
+            return None
+        doc = managed["envelope"]["document"] or {}
+        v = doc.get("version")
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
 
     def _failed(self, now: float, exc: ShipError) -> None:
         s = self.state

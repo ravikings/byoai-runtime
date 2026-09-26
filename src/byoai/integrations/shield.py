@@ -198,6 +198,11 @@ COVERED_APPS = ("claude", "chatgpt")
 
 DATA_DIR = Path.home() / ".byoai" / "shield"
 FINGERPRINT_KEY = DATA_DIR / "fingerprint.key"
+#: The signed policy envelope last accepted from Coriqo managed mode (private,
+#: atomic — see :func:`apply_managed_envelope`). Absent = never managed, or
+#: unmanaged (a signed ``policy: null`` document, still kept here so a replayed
+#: older envelope is refused as a rollback).
+MANAGED_POLICY_PATH = DATA_DIR / "managed_policy.json"
 
 # Ledger fields that carry message text. Privacy-first rows never write them;
 # the scrub pass removes them from rows written before it.
@@ -212,6 +217,8 @@ class ShieldConfig:
     seal_path: Path
     key_dir: Path
     policy_path: Path | None = None
+    #: Override for tests; production uses :data:`MANAGED_POLICY_PATH`.
+    managed_policy_path: Path | None = None
     sig_every: int = 8
     max_interactions: int = 400
 
@@ -845,7 +852,167 @@ def merge_policy(disc: dict) -> dict:
 
 
 def load_policy(cfg: ShieldConfig) -> dict:
-    return read_policy(cfg.policy_path)
+    """The effective policy: the local file with any managed, locked keys
+    overridden by the signed policy from Coriqo. Both the proxy's own checks
+    and the console read this, not the local file directly, so managed mode
+    can't be bypassed by only patching one caller."""
+    local = read_policy(cfg.policy_path)
+    managed = load_managed_policy(cfg.managed_policy_path)
+    if not managed:
+        return local
+    doc = managed["envelope"]["document"]
+    policy = doc.get("policy")
+    locked = doc.get("locked") or []
+    if policy is None or not locked:
+        return local  # unmanaged (policy: null), or nothing is actually locked
+    out = dict(local)
+    for key in locked:
+        if key == "apps" and isinstance(policy.get("apps"), dict):
+            out["apps"] = {**out.get("apps", {}), **policy["apps"]}
+        elif key in policy:
+            out[key] = policy[key]
+    return out
+
+
+# --------------------------------------------------------------- managed mode
+#
+# Phase 1 of the Shield MSP plan (internal_doc/shield_msp_plan.md): an MSP
+# sets policy once in Coriqo and it lands on every device. Trust comes from an
+# auditable, open agent — this module verifies the signed envelope and stores
+# it; :mod:`byoai.integrations.shield_publish` polls for it and pins the
+# signing key. Locked keys in the stored document take priority over the
+# device's own settings (see :func:`load_policy`); everything else about the
+# device — capture, redaction, sealing — is unaffected by whether a device is
+# managed at all.
+
+MANAGED_LOCKABLE_KEYS = ("mode", "apps", "keep_text", "retention_days", "notice")
+
+
+def load_managed_policy(path: Path | None = None) -> dict | None:
+    """The last accepted managed-policy envelope, or ``None`` if this device
+    has never received one or the file is missing/corrupt. Corrupt is treated
+    the same as absent: a device that can't read its own managed state falls
+    back to its local policy rather than refusing to serve anything."""
+    path = path or MANAGED_POLICY_PATH
+    try:
+        data = json.loads(path.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(data, dict) and isinstance((data.get("envelope") or {}).get("document"), dict):
+        return data
+    return None
+
+
+def managed_summary(managed: dict | None) -> dict | None:
+    """The shape ``GET /api/policy`` reports as ``managed`` (minus ``error``,
+    which the caller adds from the publisher's last poll). ``None`` when this
+    device holds no managed state at all."""
+    if not managed:
+        return None
+    doc = managed["envelope"]["document"]
+    active = doc.get("policy") is not None
+    return {
+        "by": doc.get("managed_by") if active else None,
+        "version": doc.get("version"),
+        "locked": list(doc.get("locked") or []) if active else [],
+        "fetched_at": managed.get("fetched_at"),
+    }
+
+
+def _validate_managed_policy(policy: dict) -> None:
+    """Same validation :func:`apply_policy_update` runs on a local edit — a
+    managed device must not be able to be handed a policy the UI itself would
+    have refused to save."""
+    if not isinstance(policy, dict):
+        raise ValueError("policy must be an object")
+    if "mode" in policy and policy["mode"] not in ("observe", "redact", "block"):
+        raise ValueError("mode must be observe, redact or block")
+    if "apps" in policy:
+        apps = policy["apps"]
+        if not isinstance(apps, dict) or not all(isinstance(v, bool) for v in apps.values()):
+            raise ValueError("apps must map app names to true/false")
+    if "retention_days" in policy and policy["retention_days"] not in RETENTION_CHOICES:
+        raise ValueError("retention_days must be one of " + ", ".join(map(str, RETENTION_CHOICES)))
+    for key in ("keep_text", "notice"):
+        if key in policy and not isinstance(policy[key], bool):
+            raise ValueError(f"{key} must be true or false")
+
+
+def apply_managed_envelope(envelope: dict, *, tenant_slug: str | None, device_id: str,
+                           public_key: str | None, path: Path | None = None) -> dict:
+    """Verify a signed policy envelope from Coriqo and, if valid, store it as
+    this device's managed policy. Never raises — every refusal reason comes
+    back as ``{"ok": False, "error": ...}``, and on refusal the previously
+    stored policy (if any) is left exactly as it was: fail-safe, never
+    fail-open.
+
+    Checks, in order: well-formed envelope; the signature verifies over
+    ``canonicalize(document)`` with ``public_key`` (a key this device has
+    pinned — an envelope signed with any other ``key_id`` is refused before
+    this function is even called, since the caller wouldn't have a
+    ``public_key`` to hand it); ``tenant_slug`` matches this device's own
+    tenant; ``device_id`` is null (tenant default) or this device's own;
+    ``version`` is a newer integer than whatever is currently stored
+    (rollback refused); and, if ``policy`` isn't null, that it passes the same
+    validation a local Settings edit would.
+
+    Coriqo signs with its own server key, not a device key: ``signature`` is
+    lowercase hex of the raw 64-byte Ed25519 signature (no ``ed25519:``
+    prefix, unlike :meth:`DeviceKey.sign`), and ``public_key`` (however it was
+    pinned — see :mod:`byoai.integrations.shield_publish`) is always stored
+    and passed in here as lowercase hex of the raw 32-byte public key.
+    """
+    path = path or MANAGED_POLICY_PATH
+    if not isinstance(envelope, dict):
+        return {"ok": False, "error": "malformed envelope"}
+    doc = envelope.get("document")
+    sig = envelope.get("signature")
+    if not isinstance(doc, dict) or not isinstance(sig, str) or not sig:
+        return {"ok": False, "error": "malformed envelope"}
+    if not public_key:
+        return {"ok": False, "error": "policy signed with an unknown key"}
+    from byoai.recorder.canonical import canonicalize
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        raw_pub = bytes.fromhex(public_key)
+        raw_sig = bytes.fromhex(sig)
+        pub = Ed25519PublicKey.from_public_bytes(raw_pub)
+        pub.verify(raw_sig, canonicalize(doc))
+        sig_ok = True
+    except (ValueError, TypeError, InvalidSignature):
+        sig_ok = False
+    except Exception:  # noqa: BLE001 - a malformed key/sig is a refusal, not a crash
+        sig_ok = False
+    if not sig_ok:
+        return {"ok": False, "error": "bad signature"}
+    if doc.get("tenant_slug") != tenant_slug:
+        return {"ok": False, "error": "policy for a different tenant"}
+    doc_device = doc.get("device_id")
+    if doc_device is not None and doc_device != device_id:
+        return {"ok": False, "error": "policy for a different device"}
+    new_version = doc.get("version")
+    if not isinstance(new_version, int) or isinstance(new_version, bool):
+        return {"ok": False, "error": "malformed policy version"}
+    current = load_managed_policy(path)
+    current_version = -1
+    if current:
+        cur_v = (current["envelope"]["document"] or {}).get("version")
+        if isinstance(cur_v, int) and not isinstance(cur_v, bool):
+            current_version = cur_v
+    if new_version <= current_version:
+        return {"ok": False, "error": "rollback refused"}
+    policy = doc.get("policy")
+    if policy is not None:
+        try:
+            _validate_managed_policy(policy)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+    atomic_write_private(path, json.dumps({
+        "envelope": envelope,
+        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, indent=1))
+    return {"ok": True, "error": None}
 
 
 def upgrade_policy(disc: dict) -> dict:
@@ -1567,7 +1734,8 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                   "text); app choices kept", flush=True)
     from byoai.integrations.shield_publish import Publisher
     publisher = Publisher(feed.seals, cfg.key_dir, cfg.key_dir.parent,
-                          protection=lambda: protection_state(cfg))
+                          protection=lambda: protection_state(cfg),
+                          managed_policy_path=cfg.managed_policy_path)
     publisher.start()  # background; sends only when enrolled and due
     pruned = scrub_ledger(cfg, scrub_text=False)["deleted"]
     if pruned:
@@ -1641,7 +1809,16 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                 return {"device_id": key.device_id, "public_key": key.public_key_b64,
                         "sig": key.sign(IDENTITY_PREFIX + nonce.encode())}
             if path == "/api/policy":
-                return {**load_policy(cfg), "covered_apps": list(COVERED_APPS)}
+                out = {**load_policy(cfg), "covered_apps": list(COVERED_APPS)}
+                summary = managed_summary(load_managed_policy(cfg.managed_policy_path))
+                pol_error = publisher.policy_status().get("error")
+                if summary or pol_error:
+                    out["managed"] = {
+                        **(summary or {"by": None, "version": None,
+                                       "locked": [], "fetched_at": None}),
+                        "error": pol_error,
+                    }
+                return out
             if path == "/api/privacy":
                 return privacy_report(cfg, feed.seals)
             return None
@@ -1756,6 +1933,16 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
             if not isinstance(payload, dict):
                 self._send(400, b'{"error":"expected a JSON object"}')
                 return
+            managed = load_managed_policy(cfg.managed_policy_path)
+            if managed:
+                mdoc = managed["envelope"]["document"]
+                if mdoc.get("policy") is not None:
+                    locked = set(mdoc.get("locked") or [])
+                    touched = {k for k in payload if k != "acknowledge"}
+                    if touched & locked:
+                        by = mdoc.get("managed_by") or "your admin"
+                        self._send(409, json.dumps({"error": f"Set by {by}"}).encode())
+                        return
             try:
                 policy = apply_policy_update(policy, payload)
             except ValueError as exc:
@@ -1848,7 +2035,7 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
             """"Send now": publish the current seal immediately. Failures are
             recorded in the status (and retried on their own), not raised."""
             try:
-                status = publisher.send()
+                status = publisher.publish_now()
             except ValueError as exc:
                 self._send(409, json.dumps({"error": str(exc)}).encode())
                 return

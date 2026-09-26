@@ -92,7 +92,27 @@ The shield hardens every write: `POST /api/browser` requires a
 stamps a `row_id` the server dedupes on, so batch retries can't double-seal),
 and `POST /api/policy` requires the request's Origin to name the very
 `host:port` the request was addressed to — Shield's own page — so no other
-local process can weaken the policy.
+local process can weaken the policy. `POST /api/policy` also refuses (409) a
+change to a setting a managed policy has locked, naming who manages it — see
+"Managed mode" below.
+
+### Shield managed mode
+
+Once enrolled with Coriqo, Shield can be put into managed mode: a Coriqo
+tenant sets policy centrally and it lands on every enrolled device, without
+touching each Mac. This is state, not an env var — nothing here needs to be
+set by hand.
+
+| Where | What |
+|---|---|
+| `~/.byoai/shield/managed_policy.json` | The last accepted signed policy envelope from Coriqo (private, atomic write). Absent = never managed. A signed `policy: null` document unmanages the device but is kept here so a replayed older envelope is still refused as a rollback. |
+| `enrollment.json` (`policy_key`) | The Ed25519 key Coriqo signs policy envelopes with, pinned once at enrolment (`{key_id, public_key}`). Absent (state written before managed mode, or the server didn't send one) falls back to fetching `GET /api/v1/checkpoints/public-keys` once and pinning the entry matching the first envelope's `key_id`. |
+| `GET /api/policy` → `managed` | `{by, version, locked, fetched_at, error}` when this device has ever been managed; omitted otherwise. `error` is the last poll/verify failure (network, bad signature, wrong tenant/device, rollback, unknown key) — the previous good policy is kept, never cleared, on any of these. |
+
+Polling (`POST /v1/shield/policy`, signed the same way as the checkpoint
+post) runs every 10 minutes, at Shield's start, and once more whenever "Send
+now" is used — on the same background thread as checkpoint publishing, never
+blocking capture.
 
 Commands, run from `web/`:
 
