@@ -552,6 +552,34 @@ class IngestStore:
             )
         return AcceptResult(accepted=accepted, duplicates=duplicates, gaps=[])
 
+    def enrolment_row(self, device_id: str) -> dict[str, Any] | None:
+        """The raw enrolment row for one device (public key, revocation
+        state), for callers (like the Shield server's device auth) that need
+        to look a device up by id rather than list a whole tenant."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT device_id, public_key_b64, revoked_at FROM enrolments WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def revoke_device(self, device_id: str) -> bool:
+        """Revoke an enrolled device: it can no longer write entries or
+        checkpoints (``_require_writable`` refuses it). Returns ``False`` if
+        there is no such device, so a caller can tell "already gone" apart
+        from "revoked"."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE enrolments SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL",
+                (_now(), device_id),
+            )
+            if cur.rowcount:
+                return True
+            row = self._conn.execute(
+                "SELECT 1 FROM enrolments WHERE device_id = ?", (device_id,)
+            ).fetchone()
+            return row is not None  # already revoked counts as success (idempotent)
+
     def _require_writable(self, device_id: str) -> None:
         row = self._conn.execute(
             "SELECT revoked_at FROM enrolments WHERE device_id = ?", (device_id,)

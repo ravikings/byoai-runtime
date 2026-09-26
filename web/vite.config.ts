@@ -40,6 +40,19 @@ export default defineConfig({
     port: 5174,
     strictPort: true,
     proxy: {
+      // The free, self-hosted Shield server (Phase 1.5) — admin console API
+      // and the device-facing wire protocol it shares with Coriqo. Scoped to
+      // these two prefixes rather than all of `/v1`, because `/v1` is already
+      // proxied below to the unrelated capture-proxy fleet backend
+      // (BYOAI_PROXY_URL) that the rest of this console talks to.
+      '/api/v1/shield': {
+        target: process.env.SHIELD_SERVER_URL ?? 'http://127.0.0.1:17840',
+        changeOrigin: true,
+      },
+      '/v1/shield': {
+        target: process.env.SHIELD_SERVER_URL ?? 'http://127.0.0.1:17840',
+        changeOrigin: true,
+      },
       '/v1': { target: process.env.BYOAI_PROXY_URL ?? 'http://127.0.0.1:8787', changeOrigin: true },
       // Coriqo shield (live capture ledger) — dev-only sidecar; the prod build
       // keeps serving the console build with the Python app. The proxy

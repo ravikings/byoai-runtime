@@ -56,6 +56,27 @@ interface Section {
 
 const SECTIONS: readonly Section[] = [
   { key: 'fleet', label: 'Fleet', glyph: '◉', hotkey: 'f', path: (t) => `/console/${t}/fleet` },
+  {
+    key: 'shield-devices',
+    label: 'Shield devices',
+    glyph: '⛨',
+    hotkey: 'd',
+    path: (t) => `/console/${t}/shield-server/devices`,
+  },
+  {
+    key: 'shield-policy',
+    label: 'Shield policy',
+    glyph: '§',
+    hotkey: 'p',
+    path: (t) => `/console/${t}/shield-server/policy`,
+  },
+  {
+    key: 'shield-enrol',
+    label: 'Enrol a Mac',
+    glyph: '+',
+    hotkey: 'n',
+    path: (t) => `/console/${t}/shield-server/enrol`,
+  },
   { key: 'ledger', label: 'Ledger', glyph: '▤', hotkey: 'l', path: (t) => `/console/${t}/ledger` },
   { key: 'evidence', label: 'Evidence', glyph: '✓', hotkey: 'e', path: (t) => `/console/${t}/evidence` },
   { key: 'mandate', label: 'Mandate', glyph: '⚖', hotkey: 'm', path: (t) => `/console/${t}/mandate` },
@@ -126,7 +147,14 @@ function Shell() {
     // Highlight a section only when the path actually names one. Defaulting to
     // 'fleet' lit the Fleet item on tenant-less paths like /console, telling
     // the user they were somewhere they were not.
-    return location.pathname.split('/')[3] ?? null
+    const parts = location.pathname.split('/')
+    const section = parts[3] ?? null
+    // The shield server console has three sibling sections under one path
+    // segment (`shield-server/devices|policy|enrol`), so the rail key has to
+    // be read from the fourth segment, not the third, or all three rail items
+    // would light up together (or none would).
+    if (section === 'shield-server') return `shield-${parts[4] ?? ''}`
+    return section
   }, [location.pathname])
 
   // Keyboard model (§5): `g` then a section key, `?` for the sheet, `⌘K` for
