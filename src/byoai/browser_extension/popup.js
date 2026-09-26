@@ -105,7 +105,7 @@ function render({ state, endpoint, verify, apps, shorter }, app) {
   el('endpoint').value = endpoint
   el('addr').textContent = shortAddress(endpoint)
   el('addr').title = baseOf(endpoint)
-  el('version').textContent = `Version ${chrome.runtime.getManifest?.().version ?? ''}`.trim()
+  el('version').textContent = `v${chrome.runtime.getManifest?.().version ?? ''}`
   const set = (kind, icon, title, detail) => {
     el('status').className = `status ${kind}`
     el('icon').textContent = icon
