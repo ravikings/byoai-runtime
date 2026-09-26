@@ -496,7 +496,9 @@ pins the entry matching that `key_id`. Key rotation isn't supported yet — a
 with an unknown key".
 
 A managed policy names which settings are locked (`mode`, `apps`,
-`keep_text`, `retention_days`, `notice`, any subset). Locked settings
+`keep_text`, `retention_days`, `notice`, `sync`, any subset). `sync` is how
+much activity the organisation may see (`seal`, `daily` or `events`, never
+message text); Settings always says who receives what, in plain words. Locked settings
 override this Mac's own choice; everything else is still yours to change.
 The Settings screen shows a "Managed by …" banner and disables locked
 controls; `POST /api/policy` refuses a change to a locked key with

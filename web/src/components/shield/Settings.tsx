@@ -9,7 +9,7 @@ import {
   RETENTION_DAYS, enrolWithCoriqo, fetchCoriqo, fetchInstalledApps, fetchPolicy, fetchPrivacy,
   publishSeal, savePolicy, scrubStoredText,
 } from '@/api/shield'
-import type { ShieldPolicy } from '@/api/shield'
+import type { ShieldPolicy, ShieldSharing } from '@/api/shield'
 import { APP_NAME, ConfirmDialog, SectionHead, plural } from './shared'
 
 const MODES = [
@@ -53,6 +53,14 @@ export function Settings() {
         {(p.managed?.by || locked.size > 0) && (
           <div className="banner info" role="status">
             <span>Managed by {p.managed?.by || 'your administrator'}. Locked settings can only be changed there.</span>
+          </div>
+        )}
+        {p.sharing && (
+          <div className={`banner ${p.sharing.level === 'seal' ? 'info' : 'warn'}`} role="status" data-testid="sharing-banner">
+            <span>
+              {p.sharing.words}
+              {sharingSince(p.sharing.since)}
+            </span>
           </div>
         )}
         {p.managed?.error && (
@@ -117,7 +125,7 @@ export function Settings() {
         </p>
       </div>
       <aside className="shield-rail">
-        <DataLocation />
+        <DataLocation sharing={p.sharing} />
       </aside>
 
       {asking && (
@@ -232,6 +240,12 @@ function PrivacySettings({ policy, save, saving, locked }: {
       </div>
     </section>
   )
+}
+
+/** " Since <local date>." from the policy's ISO timestamp, or nothing. */
+function sharingSince(iso: string | null) {
+  const d = iso ? new Date(iso) : null
+  return d && !Number.isNaN(d.getTime()) ? ` Since ${d.toLocaleDateString()}.` : ''
 }
 
 function ago(epochSeconds: number) {
@@ -355,7 +369,7 @@ function CoriqoLink() {
   )
 }
 
-function DataLocation() {
+function DataLocation({ sharing }: { sharing?: ShieldSharing }) {
   const privacy = useQuery({ queryKey: ['shield-privacy'], queryFn: fetchPrivacy })
   const pv = privacy.data
   return (
@@ -372,7 +386,9 @@ function DataLocation() {
           {' · '}Ed25519 private key, file mode 0600. It never leaves this Mac.
         </dd>
         <dt>Leaves this Mac</dt>
-        <dd>Nothing, unless you ship the seal to Coriqo. No account, no cloud copy, no sync by default.</dd>
+        <dd>{sharing && sharing.level !== 'seal'
+          ? 'Only what the notice at the top of this page describes.'
+          : 'Nothing, unless you ship the seal to Coriqo. No account, no cloud copy, no sync by default.'}</dd>
       </dl>
     </section>
   )
