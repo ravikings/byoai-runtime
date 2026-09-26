@@ -63,11 +63,29 @@ describe.skipIf(SKIP)('extension pairing (real browser)', () => {
       type: 'agent.capture',
       row: { kind: 'browser.chat.request', app: 'claude', chars: 12, wire: 'input', row_id: id } }), rowId)
 
+    // Phase 0: nothing is captured until the user agrees. The welcome page opens
+    // by itself on first install, and a row filed before consent goes nowhere.
+    await until(async () => (await browser.pages()).some((p) => p.url().endsWith('/welcome.html')),
+      10_000, 'the welcome page to open on install')
+    expect(await open()).toBe('Capture is off')
+    const early = await file('early-1')
+    expect(early?.error).toBe('capture is off')
+    await sleep(2500) // a negative: give the worker time to (wrongly) send
+    expect(existsSync(ledger) ? readFileSync(ledger, 'utf8') : '').not.toContain('browser.chat.request')
+    const granted = await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'agent.setConsent', granted: true }))
+    expect(granted?.ok).toBe(true)
+
     // Phase 1: real Shield.
     expect(await open()).toBe('Paired with your Shield')
     await file('real-1')
     await until(() => existsSync(ledger) && readFileSync(ledger, 'utf8').includes('browser.chat.request'),
       15_000, 'the row to reach the ledger')
+
+    // Withdrawing stops capture at once and clears the per-app times; agreeing again restores it.
+    expect((await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'agent.setConsent', granted: false })))?.ok).toBe(true)
+    expect((await file('after-withdraw'))?.error).toBe('capture is off')
+    expect(await popup.evaluate(() => chrome.storage.local.get(['consent', 'last_capture', 'today']))).toEqual({})
+    expect((await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'agent.setConsent', granted: true })))?.ok).toBe(true)
 
     // Phase 1b: the record is wiped (ledger and chain both) and Shield comes
     // back. The extension remembers it had 1 sealed entry, so this must show.

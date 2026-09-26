@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coriqo Shield: before it starts</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff; --panel: #f6f7f9; --line: #e3e6eb; --text: #14181f; --muted: #5d6675;
+      --ok: #15803d; --btn: #14181f; --btn-text: #ffffff; --link: #1d4ed8;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f141b; --panel: #171d26; --line: #2a3340; --text: #e8ebf0; --muted: #9aa4b2;
+        --ok: #4ade80; --btn: #e8ebf0; --btn-text: #0f141b; --link: #93b4ff;
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; padding: 32px 16px 56px; background: var(--bg); color: var(--text);
+      font: 15px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif; }
+    main { max-width: 620px; margin: 0 auto; }
+    h1 { font-size: 24px; line-height: 1.25; margin: 0 0 8px; }
+    .lead { color: var(--muted); margin: 0 0 24px; }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      padding: 16px 18px; margin: 0 0 12px; }
+    h2 { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+    p { margin: 0; }
+    ul { margin: 4px 0 0; padding-left: 20px; }
+    li { margin: 2px 0; }
+    code { font: 13px ui-monospace, "SF Mono", Menlo, monospace; background: var(--bg);
+      border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 24px 0 8px; }
+    button { font: inherit; font-weight: 600; border-radius: 10px; padding: 11px 18px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+    button.primary { background: var(--btn); color: var(--btn-text); border-color: var(--btn); }
+    button:focus-visible, a:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+    a { color: var(--link); }
+    .fine { color: var(--muted); font-size: 13px; }
+    .done { border-color: var(--ok); }
+    .done h2 { color: var(--ok); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Shield notes that you sent a message. It never reads what you wrote.</h1>
+  <p class="lead">Please read this before turning it on. Nothing is recorded until you agree.</p>
+
+  <div id="ask">
+    <section>
+      <h2>Where it watches</h2>
+      <p>Only when you send a message on claude.ai, chatgpt.com
+        (and chat.openai.com), gemini.google.com or copilot.microsoft.com.
+        No other site.</p>
+    </section>
+    <section>
+      <h2>What it records</h2>
+      <ul>
+        <li>which app you used,</li>
+        <li>when you sent the message,</li>
+        <li>how many characters it was.</li>
+      </ul>
+      <p style="margin-top:8px">That is all. The message text is counted in the page and thrown away.
+        It is never stored and never sent anywhere.</p>
+    </section>
+    <section>
+      <h2>Where it goes</h2>
+      <p>To the Shield program running on this computer (<code>127.0.0.1</code>). The extension
+        has no other destination: no server of ours, no analytics, nothing over the internet.
+        What Shield does with its own record is described in its documentation.</p>
+    </section>
+    <section>
+      <h2>You need Shield running</h2>
+      <p>This extension is the browser side of Shield, a separate program you install on this computer
+        (<code>byoai-shield</code>). Without it, nothing is recorded; a few messages are held for a short
+        while and then dropped.</p>
+    </section>
+    <section>
+      <h2>Turning it off</h2>
+      <p>Turn capture off any time from the toolbar popup. Turning it off also removes anything still waiting
+        to be sent. <a href="PRIVACY.md" target="_blank" rel="noopener">Read the full privacy notice</a>.</p>
+    </section>
+
+    <div class="actions">
+      <button class="primary" id="agree">Agree and turn on capture</button>
+      <button id="decline">Not now</button>
+    </div>
+    <p class="fine">Choosing "Not now" leaves the extension installed but doing nothing. You can change your mind from the popup.</p>
+  </div>
+
+  <section class="done" id="on" hidden>
+    <h2>Capture is on</h2>
+    <p>Start Shield with <code>byoai-shield</code> if it isn't running. Open the extension popup any time to see
+      whether it is working, or to turn capture off. You can close this tab. Pages that were already open need a
+      reload before they are covered.</p>
+  </section>
+  <section id="off" hidden>
+    <h2>Capture is off</h2>
+    <p>Nothing will be recorded. To turn it on later, open the extension popup and choose "Review and turn on".
+      You can close this tab.</p>
+  </section>
+  <p class="fine" id="err" hidden>Something went wrong saving your choice. Please try again.</p>
+</main>
+<script src="welcome.js"></script>
+</body>
+</html>

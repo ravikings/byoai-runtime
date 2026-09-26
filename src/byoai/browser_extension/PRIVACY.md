@@ -1,87 +1,98 @@
-# Coriqo Shield — Agent Capture: privacy posture
+# Coriqo Shield: Agent Capture — privacy notice
 
-This extension records *that* you sent a message to an AI chat, never *what
-you said*. This file is the data-protection record for reviewers ( GDPR
-Art. 30 register entry equivalents noted inline) and for anyone auditing the
-code — it is short on purpose, and every claim links to the line that makes
-it true.
+This extension records *that* you sent a message to an AI chat, never *what you
+said*. It does nothing until you agree on the welcome page it opens when you
+install it, and you can turn it off again at any time from its popup.
+
+## What it does
+
+When you send a message on claude.ai, chatgpt.com (and chat.openai.com),
+gemini.google.com or copilot.microsoft.com, the extension notes the fact and
+hands it to **Shield, a separate program running on your own computer**
+(`byoai-shield`). No other site is watched. Without Shield running, nothing is
+recorded.
 
 ## What is collected
 
-Per message you send on claude.ai or chatgpt.com:
+Per message you send:
 
 | Field | Example | Why |
 |---|---|---|
 | `kind` | `browser.chat.request` | what happened |
-| `app` | `chatgpt` | which surface |
+| `app` | `chatgpt` | which app |
 | `chars` | `42` | message length only |
 | `wire` | `/backend-api/conversation` | truncated endpoint path |
 | `sent_at` | ISO timestamp | when |
 
-Nothing else. There is no read of page content, message text, DOM, cookies,
-form fields, or clipboard. The message text is counted (`chars = …length`)
-and immediately discarded — it exists as a variable for fractions of a
-second, is never stored, never logged, never transmitted.
+Nothing else. The extension does not read page content, the DOM, cookies, form
+fields, browsing history or the clipboard. The message text is counted in the
+page (`chars = text.length`) and immediately discarded: it is never stored,
+logged or transmitted. The server side drops any unexpected field, text
+included, before it reaches the record (`clean_browser_row`).
 
-## What is NOT collected
+No account, device or user identifier is attached to rows. There is no
+analytics, no telemetry, no advertising and no third-party request. The data is
+never sold, and is not used or transferred for anything other than the single
+purpose above (noting that a message was sent, on this computer).
 
-- Message content or previews (see `clean_browser_row` on the server side:
-  any unexpected field, text included, is dropped before the ledger).
-- Browsing history, tabs, or keystrokes outside the two chat surfaces.
-- Identifiers of any kind. No account, device, or user ID is attached to
-  rows; identification happens at the Shield server by localhost origin only.
-  (The extension does keep one thing locally, never sent anywhere: Shield's
-  public key, saved the first time it pairs so a different program on the same
-  port can't pass as Shield. It also keeps one "last message noted" time per
-  app, overwritten on each send, so the popup can show that capture still works, and the highest count of sealed entries Shield has reported, one number, so a deleted or reset record is noticed.)
-- No analytics, no telemetry, no third-party requests. The only network
-  destination is the local Shield server, and the manifest's
-  `host_permissions` is limited to `127.0.0.1`/`localhost` so it cannot be
-  widened without a new install.
+## Where it goes
 
-## Where data goes
+Only to `http://127.0.0.1:17831/api/browser` (the port is configurable, but the
+extension refuses any address that is not this computer: see `isLocalEndpoint`
+in `background.js`). The manifest's `host_permissions` are limited to
+`127.0.0.1` and `localhost`, so this cannot be widened without a new release.
+The extension only sends to a Shield that proves it holds the key it first
+paired with; a different program on the same port receives nothing.
 
-Rows ship to `POST http://127.0.0.1:17831/api/browser` (configurable but
-*enforced* localhost — see `isLocalEndpoint` in `background.js`). One
-destination, on the same machine, behind the guard the server already runs
-against web pages. If Shield is not running, rows wait in memory (capped at
-50) and are dropped after that — a blind spot, never a stored record
-(`MAX_QUEUED` in `background.js`).
+What Shield does with its own record on your computer is described in its
+README. Shield can, if you choose to enrol it in Coriqo, send a signed
+checkpoint (a hash and a count, no content) to a Coriqo tenant; that is a
+setting of Shield, off by default, not of this extension.
 
-## Retention
+## What the extension keeps in your browser
 
-- In the extension: memory as the working set, mirrored to
-  `chrome.storage.session` (cleared when the browser closes) so a service-
-  worker restart doesn't drop rows mid-flight; ≤ 50 rows, and when the
-  local server stays off, older rows are dropped rather than kept. No
-  capture data touches `chrome.storage.local` — that permission stores
-  only the endpoint URL string.
-- On the Shield server: the ledger's existing privacy-first rules apply
-  (retention days, scrub pass, sealed-but-text-free payloads — see
-  `README.md` § Privacy-first by default).
+| Where | What | Lifetime |
+|---|---|---|
+| `chrome.storage.session` | rows waiting for Shield, at most 50 | cleared when the browser closes; older rows are dropped, never kept |
+| `chrome.storage.local` `consent` | that you agreed, and when | until you turn capture off |
+| `chrome.storage.local` `endpoint` | Shield's local address, if you changed it | until removed |
+| `chrome.storage.local` `pinned_shield` | Shield's public key, saved when first paired | until you re-pair |
+| `chrome.storage.local` `witness` / `rollback` | the highest count of sealed entries Shield reported (one number), and a flag if it later dropped | until you re-pair or accept |
+| `chrome.storage.local` `last_capture` / `today` | one "last message noted" time per app, and today's message count | overwritten on each send; removed when you turn capture off |
 
-## Legal basis and transparency
+None of this contains message text, and none of it leaves your computer.
 
-The Shield server's user-facing notice strip (web UI, Trust tab) states what
-is checked and kept, and is not dismissible by design. Because the shield is
-a local tool operated by the same person whose machine it runs on (household
-admin setting it up for the Mac's users), the transparency duty is met by
-that strip plus this file; there's no controller-processor split and no
-third-country transfer — data never leaves the machine.
+## Permissions, and why
 
-## User rights in practice
+- `storage`: the items above.
+- `alarms`: retry sending to Shield if it was not running yet.
+- `activeTab`: lets the popup show whether the tab you are looking at is
+  covered, only when you open it.
+- Host access to `127.0.0.1` / `localhost`: to reach Shield.
+- Content scripts on the five chat sites listed above: to notice a send. One
+  runs in the page so it can see the send request (it must wrap `fetch`, since
+  the sites' security policies block injecting anything else); the other
+  relays the length-only fact to the extension. Neither loads remote code. All
+  code ships in the package.
 
-- Access & portability: `/api/receipt/<seal>` exports a verifiable receipt.
-- Erasure: `POST /api/privacy/scrub` (Settings → Privacy → Remove now).
-  Seals stay; servers can't unsee what's sealed — that is the tamper
-  evidence working, and it holds only what was documented above.
-- Objection / opt-out: close the toggles on the affected apps in Shield's
-  Settings, or remove the extension. Data-extraction stops at the source.
+## Your choices
 
-## Integrity, not secrecy
+- **Turn it off:** popup → Details → *Turn capture off*. This stops recording
+  and removes anything still waiting to be sent, plus the per-app times and the
+  count above.
+- **Remove it:** uninstalling the extension stops capture at the source.
+- **Erase what Shield already kept:** Shield's Settings → Privacy → *Remove
+  now* (`POST /api/privacy/scrub`). Sealed entries stay, because removing
+  them would break the seal; they hold only the fields listed above.
+- **Access:** `/api/receipt/<seal>` on Shield exports a verifiable receipt.
 
-Everything collected is sealed into an RFC 6962 Merkle chain signed with a
-key held on the same Mac (`byoai.recorder.keys`). There is no "silent
-monitoring" claim to worry about: the sealed record is *open* to the person
-it describes, and its integrity can be proven to anyone via receipts —
-while its content remains metadata-only.
+## The record Shield keeps
+
+Shield seals each entry into a Merkle chain signed with a key that stays on your
+computer. That lets you prove the record was not edited afterwards. It holds
+only the fields listed above. The extension asks before it starts, and its
+popup always shows whether it is on.
+
+## Contact
+
+Questions or concerns: https://github.com/ravikings/byoai-runtime/issues
