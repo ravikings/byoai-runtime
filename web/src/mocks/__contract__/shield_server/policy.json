@@ -1,0 +1,25 @@
+{
+  "document": {
+    "device_id": null,
+    "issued_at": "2026-09-26T20:19:52Z",
+    "key_id": "shield-server-bba358a5",
+    "locked": [
+      "mode",
+      "notice"
+    ],
+    "managed_by": "Contract Org IT",
+    "policy": {
+      "apps": {
+        "claude": true
+      },
+      "keep_text": false,
+      "mode": "redact",
+      "notice": true,
+      "retention_days": 30
+    },
+    "policy_id": "pol_b0c644fa8ae543169fd2bcda5accc498",
+    "tenant_slug": "default",
+    "version": 1
+  },
+  "signature": "456bcea1922a4891c4be4016a689baf8707adcc2ced5770165956ebea0ce6d9c4cafa35fbfc6a44161b7382827a6d88cbe3cdf6996143118704a555984c79b02"
+}

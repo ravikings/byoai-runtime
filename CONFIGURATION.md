@@ -161,6 +161,61 @@ response rather than treating every failure alike.
 the device and verified the batch signature. It also takes a tenant slug on
 trust, so enrolment authorization must be enforced above it.
 
+## Self-hosted Shield server — `byoai-shield-server`
+
+Phase 1.5 of the Shield MSP plan: a free, self-hosted, single-org control
+plane speaking the exact same wire protocol Coriqo's managed mode does, so
+`byoai.integrations.shield_publish.Publisher` enrols and polls it with no
+code changes. `byoai.shield_server.create_app(config)` builds the FastAPI
+app; the console script wraps it. Install with
+`pip install --pre 'byoai-runtime[shield-server]'`.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `BYOAI_SHIELD_SERVER_DATA` | `~/.byoai/shield-server/` | Data directory: two SQLite databases, the Ed25519 signing key, and the admin token (0700 dir, 0600 files). |
+| `BYOAI_SHIELD_SERVER_HOST` | `127.0.0.1` | Bind address. |
+| `BYOAI_SHIELD_SERVER_PORT` | `17840` | Bind port. Deliberately not 17831 (`byoai-shield`'s own local port). |
+| `BYOAI_SHIELD_SERVER_PUBLIC_URL` | `http://127.0.0.1:17840` | Returned to devices at enrolment as `coriqo_base_url`. Put a reverse proxy in front and set this to its `https://` address before any device outside this host enrols — the enrolment token and every signed request cross the network in the clear otherwise. |
+| `BYOAI_SHIELD_SERVER_ORG` | `default` | The single tenant slug this server serves. |
+| `BYOAI_SHIELD_SERVER_ADMIN_TOKEN` | generated on first run, saved 0600, printed once | Bearer token for the admin API (`/api/v1/shield/*`, `/v1/console/*`) and the console. Setting this env var yourself skips generation and file storage. |
+
+CLI (`byoai-shield-server <command>`):
+
+| Command | Does |
+|---|---|
+| `serve` | Runs the server (uvicorn) on `BYOAI_SHIELD_SERVER_HOST`/`_PORT`. Prints the admin token once, on the run that generates it. |
+| `mint-token [--label L] [--ttl-seconds N]` | Mints a single-use enrolment token, printed once (only its hash is stored). |
+| `admin-token` | Prints the current admin bearer token (generating one first if none exists yet). |
+
+Device routes (unauthenticated by design, or device-signed — see
+`byoai.recorder.shipper.post_signed_batch` for the signing scheme):
+`POST /v1/enroll`, `POST /v1/checkpoints/batch`, `POST /v1/shield/policy`,
+`GET /api/v1/checkpoints/public-keys`.
+
+Admin routes (`Authorization: Bearer <admin token>`, constant-time compare):
+`POST|GET|DELETE /api/v1/shield/tokens[/{token_id}]` (a short, non-secret
+12-hex-char id — never the full token hash),
+`GET /api/v1/shield/devices`, `DELETE /api/v1/shield/devices/{id}`,
+`GET|PUT|DELETE /api/v1/shield/policy`,
+`GET|PUT|DELETE /api/v1/shield/devices/{id}/policy`,
+`GET /api/v1/shield/policy/drift` (devices whose reported policy version
+doesn't match what they're assigned, wrapped as `{devices: [...]}`),
+`GET /api/v1/shield/info` (`{public_url, org, key_id}`, what the Enrol page
+shows), and the read-only fleet console API (`/v1/console/*`) mounted behind
+the same token. The built console is served at `/console/` (see "Console
+(web UI)" above for the build step) with a Shield section at
+`/console/<org>/shield-server/{devices,policy,enrol}`.
+
+`GET`/`PUT`/`DELETE /policy` and `/devices/{id}/policy` return the signed
+envelope as stored, `{document, signature}` (or `null` if nothing has ever
+been set for that key) — not a flattened view. `PUT` takes the policy fields
+flat at the top level plus `managed_by` and `locked`:
+`{mode, apps, keep_text, retention_days, notice, managed_by, locked}`.
+
+Security floor: binds `127.0.0.1` by default, caps request bodies at 16 MiB,
+and never receives message text — only checkpoints and the `shield` state
+block, the same boundary Coriqo's Phase 1 keeps.
+
 ## Providers
 
 One shared HTTP plumbing layer (`byoai/providers/base.py`):

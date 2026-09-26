@@ -9,6 +9,7 @@
  */
 import { setupWorker } from 'msw/browser'
 import { brokenFleetHandler, handlers } from './handlers'
+import { shieldServerHandlers } from './shieldServerHandlers'
 
 /**
  * `?mock=broken` serves a contract-violating /fleet response so the
@@ -20,7 +21,9 @@ function activeHandlers(): typeof handlers {
   const broken =
     typeof location !== 'undefined' &&
     new URLSearchParams(location.search).get('mock') === 'broken'
-  return broken ? [brokenFleetHandler, ...handlers] : handlers
+  return broken
+    ? [brokenFleetHandler, ...handlers, ...shieldServerHandlers]
+    : [...handlers, ...shieldServerHandlers]
 }
 
 /** The real MSW worker, for tests or callers that need its full surface. */

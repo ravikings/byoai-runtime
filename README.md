@@ -506,6 +506,58 @@ controls; `POST /api/policy` refuses a change to a locked key with
 signed `policy: null` document), which returns every setting to this Mac's
 own choice.
 
+### Self-hosted Shield server (free, one org)
+
+Managed mode above needs *something* signing and serving policy. If that
+something isn't Coriqo, `byoai-shield-server` is a free, self-hosted,
+single-org control plane that speaks the exact same wire protocol — Shield
+enrols against it, polls it for policy, and reports checkpoints to it with
+**no code changes**, because it is the same client hitting a different
+address.
+
+```bash
+pip install --pre 'byoai-runtime[shield-server]'
+byoai-shield-server serve
+# ByoAI Shield server: org='default' data=~/.byoai/shield-server/
+# Listening on http://127.0.0.1:17840 (public url: http://127.0.0.1:17840)
+# Generated a new admin token, saved to ~/.byoai/shield-server/admin_token (0600):
+#   <token>   — save it now, it is not shown again
+```
+
+**Enrol a Mac.** Mint a one-time token, then paste it into Shield's Settings
+→ Coriqo along with this server's address:
+
+```bash
+byoai-shield-server mint-token --label "Alice's MacBook"
+# shieldtok_...   — paste into Shield with http://<this-host>:17840
+```
+
+From there it's the same flow "Sending the Shield seal to Coriqo" describes
+above and the same "Managed mode" describes for policy — this server *is*
+one of the two things speaking that protocol, the other being Coriqo.
+
+**The console.** The built console (see "Console (web UI)" above) gets a
+Shield section at `/console/<org>/shield-server/…`: **Devices** (the fleet,
+protecting/quiet/drift chips, revoke), **Policy** (the tenant default and
+per-device overrides, signed version and key shown), and **Enrol** (mint a
+token, shown once, with the server address to paste alongside it). It asks
+for the admin token once per session (kept in `sessionStorage` only) and
+sends it as `Authorization: Bearer`.
+
+**Free vs. Coriqo, in two sentences.** This server runs one organisation for
+free — enrol devices, see the fleet, author and sign policy, all self-hosted
+with no account; Coriqo adds everything past a single org — many client
+tenants under one MSP login, roles and SSO, cross-client dashboards, signed
+installers and MDM profiles, and hosted infrastructure. A device moves
+between them by re-enrolling; nothing on the Mac itself ever changes.
+
+**Run it behind TLS.** It binds `127.0.0.1` by default. The moment a Mac
+outside this machine needs to reach it, put it behind a reverse proxy that
+terminates TLS (nginx, Caddy, cloudflared) — the enrolment token and every
+signed request cross the network in the clear otherwise. See
+`CONFIGURATION.md` for every `BYOAI_SHIELD_SERVER_*` env var and the full
+`byoai-shield-server` CLI (`serve` / `mint-token` / `admin-token`).
+
 ### 5. Semantic (intent) caching
 
 Serve *similar* questions from cache — not just identical ones. One embedding

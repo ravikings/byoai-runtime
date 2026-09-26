@@ -29,6 +29,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controls. Every checkpoint/heartbeat now also reports its applied
   `policy_version` in the `shield` block, so drift is visible from Coriqo.
 
+- **Self-hosted Shield server (Phase 1.5 of the MSP plan).** A free,
+  single-org control plane, `byoai.shield_server` (`create_app(config)`) and
+  the console script `byoai-shield-server` (`serve` / `mint-token` /
+  `admin-token`), install via `byoai-runtime[shield-server]`. It speaks
+  Phase 1's exact wire protocol — enrolment, device-signed checkpoints, the
+  signed policy poll, and the public-keys endpoint — so the released
+  `shield_publish.Publisher` enrols and reports to it with **no code
+  changes**, only a different address. Own storage: single-use enrolment
+  tokens (hash-only at rest, revocable, expiring), an append-only signed
+  policy table (one monotonic version per org, `unique(version)`, a
+  `threading.Lock` around every write), and per-device shield state; reuses
+  `byoai.ingest.IngestStore` for enrolments and checkpoints and mounts the
+  existing read-only `/v1/console/*` fleet router and the built console
+  behind the admin bearer token. Deleting a device's policy override
+  re-issues the org default at a fresh version (or a signed `policy: null`
+  with no default), so a device never receives a version lower than one it
+  already holds — the same override-delete-reissue rule Coriqo's Phase 1
+  keeps. Proven against the real client: an integration test runs
+  `shield_publish.Publisher` against `create_app()` over an httpx ASGI
+  transport through the whole lifecycle (enrol, publish, admin sets policy,
+  device polls and applies it with no drift, revoke, refusal state).
+
 - **Enforced budgets (AD-11).** Three new mandate fields —
   `max_run_cost_usd`, `max_calls_per_minute`, `max_run_steps` — checked
   entirely locally in `decide()`, no I/O, alongside suspension. A breach is
