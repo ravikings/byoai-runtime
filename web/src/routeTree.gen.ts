@@ -15,9 +15,11 @@ import { Route as ConsoleIndexRouteImport } from './routes/console.index'
 import { Route as ConsoleTenantRouteImport } from './routes/console.$tenant'
 import { Route as ConsoleTenantIndexRouteImport } from './routes/console.$tenant.index'
 import { Route as ConsoleTenantSplatRouteImport } from './routes/console.$tenant.$'
+import { Route as ConsoleTenantEvidenceRouteImport } from './routes/console.$tenant.evidence'
 import { Route as ConsoleTenantFleetRouteImport } from './routes/console.$tenant.fleet'
 import { Route as ConsoleTenantShieldRouteImport } from './routes/console.$tenant.shield'
 import { Route as ConsoleTenantShieldServerRouteImport } from './routes/console.$tenant.shield-server'
+import { Route as ConsoleTenantEvidenceFindingsRouteImport } from './routes/console.$tenant.evidence.findings'
 import { Route as ConsoleTenantFleetIndexRouteImport } from './routes/console.$tenant.fleet.index'
 import { Route as ConsoleTenantFleetCoverageRouteImport } from './routes/console.$tenant.fleet.coverage'
 import { Route as ConsoleTenantFleetDevicesRouteImport } from './routes/console.$tenant.fleet.devices'
@@ -55,6 +57,11 @@ const ConsoleTenantSplatRoute = ConsoleTenantSplatRouteImport.update({
   path: '/$',
   getParentRoute: () => ConsoleTenantRoute,
 } as any)
+const ConsoleTenantEvidenceRoute = ConsoleTenantEvidenceRouteImport.update({
+  id: '/evidence',
+  path: '/evidence',
+  getParentRoute: () => ConsoleTenantRoute,
+} as any)
 const ConsoleTenantFleetRoute = ConsoleTenantFleetRouteImport.update({
   id: '/fleet',
   path: '/fleet',
@@ -70,6 +77,12 @@ const ConsoleTenantShieldServerRoute =
     id: '/shield-server',
     path: '/shield-server',
     getParentRoute: () => ConsoleTenantRoute,
+  } as any)
+const ConsoleTenantEvidenceFindingsRoute =
+  ConsoleTenantEvidenceFindingsRouteImport.update({
+    id: '/findings',
+    path: '/findings',
+    getParentRoute: () => ConsoleTenantEvidenceRoute,
   } as any)
 const ConsoleTenantFleetIndexRoute = ConsoleTenantFleetIndexRouteImport.update({
   id: '/',
@@ -113,10 +126,12 @@ export interface FileRoutesByFullPath {
   '/console/$tenant': typeof ConsoleTenantRouteWithChildren
   '/console/': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
+  '/console/$tenant/evidence': typeof ConsoleTenantEvidenceRouteWithChildren
   '/console/$tenant/fleet': typeof ConsoleTenantFleetRouteWithChildren
   '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
+  '/console/$tenant/evidence/findings': typeof ConsoleTenantEvidenceFindingsRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
   '/console/$tenant/fleet/devices': typeof ConsoleTenantFleetDevicesRoute
   '/console/$tenant/shield-server/devices': typeof ConsoleTenantShieldServerDevicesRoute
@@ -129,9 +144,11 @@ export interface FileRoutesByTo {
   '/shield': typeof ShieldRoute
   '/console': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
+  '/console/$tenant/evidence': typeof ConsoleTenantEvidenceRouteWithChildren
   '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant': typeof ConsoleTenantIndexRoute
+  '/console/$tenant/evidence/findings': typeof ConsoleTenantEvidenceFindingsRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
   '/console/$tenant/fleet/devices': typeof ConsoleTenantFleetDevicesRoute
   '/console/$tenant/shield-server/devices': typeof ConsoleTenantShieldServerDevicesRoute
@@ -146,10 +163,12 @@ export interface FileRoutesById {
   '/console/$tenant': typeof ConsoleTenantRouteWithChildren
   '/console/': typeof ConsoleIndexRoute
   '/console/$tenant/$': typeof ConsoleTenantSplatRoute
+  '/console/$tenant/evidence': typeof ConsoleTenantEvidenceRouteWithChildren
   '/console/$tenant/fleet': typeof ConsoleTenantFleetRouteWithChildren
   '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
+  '/console/$tenant/evidence/findings': typeof ConsoleTenantEvidenceFindingsRoute
   '/console/$tenant/fleet/coverage': typeof ConsoleTenantFleetCoverageRoute
   '/console/$tenant/fleet/devices': typeof ConsoleTenantFleetDevicesRoute
   '/console/$tenant/shield-server/devices': typeof ConsoleTenantShieldServerDevicesRoute
@@ -165,10 +184,12 @@ export interface FileRouteTypes {
     | '/console/$tenant'
     | '/console/'
     | '/console/$tenant/$'
+    | '/console/$tenant/evidence'
     | '/console/$tenant/fleet'
     | '/console/$tenant/shield'
     | '/console/$tenant/shield-server'
     | '/console/$tenant/'
+    | '/console/$tenant/evidence/findings'
     | '/console/$tenant/fleet/coverage'
     | '/console/$tenant/fleet/devices'
     | '/console/$tenant/shield-server/devices'
@@ -181,9 +202,11 @@ export interface FileRouteTypes {
     | '/shield'
     | '/console'
     | '/console/$tenant/$'
+    | '/console/$tenant/evidence'
     | '/console/$tenant/shield'
     | '/console/$tenant/shield-server'
     | '/console/$tenant'
+    | '/console/$tenant/evidence/findings'
     | '/console/$tenant/fleet/coverage'
     | '/console/$tenant/fleet/devices'
     | '/console/$tenant/shield-server/devices'
@@ -197,10 +220,12 @@ export interface FileRouteTypes {
     | '/console/$tenant'
     | '/console/'
     | '/console/$tenant/$'
+    | '/console/$tenant/evidence'
     | '/console/$tenant/fleet'
     | '/console/$tenant/shield'
     | '/console/$tenant/shield-server'
     | '/console/$tenant/'
+    | '/console/$tenant/evidence/findings'
     | '/console/$tenant/fleet/coverage'
     | '/console/$tenant/fleet/devices'
     | '/console/$tenant/shield-server/devices'
@@ -260,6 +285,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConsoleTenantSplatRouteImport
       parentRoute: typeof ConsoleTenantRoute
     }
+    '/console/$tenant/evidence': {
+      id: '/console/$tenant/evidence'
+      path: '/evidence'
+      fullPath: '/console/$tenant/evidence'
+      preLoaderRoute: typeof ConsoleTenantEvidenceRouteImport
+      parentRoute: typeof ConsoleTenantRoute
+    }
     '/console/$tenant/fleet': {
       id: '/console/$tenant/fleet'
       path: '/fleet'
@@ -280,6 +312,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/console/$tenant/shield-server'
       preLoaderRoute: typeof ConsoleTenantShieldServerRouteImport
       parentRoute: typeof ConsoleTenantRoute
+    }
+    '/console/$tenant/evidence/findings': {
+      id: '/console/$tenant/evidence/findings'
+      path: '/findings'
+      fullPath: '/console/$tenant/evidence/findings'
+      preLoaderRoute: typeof ConsoleTenantEvidenceFindingsRouteImport
+      parentRoute: typeof ConsoleTenantEvidenceRoute
     }
     '/console/$tenant/fleet/': {
       id: '/console/$tenant/fleet/'
@@ -326,6 +365,19 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ConsoleTenantEvidenceRouteChildren {
+  ConsoleTenantEvidenceFindingsRoute: typeof ConsoleTenantEvidenceFindingsRoute
+}
+
+const ConsoleTenantEvidenceRouteChildren: ConsoleTenantEvidenceRouteChildren = {
+  ConsoleTenantEvidenceFindingsRoute: ConsoleTenantEvidenceFindingsRoute,
+}
+
+const ConsoleTenantEvidenceRouteWithChildren =
+  ConsoleTenantEvidenceRoute._addFileChildren(
+    ConsoleTenantEvidenceRouteChildren,
+  )
+
 interface ConsoleTenantFleetRouteChildren {
   ConsoleTenantFleetCoverageRoute: typeof ConsoleTenantFleetCoverageRoute
   ConsoleTenantFleetDevicesRoute: typeof ConsoleTenantFleetDevicesRoute
@@ -362,6 +414,7 @@ const ConsoleTenantShieldServerRouteWithChildren =
 
 interface ConsoleTenantRouteChildren {
   ConsoleTenantSplatRoute: typeof ConsoleTenantSplatRoute
+  ConsoleTenantEvidenceRoute: typeof ConsoleTenantEvidenceRouteWithChildren
   ConsoleTenantFleetRoute: typeof ConsoleTenantFleetRouteWithChildren
   ConsoleTenantShieldRoute: typeof ConsoleTenantShieldRoute
   ConsoleTenantShieldServerRoute: typeof ConsoleTenantShieldServerRouteWithChildren
@@ -370,6 +423,7 @@ interface ConsoleTenantRouteChildren {
 
 const ConsoleTenantRouteChildren: ConsoleTenantRouteChildren = {
   ConsoleTenantSplatRoute: ConsoleTenantSplatRoute,
+  ConsoleTenantEvidenceRoute: ConsoleTenantEvidenceRouteWithChildren,
   ConsoleTenantFleetRoute: ConsoleTenantFleetRouteWithChildren,
   ConsoleTenantShieldRoute: ConsoleTenantShieldRoute,
   ConsoleTenantShieldServerRoute: ConsoleTenantShieldServerRouteWithChildren,

@@ -1,43 +1,9 @@
 import type { Finding } from '@/api/schemas'
 import { useHref } from '@/app/hrefContext'
-import type { HrefMap } from '@/app/hrefContext'
 import type { Inclusion } from '@/api/schemas'
 import { PanelEmpty } from './PanelState'
+import { dotClass, refLink } from './finding'
 import { n } from './format'
-
-interface RefLink {
-  label: string
-  to: string
-}
-
-/**
- * A finding's ref is one of three shapes and none of them is addressable
- * without its device. Narrowed with `in`, never with a cast.
- */
-function refLink(tenant: string, finding: Finding, href: HrefMap): RefLink | null {
-  const ref = finding.ref
-  if (ref === null) return null
-  if ('seq' in ref) {
-    return {
-      label: `seq ${n(ref.seq)} →`,
-      to: href.entry(tenant, ref.device_id, ref.seq),
-    }
-  }
-  if ('seq_start' in ref) {
-    return {
-      label: `seq ${n(ref.seq_start)}–${n(ref.seq_end)} →`,
-      to: href.entry(tenant, ref.device_id, ref.seq_start),
-    }
-  }
-  return {
-    label: `session ${ref.session_id} →`,
-    to: href.session(tenant, ref.device_id, ref.session_id),
-  }
-}
-
-function dotClass(severity: Finding['severity']): string {
-  return severity === 'bad' ? 'dot bad' : severity === 'warn' ? 'dot warn' : 'dot unknown'
-}
 
 interface Props {
   findings: readonly Finding[]
