@@ -29,6 +29,7 @@ const resolveEndpoint = (saved) =>
 const PIN_KEY = 'pinned_shield'
 const LAST_CAPTURE_KEY = 'last_capture'
 const WITNESS_KEY = 'witness'
+const TODAY_KEY = 'today'
 const IDENTITY_PREFIX = 'byoai-shield-identity:'
 
 const b64bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -211,7 +212,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       reply?.({ error: 'not the Shield capture relay' })
       return false
     }
-    noteCapture(sender.tab?.url)
+    noteCapture(sender.tab?.url, msg.row.kind)
     queue.push({ ...msg.row, sent_at: new Date().toISOString(), row_id: crypto.randomUUID() })
     if (queue.length > MAX_QUEUED) queue = queue.slice(-MAX_QUEUED)
     persist()
@@ -245,12 +246,19 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
 // One timestamp per app, overwritten on every send: enough for the popup to
 // say "last message noted 3 min ago" and to show when capture has gone quiet,
 // and nothing that grows into a usage history.
-async function noteCapture(url) {
+async function noteCapture(url, kind) {
   try {
     const host = new URL(url).host
     if (!WATCHED_HOST.includes(host)) return
-    const seen = (await chrome.storage.local.get(LAST_CAPTURE_KEY))[LAST_CAPTURE_KEY] || {}
-    await chrome.storage.local.set({ [LAST_CAPTURE_KEY]: { ...seen, [host]: Date.now() } })
+    const store = await chrome.storage.local.get([LAST_CAPTURE_KEY, TODAY_KEY])
+    const seen = store[LAST_CAPTURE_KEY] || {}
+    const day = new Date().toDateString()
+    const today = store[TODAY_KEY]?.day === day ? store[TODAY_KEY].n : 0
+    await chrome.storage.local.set({
+      [LAST_CAPTURE_KEY]: { ...seen, [host]: Date.now() },
+      // Messages only (a request row), not the status row that follows each one.
+      [TODAY_KEY]: { day, n: today + (kind === 'browser.chat.request' ? 1 : 0) },
+    })
   } catch { /* the badge and queue matter more than this note */ }
 }
 

@@ -14,6 +14,7 @@ const APPS = {
   'gemini.google.com': 'Gemini',
   'copilot.microsoft.com': 'Copilot',
 }
+let lastRender = null
 const STALE_AFTER_MS = 7 * 24 * 3600 * 1000
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -24,6 +25,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function refresh() {
   const [probed, app] = await Promise.all([probe(), currentApp()])
+  lastRender = { probed, app }
   render(probed, app)
 }
 
@@ -58,9 +60,11 @@ async function currentApp() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     const host = tab?.url ? new URL(tab.url).host : ''
     const seen = (await chrome.storage.local.get('last_capture')).last_capture || {}
-    return { host, name: APPS[host] || null, lastSeen: seen[host] || null }
+    const today = (await chrome.storage.local.get('today')).today
+    return { host, name: APPS[host] || null, lastSeen: seen[host] || null,
+      seen, notedToday: today?.day === new Date().toDateString() ? today.n : 0 }
   } catch {
-    return { host: '', name: null, lastSeen: null }
+    return { host: '', name: null, lastSeen: null, seen: {}, notedToday: 0 }
   }
 }
 
@@ -81,8 +85,13 @@ function ago(ms) {
   return `${Math.round(hours / 24)} days ago`
 }
 
+const shortAddress = (endpoint) => { try { return new URL(endpoint).host } catch { return endpoint } }
+
 function render({ state, endpoint, verify, apps, shorter }, app) {
   el('endpoint').value = endpoint
+  el('addr').textContent = shortAddress(endpoint)
+  el('addr').title = baseOf(endpoint)
+  el('version').textContent = `Version ${chrome.runtime.getManifest?.().version ?? ''}`.trim()
   const set = (kind, icon, title, detail) => {
     el('status').className = `status ${kind}`
     el('icon').textContent = icon
@@ -153,6 +162,9 @@ function render({ state, endpoint, verify, apps, shorter }, app) {
   } else if (app.host) {
     tab.textContent = `This tab (${app.host}) is not one Shield covers.`
   }
+  if (app.notedToday > 0) {
+    tab.append(` Noted today across all apps: ${app.notedToday}.`)
+  }
 }
 
 function wire() {
@@ -182,6 +194,33 @@ function wire() {
     navigator.clipboard.writeText(chrome.runtime.id)
     el('copy-id').textContent = 'Copied'
     setTimeout(() => { el('copy-id').textContent = 'Copy id' }, 1200)
+  })
+  el('change-addr').addEventListener('click', (ev) => {
+    ev.preventDefault()
+    el('change-box').hidden = false
+    el('endpoint').focus()
+  })
+  el('copy-addr').addEventListener('click', () => {
+    navigator.clipboard.writeText(el('addr').title)
+    el('copy-addr').textContent = 'Copied'
+    setTimeout(() => { el('copy-addr').textContent = 'Copy' }, 1200)
+  })
+  el('copy-diag').addEventListener('click', () => {
+    const { probed, app } = lastRender || {}
+    const lines = [
+      `Coriqo Shield extension ${chrome.runtime.getManifest?.().version ?? '?'}`,
+      `Extension id: ${chrome.runtime.id}`,
+      `Browser: ${navigator.userAgent}`,
+      `Shield address: ${probed?.endpoint ?? '?'}`,
+      `State: ${probed?.state ?? '?'}`,
+      `Sealed entries: ${probed?.verify?.sealed_total ?? '?'}  Record intact: ${probed?.verify?.tamper_evident ?? '?'}`,
+      `Apps on in Shield: ${JSON.stringify(probed?.apps ?? {})}`,
+      `Noted today: ${app?.notedToday ?? 0}`,
+      `Last noted: ${JSON.stringify(Object.fromEntries(Object.entries(app?.seen ?? {}).map(([h, ms]) => [h, new Date(ms).toISOString()])))}`,
+    ]
+    navigator.clipboard.writeText(lines.join('\n'))
+    el('copy-diag').textContent = 'Copied'
+    setTimeout(() => { el('copy-diag').textContent = 'Copy details for a bug report' }, 1400)
   })
   el('save').addEventListener('click', async () => {
     const msg = el('msg')

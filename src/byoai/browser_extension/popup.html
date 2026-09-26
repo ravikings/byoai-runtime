@@ -53,6 +53,8 @@
     #trust, #accept { margin: 0 0 12px; }
     .msg { min-height: 16px; margin: 6px 0 0; font-size: 12px; }
     .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+    .addr { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+      background: var(--panel); font: 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mono { font: 11px/1.4 ui-monospace, monospace; word-break: break-all; margin: 4px 0 6px; }
   </style>
 </head>
@@ -83,18 +85,32 @@
   </p>
 
   <details>
-    <summary>Settings</summary>
+    <summary>Details</summary>
     <div class="body">
-      <label for="endpoint">Where Shield runs on this Mac</label>
+      <label>Shield address on this Mac</label>
       <div class="row">
-        <input type="text" id="endpoint" spellcheck="false" />
-        <button class="small" id="save">Save</button>
+        <code class="addr" id="addr"></code>
+        <button class="small" id="copy-addr">Copy</button>
       </div>
-      <p class="msg" id="msg"></p>
-      <label>Accept records only from this install</label>
+      <p class="help">Set by Shield. You only change it if you started Shield on a different port.
+        <a id="change-addr" href="#">Change address</a></p>
+      <div id="change-box" hidden>
+        <div class="row">
+          <input type="text" id="endpoint" spellcheck="false" aria-label="Shield address" />
+          <button class="small" id="save">Save</button>
+        </div>
+        <p class="msg" id="msg"></p>
+      </div>
+
+      <label>This install's id</label>
       <p class="mono" id="ext-id"></p>
       <button class="small" id="copy-id">Copy id</button>
-      <p class="help">Start Shield with <code>BYOAI_SHIELD_EXTENSION_IDS=&lt;id&gt;</code> to pin it.</p>
+      <p class="help">To accept records only from this install, start Shield with <code>BYOAI_SHIELD_EXTENSION_IDS=&lt;id&gt;</code>.</p>
+
+      <label>Something wrong?</label>
+      <button class="small" id="copy-diag">Copy details for a bug report</button>
+      <p class="help">Copies the version, the state above and when each app was last noted. It never includes anything you wrote.</p>
+      <p class="help" id="version"></p>
     </div>
   </details>
   <script src="popup.js"></script>
