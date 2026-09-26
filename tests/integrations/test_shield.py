@@ -893,3 +893,54 @@ def test_the_store_package_omits_the_dev_key_and_ships_what_the_manifest_names(t
     assert wanted <= names
     assert not any(n.endswith(".DS_Store") for n in names)
     assert "tabs" not in m["permissions"]
+
+
+def _run_launcher(block):
+    import subprocess, sys
+    code = (f"import sys; sys.modules[{block!r}] = None; "
+            "from byoai.integrations.shield_launcher import main; main()")
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
+
+def test_the_shield_command_says_how_to_install_a_missing_signing_library():
+    out = _run_launcher("cryptography")
+    assert out.returncode == 1
+    assert "byoai-runtime[shield]" in out.stderr and "Traceback" not in out.stderr
+
+
+def test_the_shield_command_does_not_hide_other_import_errors():
+    out = _run_launcher("byoai.recorder.merkle")
+    assert out.returncode != 0
+    assert "Traceback" in out.stderr and "byoai-runtime[shield]" not in out.stderr
+
+
+def test_importing_shield_without_the_signing_library_is_a_plain_import_error():
+    import subprocess, sys
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.modules['cryptography'] = None\n"
+         "try:\n    import byoai.integrations.shield\n"
+         "except ImportError as e:\n    print('ImportError'); raise SystemExit(0)\n"
+         "raise SystemExit('imported without raising')"],
+        capture_output=True, text=True)
+    assert out.returncode == 0 and "ImportError" in out.stdout      # a library import must not exit the host
+
+
+def test_the_shield_extra_exists_and_the_all_extra_includes_it():
+    import re
+    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+    assert re.search(r'^shield = \["cryptography', text, re.M)
+    assert "recorder,shield]" in text
+
+
+def test_the_extension_declares_icons_that_exist_at_the_stated_sizes():
+    import struct
+    root = Path(__file__).resolve().parents[2] / "src" / "byoai" / "browser_extension"
+    m = json.loads((root / "manifest.json").read_text())
+    assert set(m["icons"]) == {"16", "32", "48", "128"}          # the store needs a 128 icon
+    assert m["action"]["default_icon"] == m["icons"]
+    for size, rel in m["icons"].items():
+        raw = (root / rel).read_bytes()
+        assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+        width, height = struct.unpack(">II", raw[16:24])
+        assert (width, height) == (int(size), int(size))

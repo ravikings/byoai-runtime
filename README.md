@@ -260,7 +260,7 @@ See `examples/fastapi_app/` for a runnable app with events, caching, and fallbac
 Run an unauthenticated MCP surface plus its behavioral-capture sidecar:
 
 ```bash
-pip install 'byoai-runtime[mcp]' mitmproxy
+pip install --pre 'byoai-runtime[mcp,shield]' mitmproxy
 python examples/mcp_capture/server.py --http          # MCP over :8800/mcp
 python examples/mcp_capture/client.py                 # real session → ledger
 npm --prefix web install && npm --prefix web run build   # once, from a checkout
@@ -282,7 +282,7 @@ The demo's analyzer, seal chain, and UI backend are promoted into the package
 as `byoai.integrations.shield` with a console script (see `pyproject.toml`):
 
 ```bash
-pip install 'byoai-runtime[mcp]'   # includes the mcp extra
+pip install --pre 'byoai-runtime[shield]'   # Shield alone needs only this (it signs its record with `cryptography`)
 byoai-shield ./examples/mcp_capture/captures.jsonl --host 127.0.0.1 --port 17831
 byoai-shield --install-login-item   # start at login (macOS launchd, Linux systemd user unit, Windows Task Scheduler), low priority; --remove-login-item undoes it
 ```

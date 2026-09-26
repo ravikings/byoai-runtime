@@ -71,6 +71,12 @@ the recorder's shipped evidence; it never writes to a ledger.
 | `VITE_API_BASE` | build/runtime | `/v1/console` | Base path the console calls. Change only if the console API is mounted somewhere other than the proxy's `/v1/console`. |
 | `VITE_BYOAI_TENANT` | build time | `acme-prod` | Tenant the console lands on when a URL names none (`/` and `/console` redirect to `/console/{tenant}/fleet`). Baked in at build time, so a deployment serving one tenant should set it rather than rely on the placeholder default. |
 
+### Installing Shield
+
+`pip install --pre "byoai-runtime[shield]"` installs what `byoai-shield` needs on top of the base package
+(`cryptography`, used to sign the seal chain). Without it the command prints that line and exits, instead of a
+traceback. The `all` extra includes it.
+
 ### Shield extra origins (extension + dev server)
 
 | Variable | Where | Default | Meaning |
