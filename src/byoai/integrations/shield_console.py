@@ -149,6 +149,8 @@ class ShieldConsoleAPI:
             return self._json(200, self.findings(tenant))
         if route == "/fleet/coverage":
             return self._json(200, self.coverage(tenant, query))
+        if route == "/verdicts":
+            return self._json(200, self.verdicts(tenant, query))
         return self._json(404, {"error": "not found"})
 
     @staticmethod
@@ -586,4 +588,119 @@ class ShieldConsoleAPI:
                     "signature re-verified while this report was built."
                 ),
             },
+        }
+
+    # ------------------------------------------------------------------
+    # mandate — the verdict stream
+    # ------------------------------------------------------------------
+
+    def verdicts(self, tenant: str, query: dict[str, list[str]]) -> dict:
+        """The fleet verdict stream, local edition (spec §6.5).
+
+        The server-side stream reads sealed ``mandate_verdict`` events; on
+        this host the rules decide at capture time, inline, and what each
+        sealed interaction carries IS its verdict: blocked is `denied`, a
+        rule hit that still passed is `flagged`, everything else was
+        `allowed`. Enforcement comes from the live policy the same request
+        path reads (managed-locked included), so the posture banner cannot
+        disagree with what the proxy actually did.
+
+        The rows cover what the feed holds in memory — the most recent 400
+        interactions — which is the stream's honest reach; every older
+        verdict is still sealed in the ledger, just not listed here, and the
+        page says so in those terms rather than letting "showing N" imply a
+        complete history.
+        """
+        from byoai.integrations.shield import load_policy  # lazy: same module owns the feed
+
+        dev = self._device_state(query)
+        frm, to, edge = dev["frm"], dev["to"], dev["edge"]
+        policy = load_policy(self.cfg)
+        mode = policy.get("mode")
+        enforcement = "observe" if mode == "observe" else "enforce"
+
+        # Payload stamps are not seqs; a verdict is addressable by the chain
+        # height its seal took, which the in-memory window carries.
+        heights: dict[str, int] = {}
+        for e in self.feed.seals.entries:
+            iid = (e.get("payload") or {}).get("interaction")
+            if isinstance(iid, str) and iid:
+                heights[iid] = int(e["height"])
+
+        rows: list[dict] = []
+        allowed = flagged = denied = 0
+        for it in list(self.feed.items):          # newest first
+            if it.get("status") == "running":
+                continue
+            dt = _event_time({"date": it.get("date"), "ts": it.get("ts"),
+                              "surface": it.get("surface")})
+            if dt is None:
+                continue
+            when = dt.astimezone(timezone.utc)
+            if when < frm or when > edge:
+                continue
+            flags = it.get("flags") or []
+            if it.get("status") == "blocked":
+                verdict = "denied"
+                denied += 1
+                reason = (f"{flags[0]['tier'].upper()}:{flags[0]['rule']}" if flags
+                          else "policy verdict")
+            elif it.get("tier") in ("warn", "bad"):
+                verdict = "flagged"
+                flagged += 1
+                reason = f"{flags[0]['tier'].upper()}:{flags[0]['rule']}" if flags else None
+            else:
+                verdict = "allowed"
+                allowed += 1
+                reason = None
+            ident = it.get("identity") or {}
+            rows.append({
+                "device_id": dev["device_id"],
+                "seq": heights.get(it.get("id") or ""),
+                "ts": _iso(when),
+                "surface": it.get("surface") or "",
+                "tool": it.get("tool"),
+                "agent_id": ident.get("client_name"),
+                "verdict": verdict,
+                "reason": reason,
+                "chars": it.get("chars"),
+            })
+            if len(rows) >= 200:
+                break
+
+        # Denial latches: an agent retrying past a first denial is a
+        # different fact from a one-off. Grouped by surface+tool; the count
+        # is attempts AFTER the first denial, so a lone denial is not a
+        # latch. Newest-first rows mean the last row seen is the first in
+        # time.
+        by_key: dict[tuple[str, str | None], dict] = {}
+        for row in rows:
+            if row["verdict"] != "denied":
+                continue
+            key = (row["surface"], row["tool"])
+            g = by_key.get(key)
+            if g is None:
+                by_key[key] = {"device_id": row["device_id"], "surface": row["surface"],
+                               "tool": row["tool"], "attempts": 0,
+                               "first_seq": row["seq"]}
+            else:
+                g["attempts"] += 1
+                g["first_seq"] = row["seq"] if row["seq"] is not None else g["first_seq"]
+        latches = sorted((g for g in by_key.values() if g["attempts"] > 0),
+                         key=lambda g: -g["attempts"])[:10]
+
+        return {
+            "tenant": tenant,
+            "window": {"from": _iso(frm), "to": _iso(to)},
+            "inclusion": {"devices_included": 1 if dev["liveness"] == "reporting" else 0,
+                          "devices_enrolled": 1},
+            "rollup": {"allowed": allowed, "flagged": flagged, "denied": denied},
+            "enforcement": enforcement,
+            # Observe mode's entire number: actions that WOULD have been
+            # stopped. Meaningless (null, not 0) under an enforcing mode,
+            # where flagged actions did pass with their flags on record.
+            "observe_flagged": flagged if enforcement == "observe" else None,
+            "latches": latches,
+            "verdicts": rows,
+            "next_cursor": None,
         }

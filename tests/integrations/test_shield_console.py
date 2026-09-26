@@ -347,3 +347,72 @@ def test_the_real_server_answers_the_fleet_routes(tmp_path):
         raise AssertionError("a remote Host must not read the local fleet")
     except urllib.error.HTTPError as exc:
         assert exc.code == 403
+
+
+# ------------------------------------------------------- the verdict stream
+
+
+def _seed_verdict_rows(base):
+    """7 plain sends, 1 denied, 1 flagged (legacy row with PII in its prompt)."""
+    from datetime import timedelta as _td
+    out = []
+    for i in range(7):
+        out.append({"wall_clock": (base + _td(seconds=i)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "kind": "desktop.chat.request", "app": "claude", "chars": 20 + i})
+    out.append({"wall_clock": (base + _td(seconds=7)).strftime("%Y-%m-%d %H:%M:%S"),
+                "kind": "desktop.verdict.denied", "app": "claude", "verdict": "blocked",
+                "chars": 12})
+    out.append({"wall_clock": (base + _td(seconds=8)).strftime("%Y-%m-%d %H:%M:%S"),
+                "kind": "desktop.chat.request", "target": "claude.ai",
+                "prompt": "forward this to j.rivers@gmail.com please"})
+    return out
+
+
+def test_verdicts_stream_counts_local_decisions(tmp_path):
+    from datetime import timedelta as _td
+    base = datetime.now() - _td(minutes=6)
+    api = make_api(make_cfg(tmp_path), seed=_seed_verdict_rows(base))
+    code, stream = get(api, "/verdicts")
+    assert code == 200
+    assert stream["rollup"] == {"allowed": 7, "flagged": 1, "denied": 1}
+    assert stream["enforcement"] == "enforce"
+    # The would-have-been-stopped counter is an observe-mode question; under
+    # enforcement it is null, not a 0 claiming the check ran and found none.
+    assert stream["observe_flagged"] is None
+    assert stream["latches"] == []
+    assert len(stream["verdicts"]) == 9
+    row = next(v for v in stream["verdicts"] if v["verdict"] == "denied")
+    assert row["device_id"] == stream["verdicts"][0]["device_id"]
+    assert row["seq"] is not None and row["seq"] >= 1
+    assert row["reason"] is not None
+
+
+def test_verdicts_latch_counts_repeats_after_the_first_denial(tmp_path):
+    from datetime import timedelta as _td
+    base = datetime.now() - _td(minutes=6)
+    rows_ = _seed_verdict_rows(base)
+    rows_.append({"wall_clock": (base + _td(seconds=9)).strftime("%Y-%m-%d %H:%M:%S"),
+                  "kind": "desktop.verdict.denied", "app": "claude",
+                  "verdict": "blocked", "chars": 30})
+    api = make_api(make_cfg(tmp_path), seed=rows_)
+    _, stream = get(api, "/verdicts")
+    assert stream["rollup"]["denied"] == 2
+    assert len(stream["latches"]) == 1
+    latch = stream["latches"][0]
+    assert latch["attempts"] == 1  # one repeat after the first denial
+    assert latch["surface"].endswith("desktop")
+
+
+def test_verdicts_observe_mode_reports_the_would_have_been_stopped_count(tmp_path):
+    from datetime import timedelta as _td
+
+    from byoai.integrations.shield import default_policy, save_policy
+    cfg = make_cfg(tmp_path)
+    pol = default_policy()
+    pol["mode"] = "observe"
+    save_policy(cfg, pol)
+    base = datetime.now() - _td(minutes=6)
+    api = make_api(cfg, seed=_seed_verdict_rows(base))
+    _, stream = get(api, "/verdicts")
+    assert stream["enforcement"] == "observe"
+    assert stream["observe_flagged"] == stream["rollup"]["flagged"] == 1
