@@ -169,6 +169,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sealed entry is never absent" — the two absences are different facts and
   the endpoint names which.
 
+- **Runtime (proxy) — `/console/<tenant>/runtime` on the cache host, spec
+  §6.6.** The last section of the rail that reads a different API: the
+  proxy's own `/v1/stats*` and `/v1/toggle`, fetched outside the fleet
+  contract but through the same schema-validating client (a `base` option in
+  `apiFetch`, not a second fetch stack with weaker rules). Two blocks side
+  by side: *Estimated* wears the API's own "do not cite" warning
+  permanently — the methodology string renders as first-class UI, never a
+  tooltip — and *Tokenizer-verified* shows the durable totals with the
+  percentage muted and caveated inline while `sample_count` is too small to
+  support a rate. History is small multiples per model (one point per
+  sampled request, oldest → newest), because variance must be visible before
+  an aggregate is trusted; `retention_days: null` reads "all time — no prune
+  has run in this process", never zero. The optimizer toggle is optimistic
+  with explicit rollback and a stated failure. And because three hosts serve
+  one build, the screen classifies a 404 as a fact about the host: Shield
+  and the org server answer "Not the proxy" honestly instead of rendering a
+  wall of zeros that would read as a quiet proxy.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added

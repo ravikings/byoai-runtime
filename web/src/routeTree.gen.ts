@@ -19,6 +19,7 @@ import { Route as ConsoleTenantEvidenceRouteImport } from './routes/console.$ten
 import { Route as ConsoleTenantFleetRouteImport } from './routes/console.$tenant.fleet'
 import { Route as ConsoleTenantLedgerRouteImport } from './routes/console.$tenant.ledger'
 import { Route as ConsoleTenantMandateRouteImport } from './routes/console.$tenant.mandate'
+import { Route as ConsoleTenantRuntimeRouteImport } from './routes/console.$tenant.runtime'
 import { Route as ConsoleTenantShieldRouteImport } from './routes/console.$tenant.shield'
 import { Route as ConsoleTenantShieldServerRouteImport } from './routes/console.$tenant.shield-server'
 import { Route as ConsoleTenantEvidenceFindingsRouteImport } from './routes/console.$tenant.evidence.findings'
@@ -79,6 +80,11 @@ const ConsoleTenantLedgerRoute = ConsoleTenantLedgerRouteImport.update({
 const ConsoleTenantMandateRoute = ConsoleTenantMandateRouteImport.update({
   id: '/mandate',
   path: '/mandate',
+  getParentRoute: () => ConsoleTenantRoute,
+} as any)
+const ConsoleTenantRuntimeRoute = ConsoleTenantRuntimeRouteImport.update({
+  id: '/runtime',
+  path: '/runtime',
   getParentRoute: () => ConsoleTenantRoute,
 } as any)
 const ConsoleTenantShieldRoute = ConsoleTenantShieldRouteImport.update({
@@ -156,6 +162,7 @@ export interface FileRoutesByFullPath {
   '/console/$tenant/fleet': typeof ConsoleTenantFleetRouteWithChildren
   '/console/$tenant/ledger': typeof ConsoleTenantLedgerRoute
   '/console/$tenant/mandate': typeof ConsoleTenantMandateRouteWithChildren
+  '/console/$tenant/runtime': typeof ConsoleTenantRuntimeRoute
   '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
@@ -177,6 +184,7 @@ export interface FileRoutesByTo {
   '/console/$tenant/evidence': typeof ConsoleTenantEvidenceRouteWithChildren
   '/console/$tenant/ledger': typeof ConsoleTenantLedgerRoute
   '/console/$tenant/mandate': typeof ConsoleTenantMandateRouteWithChildren
+  '/console/$tenant/runtime': typeof ConsoleTenantRuntimeRoute
   '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant': typeof ConsoleTenantIndexRoute
@@ -201,6 +209,7 @@ export interface FileRoutesById {
   '/console/$tenant/fleet': typeof ConsoleTenantFleetRouteWithChildren
   '/console/$tenant/ledger': typeof ConsoleTenantLedgerRoute
   '/console/$tenant/mandate': typeof ConsoleTenantMandateRouteWithChildren
+  '/console/$tenant/runtime': typeof ConsoleTenantRuntimeRoute
   '/console/$tenant/shield': typeof ConsoleTenantShieldRoute
   '/console/$tenant/shield-server': typeof ConsoleTenantShieldServerRouteWithChildren
   '/console/$tenant/': typeof ConsoleTenantIndexRoute
@@ -226,6 +235,7 @@ export interface FileRouteTypes {
     | '/console/$tenant/fleet'
     | '/console/$tenant/ledger'
     | '/console/$tenant/mandate'
+    | '/console/$tenant/runtime'
     | '/console/$tenant/shield'
     | '/console/$tenant/shield-server'
     | '/console/$tenant/'
@@ -247,6 +257,7 @@ export interface FileRouteTypes {
     | '/console/$tenant/evidence'
     | '/console/$tenant/ledger'
     | '/console/$tenant/mandate'
+    | '/console/$tenant/runtime'
     | '/console/$tenant/shield'
     | '/console/$tenant/shield-server'
     | '/console/$tenant'
@@ -270,6 +281,7 @@ export interface FileRouteTypes {
     | '/console/$tenant/fleet'
     | '/console/$tenant/ledger'
     | '/console/$tenant/mandate'
+    | '/console/$tenant/runtime'
     | '/console/$tenant/shield'
     | '/console/$tenant/shield-server'
     | '/console/$tenant/'
@@ -361,6 +373,13 @@ declare module '@tanstack/react-router' {
       path: '/mandate'
       fullPath: '/console/$tenant/mandate'
       preLoaderRoute: typeof ConsoleTenantMandateRouteImport
+      parentRoute: typeof ConsoleTenantRoute
+    }
+    '/console/$tenant/runtime': {
+      id: '/console/$tenant/runtime'
+      path: '/runtime'
+      fullPath: '/console/$tenant/runtime'
+      preLoaderRoute: typeof ConsoleTenantRuntimeRouteImport
       parentRoute: typeof ConsoleTenantRoute
     }
     '/console/$tenant/shield': {
@@ -507,6 +526,7 @@ interface ConsoleTenantRouteChildren {
   ConsoleTenantFleetRoute: typeof ConsoleTenantFleetRouteWithChildren
   ConsoleTenantLedgerRoute: typeof ConsoleTenantLedgerRoute
   ConsoleTenantMandateRoute: typeof ConsoleTenantMandateRouteWithChildren
+  ConsoleTenantRuntimeRoute: typeof ConsoleTenantRuntimeRoute
   ConsoleTenantShieldRoute: typeof ConsoleTenantShieldRoute
   ConsoleTenantShieldServerRoute: typeof ConsoleTenantShieldServerRouteWithChildren
   ConsoleTenantIndexRoute: typeof ConsoleTenantIndexRoute
@@ -519,6 +539,7 @@ const ConsoleTenantRouteChildren: ConsoleTenantRouteChildren = {
   ConsoleTenantFleetRoute: ConsoleTenantFleetRouteWithChildren,
   ConsoleTenantLedgerRoute: ConsoleTenantLedgerRoute,
   ConsoleTenantMandateRoute: ConsoleTenantMandateRouteWithChildren,
+  ConsoleTenantRuntimeRoute: ConsoleTenantRuntimeRoute,
   ConsoleTenantShieldRoute: ConsoleTenantShieldRoute,
   ConsoleTenantShieldServerRoute: ConsoleTenantShieldServerRouteWithChildren,
   ConsoleTenantIndexRoute: ConsoleTenantIndexRoute,

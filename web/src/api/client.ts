@@ -148,10 +148,15 @@ export interface RequestOptions {
   readonly signal?: AbortSignal
   readonly method?: 'GET' | 'POST'
   readonly body?: unknown
+  /** Override the console base for endpoints that are not part of the
+   *  `/v1/console` fleet contract — the proxy's runtime API lives at the
+   *  root `/v1`. Same validation, same error kinds; only the base differs. */
+  readonly base?: string
 }
 
 function buildUrl(path: string, options: RequestOptions): string {
-  const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE
+  const chosen = options.base ?? API_BASE
+  const base = chosen.endsWith('/') ? chosen.slice(0, -1) : chosen
   const suffix = path.startsWith('/') ? path : `/${path}`
   const params = options.scope
     ? scopeToParams(options.scope, options.query)
