@@ -149,6 +149,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says "observing" or "enforcing" from what the stream read, and the empty
   window is silence, not a clean pass.
 
+- **Ledger and sealed-entry detail — `GET /v1/console/ledger`,
+  `GET /v1/console/entries/<device_id>/<seq>` and their screens.** The rail's
+  Ledger opens the sealed record itself, newest-first and cursor-paginated by
+  chain height (the cursor is the oldest seq shown, so an entry sealed
+  mid-browse cannot shift the page under the reader). `head()` and
+  `missing_ranges()` are computed by the read that answers the request — a
+  contiguous ledger is a result, not a stored claim, and the off-scope gap
+  banner can only stay silent because the walk that just ran proved there is
+  nothing to show. `sessions`/`trajectories` answer `null` on this host: they
+  are ship-side rollups a single Mac does not compute, and an empty list
+  would claim an answer it cannot give. Every `device·seq` link across the
+  console (findings, register, verdict stream, latches) now lands on the
+  entry page: the payload verbatim — no message text was ever sealed, the
+  fingerprint keyed to the device — its Merkle fold path with sibling steps,
+  the signed checkpoint's coverage of that height, and the portable
+  offline-verifying receipt at `/api/receipt/<seal>`. A wrong device says
+  "this host holds no ledger for that device"; a seq beyond the head says "a
+  sealed entry is never absent" — the two absences are different facts and
+  the endpoint names which.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added

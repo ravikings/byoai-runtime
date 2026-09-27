@@ -53,6 +53,7 @@ export function stamp(iso: string): string {
  *  route tree for links to screens that may not be built yet. */
 export const href = {
   fleet: (tenant: string) => `/console/${tenant}/fleet`,
+  ledger: (tenant: string) => `/console/${tenant}/ledger`,
   coverage: (tenant: string) => `/console/${tenant}/fleet/coverage`,
   devices: (tenant: string) => `/console/${tenant}/fleet/devices`,
   device: (tenant: string, deviceId: string) =>

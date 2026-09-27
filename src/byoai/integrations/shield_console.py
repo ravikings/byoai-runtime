@@ -129,6 +129,7 @@ class ShieldConsoleAPI:
         self.feed = feed
         self.publisher = publisher
         self._rows: list[tuple[int, datetime | None]] = []
+        self._full: list[tuple[int, datetime | None, dict]] = []
         self._scan_sig: tuple = (0, 0)
 
     # ------------------------------------------------------------------
@@ -139,7 +140,7 @@ class ShieldConsoleAPI:
         """Answer ``GET /v1/console/...``; 404 JSON for paths there is not."""
         route = path[len("/v1/console"):] if path.startswith("/v1/console") else path
         tenant = (query.get("tenant") or [""])[0]
-        if not tenant:
+        if not tenant and not route.startswith("/entries/"):
             return self._json(400, {"error": "tenant is required"})
         if route == "/fleet":
             return self._json(200, self.fleet_summary(tenant, query))
@@ -151,6 +152,13 @@ class ShieldConsoleAPI:
             return self._json(200, self.coverage(tenant, query))
         if route == "/verdicts":
             return self._json(200, self.verdicts(tenant, query))
+        if route == "/ledger":
+            return self._json(200, self.ledger(tenant, query))
+        if route.startswith("/entries/"):
+            parts = route[len("/entries/"):].split("/")
+            if len(parts) == 2:
+                return self.entry(tenant, parts[0], parts[1])
+            return self._json(404, {"error": "expected /entries/<device_id>/<seq>"})
         return self._json(404, {"error": "not found"})
 
     @staticmethod
@@ -161,11 +169,11 @@ class ShieldConsoleAPI:
     # local facts
     # ------------------------------------------------------------------
 
-    def _scan(self) -> list[tuple[int, datetime | None]]:
-        """``(height, sealed-at)`` for every entry in the chain log, oldest
-        first. Heights are LOCAL chain heights (1..len(leaves)) — the same
-        space the published checkpoint heights live in, which is what makes
-        the ship backlog a plain subtraction."""
+    def _scan(self) -> list[tuple[int, datetime | None, dict]]:
+        """``(height, sealed-at, payload)`` for every entry in the chain log,
+        oldest first. Heights are LOCAL chain heights (1..len(leaves)) — the
+        same space the published checkpoint heights live in, which is what
+        makes the ship backlog a plain subtraction."""
         seals = self.feed.seals
         try:
             st = seals.log_path.stat()
@@ -173,14 +181,16 @@ class ShieldConsoleAPI:
         except OSError:
             sig = (0, 0)
         if sig != self._scan_sig:
-            rows: list[tuple[int, datetime | None]] = []
+            rows: list[tuple[int, datetime | None, dict]] = []
             for entry, _problem in seals._scan_log():
                 if entry is None:
                     break  # a problem ends the scan; incidents record the why
-                rows.append((int(entry["height"]), _event_time(entry.get("payload") or {})))
-            self._rows = rows
+                payload = entry.get("payload") or {}
+                rows.append((int(entry["height"]), _event_time(payload), payload))
+            self._rows = [(h, dt) for h, dt, _p in rows]
+            self._full = rows
             self._scan_sig = sig
-        return self._rows
+        return self._full
 
     def _device_state(self, query: dict[str, list[str]]) -> dict[str, Any]:
         """Everything the four endpoints share, computed once per request."""
@@ -194,7 +204,7 @@ class ShieldConsoleAPI:
         # Payload stamps can arrive out of order (a tool result reseals the
         # older call it closes), so the newest event is the max over the
         # recent tail, not simply the last row's stamp.
-        for _h, dt in reversed(rows[-20:]):
+        for _h, dt, _p in reversed(rows[-20:]):
             if dt is not None and (last_dt is None or dt > last_dt):
                 last_dt = dt
 
@@ -237,7 +247,7 @@ class ShieldConsoleAPI:
             # local record actually has — and a chain that has never sealed
             # falls back to the log file's birth (which normal operation
             # never replaces).
-            "enrolled_at": (next((dt for _h, dt in rows if dt is not None), None)
+            "enrolled_at": (next((dt for _h, dt, _p in rows if dt is not None), None)
                             or _file_birth(seals.log_path)),
             "connected": bool(pub.get("connected")), "pub": pub,
         }
@@ -268,7 +278,7 @@ class ShieldConsoleAPI:
         height = int(dev["chain"].get("entries") or 0)
         backlog = max(0, height - last_height)
         oldest = None
-        for row_height, dt in dev["rows"]:
+        for row_height, dt, _p in dev["rows"]:
             if row_height > last_height and dt is not None:
                 oldest = _iso(dt)
                 break
@@ -282,7 +292,7 @@ class ShieldConsoleAPI:
         frm, to, edge = dev["frm"], dev["to"], dev["edge"]
         minutes = max(1, int((to - frm).total_seconds() // 60))
         buckets = [0] * minutes
-        for _height, dt in dev["rows"]:
+        for _height, dt, _p in dev["rows"]:
             if dt is None:
                 continue
             when = dt.astimezone(timezone.utc)
@@ -441,7 +451,7 @@ class ShieldConsoleAPI:
             },
             "ingest": {
                 "entries_received": sum(
-                    1 for _h, dt in dev["rows"]
+                    1 for _h, dt, _p in dev["rows"]
                     if dt is not None and frm <= dt.astimezone(timezone.utc) <= dev["edge"]
                 ),
                 "backlog_entries": backlog,
@@ -704,3 +714,159 @@ class ShieldConsoleAPI:
             "verdicts": rows,
             "next_cursor": None,
         }
+
+    # ------------------------------------------------------------------
+    # ledger — the sealed record itself
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _kind_of(payload: dict) -> str:
+        """The kind, derived from the shape of the seal — not a stored
+        field. The seal payload records what happened by structure (a
+        verdict block is a mandate decision, an identity is an MCP tool
+        row, the rest is a message); a fleet server reads kind off the
+        wire, this host reads it off the record."""
+        if payload.get("verdict") or payload.get("status") == "blocked":
+            return "mandate_verdict"
+        if payload.get("identity"):
+            return "tool_use"
+        return "message"
+
+    def _entry_row(self, dev: dict, height: int, dt: datetime | None,
+                   payload: dict, seal: str | None = None) -> dict:
+        return {
+            "device_id": dev["device_id"],
+            "seq": height,
+            "ts": _iso(dt) if dt else None,
+            "kind": self._kind_of(payload),
+            "surface": payload.get("surface") or "",
+            "tool": payload.get("tool"),
+            "agent_id": (payload.get("identity") or {}).get("client_name"),
+            "status": payload.get("status"),
+            "verdict": payload.get("verdict"),
+            "flags": list(payload.get("flags") or []),
+            "chars": payload.get("chars"),
+            "seal": seal or "",
+        }
+
+    def ledger(self, tenant: str, query: dict[str, list[str]]) -> dict:
+        """The sealed ledger, newest first, cursor-paginated (spec §6.2 at
+        fleet altitude; this host's fleet is its own chain).
+
+        Two things this answer gets right by construction rather than by
+        promise: the sequence has no gaps (heights run 1..n and ``missing_ranges``
+        reports the contiguity the scan just proved, it is not a stored
+        claim), and the entries cover the whole chain, not the feed's
+        in-memory window — the ledger is deeper than every other screen
+        because it reads the log, not the deque.
+        """
+        dev = self._device_state(query)
+        frm, to, edge = dev["frm"], dev["to"], dev["edge"]
+        try:
+            limit = max(1, min(int((query.get("limit") or ["100"])[0]), 500))
+        except ValueError:
+            limit = 100
+        try:
+            raw_before = (query.get("before") or [""])[0]
+            before = int(raw_before) if raw_before else None
+        except ValueError:
+            before = None
+
+        # missing_ranges is earned, not asserted: heights are checked
+        # contiguous over the scanned log at read time; a break would have
+        # ended the scan and surfaced as a finding, and this states which
+        # case actually holds.
+        heights = [h for h, _dt, _p in dev["rows"]]
+        missing = [{"from": a + 1, "to": b - 1}
+                   for a, b in zip(heights, heights[1:], strict=False) if b > a + 1]
+
+        seal_by_height: dict[int, str] = {}
+        for e in self.feed.seals.entries:
+            seal_by_height[int(e["height"])] = str(e["seal"])
+
+        entries: list[dict] = []
+        oldest: int | None = None
+        for h, dt, payload in reversed(dev["rows"]):
+            if before is not None and h >= before:
+                continue
+            when = dt.astimezone(timezone.utc) if dt else None
+            if when is not None and (when < frm or when > edge):
+                continue
+            row = self._entry_row(dev, h, dt, payload, seal_by_height.get(h))
+            entries.append(row)
+            oldest = h
+            if len(entries) >= limit:
+                break
+        # "more" means the log still holds in-window rows under the oldest
+        # one shown — counted here rather than guessed from the page being
+        # full, so the pager never offers an empty page.
+        has_more = oldest is not None and any(
+            h < oldest and (dt is None or frm <= dt.astimezone(timezone.utc) <= edge)
+            for h, dt, _p in dev["rows"]
+            if before is None or h < before
+        )
+        return {
+            "tenant": tenant,
+            "window": {"from": _iso(frm), "to": _iso(to)},
+            "inclusion": {"devices_included": 1 if dev["liveness"] == "reporting" else 0,
+                          "devices_enrolled": 1},
+            "head": {
+                "height": int(dev["chain"].get("entries") or 0),
+                "sealed_total": dev["total"],
+                "root": dev["chain"].get("merkle_root"),
+                "as_of": _iso(dev["now"]),
+            },
+            "missing_ranges": missing,
+            # Sessions and trajectories are ship-side rollups this host does
+            # not compute. Null (not present, not empty) is the contract's
+            # way of saying "this host cannot answer that".
+            "sessions": None,
+            "trajectories": None,
+            "entries": entries,
+            "next_cursor": str(entries[-1]["seq"]) if has_more and entries else None,
+        }
+
+    def entry(self, tenant: str, device_id: str, seq_raw: str) -> tuple[int, bytes]:
+        """One sealed entry addressed by device AND seq (§2's rule).
+
+        Returns the stored payload verbatim plus the Merkle path that places
+        it under the checkpoint — the offline-verify story, made linkable at
+        the row level. ``tenant`` is not a filter here: a device's chain is
+        its own, whatever organisation it later ships to."""
+        try:
+            seq = int(seq_raw)
+        except ValueError:
+            return self._json(404, {"error": "seq must be an integer"})
+        dev = self._device_state({})
+        if device_id != dev["device_id"]:
+            # A wrong device here is not "this device has no such seq"; it is
+            # "this host holds no ledger for that device". Different answers,
+            # and the page shows this one verbatim rather than 404-ing flat.
+            return self._json(404, {"error": (
+                "this Shield holds no ledger for that device — its chain is "
+                f"one device, and it is not {device_id}")})
+        seals = self.feed.seals
+        for h, dt, payload in reversed(self._scan()):
+            if h != seq:
+                continue
+            entry_seal = None
+            for e in seals.entries:
+                if int(e["height"]) == seq:
+                    entry_seal = str(e["seal"])
+                    break
+            proof = seals.proof_for(entry_seal) if entry_seal else None
+            cp = seals.checkpoint or None
+            covered = bool(cp and int(cp.get("height") or 0) >= seq)
+            return self._json(200, {
+                "entry": self._entry_row(dev, h, dt, payload, entry_seal),
+                "payload": payload,
+                "proof": proof,
+                "checkpoint": None if cp is None else {
+                    "root": cp.get("root_hex"), "height": cp.get("height"),
+                    "device_id": cp.get("device_id"), "ts": cp.get("ts"),
+                    "covers_this_entry": covered,
+                },
+            })
+        return self._json(404, {"error": (
+            f"no entry at {device_id} · {seq} — this chain has "
+            f"{len(self._scan())} entries, and a sealed entry is never absent")})

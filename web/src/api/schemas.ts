@@ -353,6 +353,70 @@ export const VerdictStream = z.object({
 export type VerdictStream = z.infer<typeof VerdictStream>
 
 /* ------------------------------------------------------------------ *
+ * Ledger — the sealed record, §6.2/6.3
+ * ------------------------------------------------------------------ */
+
+export const LedgerEntry = z.object({
+  device_id: z.string(),
+  seq: z.number().int().nonnegative(),
+  ts: z.string().nullable(),
+  kind: z.enum(['message', 'tool_use', 'mandate_verdict']),
+  surface: z.string(),
+  tool: z.string().nullable(),
+  agent_id: z.string().nullable(),
+  status: z.string().nullable(),
+  verdict: z.string().nullable(),
+  flags: z.array(z.string()),
+  chars: z.number().int().nullable(),
+  seal: z.string(),
+})
+export type LedgerEntry = z.infer<typeof LedgerEntry>
+
+export const LedgerPage = z.object({
+  tenant: z.string(),
+  window: z.object({ from: z.string(), to: z.string() }),
+  inclusion: Inclusion,
+  head: z.object({
+    height: z.number().int().nonnegative(),
+    sealed_total: z.number().int().nonnegative(),
+    root: z.string().nullable(),
+    as_of: z.string(),
+  }),
+  /** Gaps in an append-only ledger — the single most alarming thing this UI
+   *  can show, so it is computed at read time, not a stored assertion. */
+  missing_ranges: z.array(z.object({ from: z.number().int(), to: z.number().int() })),
+  /** Ship-side rollups. Null means "this host does not compute it" — distinct
+   *  from an empty list, which would mean "computed, none found". The ledger
+   *  on a single Mac is the chain itself, not a session/trajectory index. */
+  sessions: z.array(z.unknown()).nullable(),
+  trajectories: z.array(z.unknown()).nullable(),
+  entries: z.array(LedgerEntry),
+  next_cursor: z.string().nullable(),
+})
+export type LedgerPage = z.infer<typeof LedgerPage>
+
+export const EntryDetail = z.object({
+  entry: LedgerEntry,
+  /** The sealed payload, verbatim — never carrying message text unless the
+   *  admin opted into redacted previews. */
+  payload: z.record(z.unknown()),
+  proof: z.object({
+    leaf_index: z.number().int(),
+    leaf_hash: z.string(),
+    steps: z.array(z.object({ sibling: z.string(), side: z.string() })),
+    root_hex: z.string(),
+  }).nullable(),
+  checkpoint: z.object({
+    root: z.string().nullable(),
+    height: z.number().int(),
+    device_id: z.string(),
+    ts: z.string().nullable(),
+    covers_this_entry: z.boolean(),
+  }).nullable(),
+})
+export type EntryDetail = z.infer<typeof EntryDetail>
+
+/* ------------------------------------------------------------------ *
  * Runtime (proxy) — existing endpoints, §1.1
  * ------------------------------------------------------------------ */
 

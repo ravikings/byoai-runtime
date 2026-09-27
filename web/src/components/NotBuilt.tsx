@@ -18,13 +18,13 @@ export function NotBuilt({ path, tenant }: { path: string; tenant: string }) {
         <h3 className="label">Requested</h3>
         <p className="mono" style={{ margin: '0 0 var(--s3)' }}>{path}</p>
         <p className="muted" style={{ margin: 0 }}>
-          The fleet overview, the coverage report, the devices register, the
-          findings list and the mandate verdict stream are the screens built so
-          far. The remaining sections — Ledger, Runtime and the
+          Fleet overview, coverage report, devices register, findings list,
+          mandate verdict stream, the ledger and the sealed-entry detail are
+          the screens built so far. The remaining sections — Runtime and the
           verify-job surfaces —
           are designed (see <span className="mono">internal_doc/console_design/</span>) and
           specified in <span className="mono">console_ui_spec.md</span> §6, and land on the
-          same shell and data layer as these five.
+          same shell and data layer as these.
         </p>
       </div>
       {/* Absolute, tenant-qualified. A relative href resolves against the

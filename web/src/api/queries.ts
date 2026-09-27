@@ -18,8 +18,10 @@ import { apiFetch, scopeKey } from './client'
 import {
   CoverageReport,
   DeviceList,
+  EntryDetail,
   FindingList,
   FleetSummary,
+  LedgerPage,
   VerdictStream,
   type Scope,
 } from './schemas'
@@ -85,6 +87,7 @@ export const consoleKeys = {
   coverage: (scope: Scope) => ['console', 'fleet', 'coverage', scopeKey(scope)] as const,
   findings: (scope: Scope) => ['console', 'fleet', 'findings', scopeKey(scope)] as const,
   verdicts: (scope: Scope) => ['console', 'verdicts', scopeKey(scope)] as const,
+  ledger: (scope: Scope) => ['console', 'ledger', scopeKey(scope)] as const,
 } as const
 
 export function useFleetSummary(scope: Scope): ConsoleQuery<FleetSummary> {
@@ -136,6 +139,45 @@ export function useVerdicts(scope: Scope): ConsoleQuery<VerdictStreamPayload> {
       queryKey: consoleKeys.verdicts(scope),
       queryFn: ({ signal }) => apiFetch('/verdicts', VerdictStream, { scope, signal }),
       ...CADENCE.verdicts,
+    }),
+  )
+}
+
+export type LedgerPayload = import('zod').z.infer<typeof LedgerPage>
+export type EntryDetailPayload = import('zod').z.infer<typeof EntryDetail>
+
+/**
+ * The ledger's window is deeper than every other screen: it reads the
+ * sealed log, not the in-memory feed, so "showing 40 of 4,812" is a page,
+ * not a limit the product has on knowledge. The cursor is the oldest seq
+ * rendered — a chain height, stable across refetches, so an entry sealed
+ * mid-browse cannot shift the page under the reader.
+ */
+export function useLedger(scope: Scope, cursor: string | null): ConsoleQuery<LedgerPayload> {
+  return wrap(
+    useQuery({
+      queryKey: [...consoleKeys.ledger(scope), cursor ?? ''] as const,
+      queryFn: ({ signal }) =>
+        apiFetch('/ledger', LedgerPage, {
+          scope,
+          signal,
+          query: cursor ? { before: cursor } : undefined,
+        }),
+      ...CADENCE.fleet,
+    }),
+  )
+}
+
+/** A seq is an address only beside its device — the URL, the query key and
+ *  the endpoint all say both, and no combination of them can be guessed. */
+export function useEntry(tenant: string, deviceId: string, seq: string): ConsoleQuery<EntryDetailPayload> {
+  return wrap(
+    useQuery({
+      queryKey: ['console', 'entry', tenant, deviceId, seq] as const,
+      queryFn: ({ signal }) =>
+        apiFetch(`/entries/${encodeURIComponent(deviceId)}/${encodeURIComponent(seq)}`,
+          EntryDetail, { scope: { tenant }, signal }),
+      staleTime: 300_000,
     }),
   )
 }
