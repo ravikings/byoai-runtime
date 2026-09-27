@@ -739,6 +739,15 @@ uses Redis for session/dedup state if `REDIS_URL` is set (falls back to an
 in-process store otherwise). Full env var reference in
 **[CONFIGURATION.md](CONFIGURATION.md#agent-context-cache--byoai-agent-context-cache)**.
 
+The console's **Runtime** section (`/console/<tenant>/runtime` on :8787) is
+this process's screen: the estimate and tokenizer-verified savings blocks
+(`/v1/stats`, `/v1/stats/permanent`) — the estimate wearing its permanent
+do-not-cite chip — the per-sample verified history (`/v1/stats/history`),
+durable usage totals, and the live optimizer toggle (`POST /v1/toggle`).
+Hosts that serve the same console without proxying model traffic (Shield,
+the org server) answer 404 for `/v1/stats*`, and the Runtime screen says so
+plainly instead of showing zeros.
+
 ### Reaching the proxy from a remote client (ngrok)
 
 `localhost` only works for a client on the *same* machine. To route a remote

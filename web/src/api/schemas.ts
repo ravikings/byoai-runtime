@@ -434,3 +434,40 @@ export const PermanentStats = z.object({
   retention_days: z.number().int().nullable(),
   methodology: z.string(),
 })
+export type PermanentStats = z.infer<typeof PermanentStats>
+
+/**
+ * The live Redis estimate (`/v1/stats`). Every number here is a character
+ * heuristic (`len(json) // 4`), not a tokenizer reading; the API's own
+ * methodology string says so, and the console renders that warning permanently
+ * beside the figures. Kept because it updates in real time and shows whether
+ * the optimizer is even on; never citable.
+ */
+export const EstimatedStats = z.object({
+  optimizer_enabled: z.boolean(),
+  tokens_saved: z.number().int(),
+  tokens_original: z.number().int(),
+  tokens_sent: z.number().int(),
+  savings_percentage: z.string(),
+  methodology: z.string(),
+})
+export type EstimatedStats = z.infer<typeof EstimatedStats>
+
+/** One tokenizer-verified sample: the pre- and post-optimization token counts
+ *  for a single real request, measured by Anthropic's count_tokens. Variance
+ *  across these is the point — an aggregate over a handful is not a rate. */
+export const BenchmarkSample = z.object({
+  ts: z.number(),
+  session_id: z.string(),
+  model: z.string().nullable(),
+  real_tokens_original: z.number().int(),
+  real_tokens_sent: z.number().int(),
+  real_tokens_saved: z.number().int(),
+})
+export type BenchmarkSample = z.infer<typeof BenchmarkSample>
+
+export const StatsHistory = z.object({
+  count: z.number().int(),
+  samples: z.array(BenchmarkSample),
+})
+export type StatsHistory = z.infer<typeof StatsHistory>
