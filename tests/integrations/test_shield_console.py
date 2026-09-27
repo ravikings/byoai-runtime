@@ -416,3 +416,77 @@ def test_verdicts_observe_mode_reports_the_would_have_been_stopped_count(tmp_pat
     _, stream = get(api, "/verdicts")
     assert stream["enforcement"] == "observe"
     assert stream["observe_flagged"] == stream["rollup"]["flagged"] == 1
+
+
+# ------------------------------------------------------------ the ledger
+
+
+def test_ledger_is_the_whole_chain_not_the_feed_window(tmp_path):
+    """The ledger reads the seal log — deeper than every in-memory screen."""
+    api = make_api(make_cfg(tmp_path), seed=rows(9, denied_at=4))
+    code, led = get(api, "/ledger")
+    assert code == 200
+    assert led["head"]["height"] == 9 and led["head"]["sealed_total"] == 9
+    assert led["head"]["root"] and led["head"]["as_of"].endswith("Z")
+    # Heights contiguous: missing_ranges reports the contiguity the scan just
+    # proved, so [] here is a result, not a stored assertion.
+    assert led["missing_ranges"] == []
+    assert len(led["entries"]) == 9
+    newest, oldest = led["entries"][0], led["entries"][-1]
+    assert newest["seq"] == 9 and oldest["seq"] == 1
+    assert led["next_cursor"] is None
+    # Sessions and trajectories are ship-side rollups: null on this host,
+    # distinct from the [] that would claim "computed, none found".
+    assert led["sessions"] is None and led["trajectories"] is None
+    kinds = {e["kind"] for e in led["entries"]}
+    assert kinds == {"message", "mandate_verdict"}
+    row = next(e for e in led["entries"] if e["status"] == "blocked")
+    assert row["kind"] == "mandate_verdict"
+
+
+def test_ledger_pages_by_cursor_not_by_offset(tmp_path):
+    api = make_api(make_cfg(tmp_path), seed=rows(9, denied_at=4))
+    _, first = get(api, "/ledger", limit=4)
+    assert [e["seq"] for e in first["entries"]] == [9, 8, 7, 6]
+    assert first["next_cursor"] == "6"
+    _, second = get(api, "/ledger", limit=4, before=first["next_cursor"])
+    assert [e["seq"] for e in second["entries"]] == [5, 4, 3, 2]
+    _, last = get(api, "/ledger", limit=4, before=second["next_cursor"])
+    assert [e["seq"] for e in last["entries"]] == [1]
+    assert last["next_cursor"] is None   # no empty trailing page offered
+
+
+def test_entry_detail_addresses_a_seq_beside_its_device(tmp_path):
+    api = make_api(make_cfg(tmp_path), seed=rows(8, denied_at=3))
+    _, led = get(api, "/ledger")
+    dev = led["entries"][0]["device_id"]
+    code, raw = api.handle(f"/v1/console/entries/{dev}/5", {"tenant": ["acme-prod"]})
+    assert code == 200
+    body = json.loads(raw)
+    assert body["entry"]["seq"] == 5
+    assert body["entry"]["seal"].startswith(body["entry"]["seal"][:8])
+    # The payload is the stored shape; the proof is the fold path; the
+    # checkpoint says whether it covers this height — the offline-verify
+    # story at row level, with no message text anywhere.
+    assert "text" not in json.dumps(body["payload"]).lower() or "text_hmac" in body["payload"]
+    assert body["proof"]["root_hex"]
+    assert body["proof"]["steps"], "expected at least one sibling step"
+    assert body["checkpoint"]["covers_this_entry"] is True
+    # A seq beyond the head: absent is not a sealed fact — the chain has no
+    # such entry and the 404 says so in those words.
+    code, body = api.handle(f"/v1/console/entries/{dev}/999", {"tenant": ["acme-prod"]})
+    assert code == 404
+    assert "no entry at" in json.loads(body)["error"]
+    # The wrong device says "this host has no such ledger" — not "no such seq".
+    code, body = api.handle("/v1/console/entries/dev_other/1", {"tenant": ["acme-prod"]})
+    assert code == 404
+    assert "no ledger for that device" in json.loads(body)["error"]
+
+
+def test_ledger_respects_the_window(tmp_path):
+    api = make_api(make_cfg(tmp_path), seed=rows(6, age_minutes=90))
+    now = datetime.now(timezone.utc)
+    frm = (now - timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
+    _, led = get(api, "/ledger", **{"from": frm})
+    assert led["entries"] == []          # all rows predate the window
+    assert led["head"]["sealed_total"] == 6  # the chain still holds them
