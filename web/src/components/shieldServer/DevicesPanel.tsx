@@ -83,7 +83,7 @@ export function DevicesPanel() {
                 <td>{ago(d.last_seen)}</td>
                 <td>
                   {d.protecting === null ? (
-                    <span className="tag muted">not heard from yet</span>
+                    <span className="tag unknown">not heard from yet</span>
                   ) : d.protecting ? (
                     <span className="tag ok">protecting</span>
                   ) : (
