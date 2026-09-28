@@ -154,15 +154,17 @@ def test_managed_policy_validates_sync_and_can_lock_it():
         shield._validate_managed_policy({"sync": "full_text"})
 
 
-def test_browser_rows_are_utc_and_desktop_rows_are_local(monkeypatch):
+def test_feed_items_are_local_time_for_every_source(monkeypatch):
+    """The feed shows browser rows (stamped in UTC by the extension) in this
+    Mac's local time like every other row, so every item converts the same
+    way. Reading a browser item as UTC would shift it by the offset again."""
     import time
     monkeypatch.setenv("TZ", "America/New_York")
     time.tzset()
     try:
         b = build_event(item(source="browser", surface="ChatGPT · browser"), device_id=DEV)
         d = build_event(item(), device_id=DEV)
-        assert b["occurred_at"] == "2026-09-26T10:02:11Z"   # already UTC
-        assert d["occurred_at"] == "2026-09-26T14:02:11Z"   # EDT is UTC-4
+        assert b["occurred_at"] == d["occurred_at"] == "2026-09-26T14:02:11Z"   # EDT is UTC-4
         late = build_event(item(ts="23:30:00"), device_id=DEV)
         assert aggregate_daily([late])[0]["date"] == "2026-09-26"  # local day
     finally:
