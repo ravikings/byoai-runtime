@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Shield records which tools the AI ran for a browser reply.** Web search,
+  code, connectors and memory run on ChatGPT's and Claude's own servers after
+  the message has left, so no browser or proxy can stop them; until now they
+  were invisible too. The extension (0.7.0) reads a copy of the reply stream
+  as it arrives, keeps only tool names (`web.run`) and how many sites a search
+  returned, and files a `browser.chat.reply` row. Shield attaches it to the
+  message it answers, seals it with that message, and shows it as "Web
+  search", "Code run" and so on in Activity and the detail view. Verified
+  against ChatGPT's live stream; claude.ai's Anthropic-style tool blocks are
+  read the same way.
 - **The Shield browser extension (0.6.0) now replaces personal details
   before a message leaves the page.** Before this, *Replace personal details*
   and *block* only reached traffic that went through the desktop capture
@@ -223,6 +233,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from disk at request time.
 
 ### Fixed
+- **A failed browser send marked the wrong message.** The status row walked
+  the feed oldest-first, so a send that failed marked the oldest message to
+  that app as failed instead of the newest.
 - **Browser sends showed in UTC, and each one was listed twice.** The
   Shield screen showed a browser message at the extension's UTC stamp
   (18:18 for a message sent at 13:18 in Chicago); it now shows this Mac's

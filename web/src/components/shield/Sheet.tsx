@@ -4,7 +4,7 @@
  * Activity, the Ledger or the Timeline.
  */
 import { useEffect, useRef } from 'react'
-import { ReceiptButton, flagTagClass, ruleLabel, tierLabel, tierTagClass } from './shared'
+import { ReceiptButton, flagTagClass, ruleLabel, tierLabel, tierTagClass, toolLabel } from './shared'
 import type { Item } from './shared'
 
 const VERDICT: Record<Item['tier'], string> = {
@@ -67,6 +67,15 @@ export function Sheet({ item, onClose, onOpenTimeline }: {
               ))}
             </ul>
           )}
+
+        {(item.tools?.length ?? 0) > 0 && (<>
+          <h3 className="label">Tools the AI used</h3>
+          <p>
+            {[...new Set(item.tools!.map(toolLabel))].join(', ')}
+            {item.sources ? ` · ${item.sources} ${item.sources === 1 ? 'source' : 'sources'}` : ''}
+          </p>
+          <p className="muted">Run by the app on its own servers, after the message left. Shield records which tools, not what they found.</p>
+        </>)}
 
         <h3 className="label">Seal</h3>
         <p className="mono">{item.seal || 'Not sealed yet: the call is still running.'}</p>

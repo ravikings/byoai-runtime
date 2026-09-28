@@ -7,7 +7,7 @@ import { useState } from 'react'
 import { fetchPrivacy, savePolicy, scrubStoredText } from '@/api/shield'
 import type { ShieldPolicy, ShieldPrivacy, ShieldVerify } from '@/api/shield'
 import {
-  NeedFilter, SectionHead, WhenFilter, flagTagClass, inWhen, matchesNeed, plural, ruleLabel, useFeed,
+  NeedFilter, SectionHead, WhenFilter, flagTagClass, inWhen, matchesNeed, plural, ruleLabel, toolLabel, useFeed,
 } from './shared'
 import type { Item, Need, When } from './shared'
 
@@ -145,6 +145,7 @@ export function Row({ item, onOpen }: { item: Item; onOpen: () => void }) {
           {item.source === 'browser' && <span className="tag info">In browser</span>}
           {item.status === 'blocked' && <span className="tag bad">Stopped on this Mac</span>}
           {n > 0 && <span className="tag ok">{n === 1 ? '1 detail replaced' : `${n} details replaced`}</span>}
+          {[...new Set((item.tools ?? []).map(toolLabel))].map(t => <span key={t} className="tag info">{t}</span>)}
           {item.flags.map(f => (
             <span key={f.rule} className={`tag ${flagTagClass(f.tier)}`}>{ruleLabel(f.rule)}</span>
           ))}

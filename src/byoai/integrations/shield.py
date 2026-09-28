@@ -1466,9 +1466,12 @@ class Feed:
                       chars=chars, redactions=r.get("redactions"))
         elif kind == "desktop.chat.response":
             self._attach_reply(r)
-        elif kind in ("browser.chat.request", "browser.chat.status"):
+        elif kind in BROWSER_KINDS:
             app = r.get("app") or "claude"
             label = APP_LABEL.get(app, app)
+            if kind == "browser.chat.reply":
+                self._attach_tools(r, label)
+                return
             wire = r.get("wire") if isinstance(r.get("wire"), str) else None
             ts_raw = r.get("sent_at") or ""
             # Extension rows carry their own ISO timestamp; fall back to now.
@@ -1493,7 +1496,7 @@ class Feed:
             # Browser sends stop here only for a fetch that failed; statuses
             # attach to the latest browser request from the same app.
             if kind == "browser.chat.status":
-                for it in reversed(list(self.items)):
+                for it in self.items:             # newest first
                     if it["source"] == "browser" and it["surface"].startswith(label):
                         if status == "failed":
                             it["status"] = "failed"
@@ -1515,6 +1518,7 @@ class Feed:
                       verdict=r.get("verdict"), text_hmac=r.get("text_hmac"),
                       chars=r.get("chars"), redactions=r.get("redactions"))
             self.items[0]["ts"], self.items[0]["date"] = shown_ts, shown_date
+            self.items[0]["_send_id"] = r.get("send_id")
         elif kind == "tool.call":
             ident = r.get("identity") or {}
             tool = r.get("tool") or "execute"
@@ -1557,6 +1561,7 @@ class Feed:
             "seal": "", "usage": {}, "latency_ms": None,
             "verdict": verdict, "chars": chars,
             "redactions": _as_list(redactions), "reply": None,
+            "tools": [], "sources": None,
         }
         item["tier"] = _tier(item)
         # The seal binds what happened, not what was said: the message
@@ -1609,6 +1614,29 @@ class Feed:
         match["seal"] = self.seals.stamp(payload)
         match["_pending"] = False
 
+    def _attach_tools(self, r: dict, label: str) -> None:
+        """The tools an AI app ran for a browser reply land on the message it
+        answers, and are sealed with it: a new seal over the message's payload
+        plus the tool names and source count. The send id matches them, since
+        a reply can finish after a newer send (another tab, a quick second
+        message); without one, the latest message to that app is taken."""
+        tools = [t for t in r.get("tools") or []
+                 if isinstance(t, str) and _TOOL_NAME.fullmatch(t)]
+        if not tools:
+            return
+        send_id = r.get("send_id")
+        for it in self.items:                     # newest first
+            if it["source"] != "browser" or not it["surface"].startswith(label):
+                continue
+            if send_id and it.get("_send_id") != send_id:
+                continue
+            it["tools"] = list(dict.fromkeys([*it["tools"], *tools]))
+            if isinstance(r.get("sources"), int):
+                it["sources"] = (it["sources"] or 0) + r["sources"]
+            it["seal"] = self.seals.stamp({**it["_seal_payload"], "tools": it["tools"],
+                                           "sources": it["sources"]})
+            break
+
     def _attach_reply(self, r: dict) -> None:
         """Reply-side rule hits land on the latest desktop message from the
         same app; the reply's text is never shown or sealed."""
@@ -1659,7 +1687,7 @@ class Feed:
 
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 EXTENSION_SCHEMES = ("chrome-extension://", "moz-extension://")
-BROWSER_KINDS = ("browser.chat.request", "browser.chat.status")
+BROWSER_KINDS = ("browser.chat.request", "browser.chat.status", "browser.chat.reply")
 
 # Hosts the browser extension watches. The relay covers the whole page even
 # when the send itself bypassed fetch, so a bare host must classify like the
@@ -1721,6 +1749,10 @@ _BROWSER_FLAGS = frozenset(
                                          ("agent", AGENT_RULES))
     for rule, _ in rules)
 _BROWSER_VERDICT = re.compile(r"observe|redact|block|blocked|redacted\(\d{1,2}\)")
+# Names of tools an AI app ran for a reply ("web.run", "python"), as the
+# extension reads them from the reply stream. A name, never text.
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,48}")
+_SEND_ID = re.compile(r"[A-Za-z0-9-]{8,64}")
 
 
 def clean_browser_row(row: object) -> dict | None:
@@ -1747,6 +1779,9 @@ def clean_browser_row(row: object) -> dict | None:
     # random at the source, carries nothing about the user.
     if isinstance(row.get("row_id"), str) and 8 <= len(row["row_id"]) <= 64:
         out["row_id"] = row["row_id"]
+    # Random per send, set in the page: ties a reply row to its request.
+    if isinstance(row.get("send_id"), str) and _SEND_ID.fullmatch(row["send_id"]):
+        out["send_id"] = row["send_id"]
     # Set by the extension's page capture (content.js), which runs the same
     # rules before the message leaves the page. Anything not a known rule
     # name is dropped, not the row.
@@ -1758,6 +1793,12 @@ def clean_browser_row(row: object) -> dict | None:
                                     if isinstance(r, str) and r in RULE_REDACT})
     if isinstance(row.get("verdict"), str) and _BROWSER_VERDICT.fullmatch(row["verdict"]):
         out["verdict"] = row["verdict"]
+    if isinstance(row.get("tools"), list):
+        out["tools"] = list(dict.fromkeys(
+            t for t in row["tools"] if isinstance(t, str) and _TOOL_NAME.fullmatch(t)))[:12]
+    sources = row.get("sources")
+    if isinstance(sources, int) and not isinstance(sources, bool) and 0 <= sources <= 1000:
+        out["sources"] = sources
     if isinstance(row.get("ok"), bool):
         out["ok"] = row["ok"]
     if isinstance(row.get("status"), int) and not isinstance(row.get("status"), bool):

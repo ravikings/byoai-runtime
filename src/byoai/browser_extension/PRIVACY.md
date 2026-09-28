@@ -29,11 +29,22 @@ Per message you send:
 | `redactions` | `["emails"]` | names of the rules whose matches were replaced before sending |
 | `verdict` | `redacted(1)` | what Shield's policy did: `redacted(n)`, `redact`, `block`, `blocked` or `observe` |
 
+Per reply in which the AI ran tools (claude.ai and chatgpt.com), one more row:
+
+| Field | Example | Why |
+|---|---|---|
+| `kind` | `browser.chat.reply` | what happened |
+| `tools` | `["web.run"]` | names of the tools the AI ran on its own servers (web search, code, connectors), never what they found |
+| `sources` | `9` | how many distinct sites a web search returned, never which |
+| `send_id` | random | the same random id as the message it answers (also on that message's row), so a reply that finishes late is matched to the right message; it carries nothing about you |
+
 Nothing else. The extension does not read page content, the DOM, cookies, form
 fields, browsing history or the clipboard. The outgoing message is read in the
 page for its length, the rule names above and, when Shield's policy is
 *redact* or *block*, to replace personal details, then discarded: it is never
-stored, logged or transmitted to Shield. The server side drops any unexpected
+stored, logged or transmitted to Shield. The reply is read the same way, from
+a copy of its stream as it arrives, only for the names of the tools the AI
+ran and the number of sources a search returned; its text is not kept. The server side drops any unexpected
 field, text included, before it reaches the record (`clean_browser_row`), and
 accepts only known rule names.
 
