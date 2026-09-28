@@ -19,9 +19,9 @@ export function NotBuilt({ path, tenant }: { path: string; tenant: string }) {
         <p className="mono" style={{ margin: '0 0 var(--s3)' }}>{path}</p>
         <p className="muted" style={{ margin: 0 }}>
           Fleet overview, coverage report, devices register, findings list,
-          mandate verdict stream, ledger, sealed-entry detail and the runtime
-          figures are the screens built so far. What remains — the settings
-          surfaces and the verify-job screens —
+          mandate verdict stream, ledger, sealed-entry detail, the runtime
+          figures and the enrollment view are the screens built so far. What
+          remains — the verify-job screens and the remaining settings surfaces —
           are designed (see <span className="mono">internal_doc/console_design/</span>) and
           specified in <span className="mono">console_ui_spec.md</span> §6, and land on the
           same shell and data layer as these.

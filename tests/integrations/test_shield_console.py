@@ -490,3 +490,60 @@ def test_ledger_respects_the_window(tmp_path):
     _, led = get(api, "/ledger", **{"from": frm})
     assert led["entries"] == []          # all rows predate the window
     assert led["head"]["sealed_total"] == 6  # the chain still holds them
+
+
+# ------------------------------------------------------------ enrollment
+
+
+def test_enrollment_unenrolled_says_so_without_faking_a_recipient(tmp_path):
+    api = make_api(make_cfg(tmp_path), seed=rows(5))
+    code, e = get(api, "/enrollment")
+    assert code == 200
+    assert e["connection"]["connected"] is False
+    assert e["connection"]["unsent_entries"] is None  # no ship line to be behind on
+    assert e["managed"] is None
+    # Seal-only sharing means the disclosure panel is absent, and the page
+    # renders "seal only" from that null rather than inventing a recipient.
+    assert e["sharing"] is None
+    assert e["chain"]["sealed_total"] == 5
+    assert e["chain"]["root"] is not None
+    assert e["stored"]["rows_with_text"] == 0
+    assert e["stored"]["paths"]["seal_log"].endswith("sealchain.log.jsonl")
+    assert e["stored"]["paths"]["managed_policy"] is None  # never managed
+
+
+def test_enrollment_connected_reports_ship_line_from_live_state(tmp_path):
+    pub = StubPublisher(connected=True, tenant="acme", base_url="https://cq.test",
+                        last_height=3, last_sent_at=1.0, next_attempt_at=0.0,
+                        every_hours=2.0, has_new=True, needs_attention=False,
+                        sync={"pending": 4, "last_sent_at": None, "last_error": None})
+    api = make_api(make_cfg(tmp_path), publisher=pub, seed=rows(6))
+    _, e = get(api, "/enrollment")
+    c = e["connection"]
+    assert c["connected"] is True
+    assert c["remote_tenant"] == "acme"
+    assert c["unsent_entries"] == 3   # 6 sealed (approx height) minus last_height
+    # next_attempt_at of 0 means "no backoff in force" and normalises to None,
+    # not the 1970 epoch — a never is never a date.
+    assert c["next_attempt_at"] is None
+    assert c["sync_pending"] == 4
+
+
+def test_enrollment_ignores_an_unsigned_local_sync_level(tmp_path):
+    """Privacy invariant: only a signed managed policy may raise what leaves
+    the device. A hand-edited local `sync: events` must NOT surface a sharing
+    disclosure — load_policy rewrites it back to seal. The endpoint inherits
+    that and must not re-widen the hole."""
+    from byoai.integrations.shield import default_policy, save_policy
+    cfg = make_cfg(tmp_path)
+    pol = default_policy()
+    pol["sync"] = "events"
+    save_policy(cfg, pol)
+    api = make_api(cfg, seed=rows(4))
+    _, e = get(api, "/enrollment")
+    # No signed managed policy present, so sharing collapses to seal → None,
+    # and the page renders "seal only" rather than disclosing a recipient the
+    # device never agreed to.
+    assert e["sharing"] is None
+    assert e["managed"] is None
+    assert e["policy"]["sync"] == "seal"
