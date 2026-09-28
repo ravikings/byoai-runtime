@@ -47,7 +47,7 @@
 </head>
 <body>
 <main>
-  <h1>Shield notes that you sent a message. It never reads what you wrote.</h1>
+  <h1>Shield takes personal details out of your AI messages, and notes that you sent one.</h1>
   <p class="lead">Please read this before turning it on. Nothing is recorded until you agree.</p>
 
   <div id="ask">
@@ -64,8 +64,20 @@
         <li>when you sent the message,</li>
         <li>how many characters it was.</li>
       </ul>
-      <p style="margin-top:8px">That is all. The message text is counted in the page and thrown away.
-        It is never stored and never sent anywhere.</p>
+      <p style="margin-top:8px">It also records which of Shield's rules a message matched (for example
+        "email address"), by name, never the matching text. That is all. The message text is read in the page
+        and thrown away. It is never stored and never sent to Shield or anywhere else.</p>
+    </section>
+    <section>
+      <h2>What it changes</h2>
+      <p>On claude.ai and chatgpt.com, before your message leaves the page, emails, card numbers, phone
+        numbers, SSNs, wallet addresses and API keys are replaced with labels such as
+        <code>[redacted-email]</code>, so the AI never receives them. If your Shield is set to stop high-risk
+        messages, a message carrying a password or an executable file name is not sent at all and the chat
+        shows an error.</p>
+      <p style="margin-top:8px">Your Shield's settings decide this: "Record only" leaves messages
+        unchanged. On gemini.google.com and copilot.microsoft.com messages always go out unchanged, because
+        those sites don't send them in a form the extension can safely rewrite.</p>
     </section>
     <section>
       <h2>Where it goes</h2>

@@ -82,6 +82,12 @@ export function Settings() {
               <span>{note}</span>
             </label>
           ))}
+          <p className="muted setting-help">
+            In Chrome, the Shield extension (0.6 or later) does this on claude.ai and chatgpt.com before the
+            message leaves the page. On gemini.google.com and copilot.microsoft.com messages go out unchanged and
+            are only recorded, because those sites don't send them in a form Shield can safely rewrite. Files you
+            attach are never checked.
+          </p>
         </section>
 
         <PrivacySettings policy={p} save={change} saving={save.isPending} locked={locked} />

@@ -29,7 +29,7 @@ async function refresh() {
   // A cold worker can miss the timeout; fall back to what is stored rather than
   // showing "off" for someone whose capture is running.
   const asked = await withTimeout(send({ type: 'agent.getConsent' }), 3000).catch(() => null)
-  consented = asked ? !!asked.granted : !!(await chrome.storage.local.get('consent')).consent
+  consented = asked ? !!asked.granted : (await chrome.storage.local.get('consent')).consent?.version === globalThis.SHIELD_CONSENT_VERSION
   el('consent-box').hidden = !consented
   if (!consented) {
     // Nothing is checked or shown as "working" until the user has agreed.
@@ -59,11 +59,14 @@ async function probe() {
       .catch(() => null)
     if (noted?.shorter) return { state, endpoint, verify, apps: {}, shorter: noted.shorter }
     let apps = {}
+    let mode = null
     try {
       const policy = await withTimeout(fetch(baseOf(endpoint) + '/api/policy', { cache: 'no-store' }), 1500)
-      apps = (await policy.json()).apps || {}
+      const p = await policy.json()
+      apps = p.apps || {}
+      mode = p.mode || null
     } catch { /* an older Shield: say nothing rather than guess */ }
-    return { state, endpoint, verify, apps }
+    return { state, endpoint, verify, apps, mode }
   } catch {
     return { state: 'unreachable', endpoint }
   }
@@ -101,7 +104,7 @@ function ago(ms) {
 
 const shortAddress = (endpoint) => { try { return new URL(endpoint).host } catch { return endpoint } }
 
-function render({ state, endpoint, verify, apps, shorter }, app) {
+function render({ state, endpoint, verify, apps, mode, shorter }, app) {
   el('endpoint').value = endpoint
   el('addr').textContent = shortAddress(endpoint)
   el('addr').title = baseOf(endpoint)
@@ -184,9 +187,21 @@ function render({ state, endpoint, verify, apps, shorter }, app) {
   } else if (app.host) {
     tab.textContent = `This tab (${app.host}) is not one Shield covers.`
   }
+  if (app.name && !(apps && apps[appKey] === false)) tab.append(' ' + protection(appKey, mode))
   if (app.notedToday > 0) {
     tab.append(` Noted today across all apps: ${app.notedToday}.`)
   }
+}
+
+// What happens to a message sent from this tab, in one sentence. Only Claude
+// and ChatGPT send their messages as JSON the extension can read and rewrite.
+function protection(appKey, mode) {
+  if (appKey !== 'claude' && appKey !== 'chatgpt') {
+    return 'Messages here go out unchanged: Shield can only note that they were sent.'
+  }
+  if (mode === 'observe') return 'Messages go out unchanged: Shield is set to record only.'
+  if (mode === 'block') return 'Personal details are replaced before a message leaves this page, and high-risk messages are stopped.'
+  return 'Personal details are replaced before a message leaves this page.'
 }
 
 function wire() {
