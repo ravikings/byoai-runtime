@@ -1,8 +1,10 @@
 # Coriqo Shield: Agent Capture — privacy notice
 
 This extension records *that* you sent a message to an AI chat, never *what you
-said*. It does nothing until you agree on the welcome page it opens when you
-install it, and you can turn it off again at any time from its popup.
+said*. On claude.ai and chatgpt.com it also replaces personal details in your
+message before the message leaves the page, when your Shield's policy says to.
+It does nothing until you agree on the welcome page it opens when you install
+it, and you can turn it off again at any time from its popup.
 
 ## What it does
 
@@ -23,12 +25,36 @@ Per message you send:
 | `chars` | `42` | message length only |
 | `wire` | `/backend-api/conversation` | truncated endpoint path |
 | `sent_at` | ISO timestamp | when |
+| `flags` | `["pii:emails"]` | names of the Shield rules the message matched, never the matched text |
+| `redactions` | `["emails"]` | names of the rules whose matches were replaced before sending |
+| `verdict` | `redacted(1)` | what Shield's policy did: `redacted(n)`, `redact`, `block`, `blocked` or `observe` |
 
 Nothing else. The extension does not read page content, the DOM, cookies, form
-fields, browsing history or the clipboard. The message text is counted in the
-page (`chars = text.length`) and immediately discarded: it is never stored,
-logged or transmitted. The server side drops any unexpected field, text
-included, before it reaches the record (`clean_browser_row`).
+fields, browsing history or the clipboard. The outgoing message is read in the
+page for its length, the rule names above and, when Shield's policy is
+*redact* or *block*, to replace personal details, then discarded: it is never
+stored, logged or transmitted to Shield. The server side drops any unexpected
+field, text included, before it reaches the record (`clean_browser_row`), and
+accepts only known rule names.
+
+## What it changes
+
+On claude.ai and chatgpt.com (and chat.openai.com), when Shield's mode is
+*redact* (the default) or *block*, emails, card numbers, phone numbers,
+SSN-like numbers, wallet addresses and API keys in the message you send are
+replaced with labels such as `[redacted-email]` before the request leaves the
+page, so the AI provider never receives them. In *block* mode, a message that
+carries credential text (`password: ...`) or an executable file name is not
+sent at all: the chat app gets an error answer from the extension. The rules
+are the same ones Shield's desktop proxy uses (`shield-rules.js` is generated
+from them). *Record only* (`observe`) leaves messages unchanged, and so does
+an app switched off in Shield. Until the extension has heard from your Shield
+it uses the default, *redact*.
+
+On gemini.google.com and copilot.microsoft.com messages always go out
+unchanged: those sites send them as form-encoded or websocket traffic the
+extension can't safely rewrite. Sends that don't go through the page's
+`fetch` are noted, not rewritten, and attachments are never read.
 
 No account, device or user identifier is attached to rows. There is no
 analytics, no telemetry, no advertising and no third-party request. The data is
@@ -58,6 +84,7 @@ setting of Shield, off by default, not of this extension.
 | `chrome.storage.local` `endpoint` | Shield's local address, if you changed it | until removed |
 | `chrome.storage.local` `pinned_shield` | Shield's public key, saved when first paired | until you re-pair |
 | `chrome.storage.local` `witness` / `rollback` | the highest count of sealed entries Shield reported (one number), and a flag if it later dropped | until you re-pair or accept |
+| `chrome.storage.local` `shield_policy` | Shield's mode and which apps it covers, as your paired Shield reported them | refreshed from Shield; removed when you turn capture off |
 | `chrome.storage.local` `last_capture` / `today` | one "last message noted" time per app, and today's message count | overwritten on each send; removed when you turn capture off |
 
 None of this contains message text, and none of it leaves your computer.
@@ -69,17 +96,18 @@ None of this contains message text, and none of it leaves your computer.
 - `activeTab`: lets the popup show whether the tab you are looking at is
   covered, only when you open it.
 - Host access to `127.0.0.1` / `localhost`: to reach Shield.
-- Content scripts on the five chat sites listed above: to notice a send. One
-  runs in the page so it can see the send request (it must wrap `fetch`, since
-  the sites' security policies block injecting anything else); the other
-  relays the length-only fact to the extension. Neither loads remote code. All
-  code ships in the package.
+- Content scripts on the five chat sites listed above: to notice a send and,
+  on claude.ai and chatgpt.com, replace personal details in it. One runs in
+  the page so it can see (and rewrite) the send request (it must wrap `fetch`,
+  since the sites' security policies block injecting anything else); the
+  other relays the text-free fact to the extension, and passes Shield's mode
+  back to the page. Neither loads remote code. All code ships in the package.
 
 ## Your choices
 
 - **Turn it off:** popup → Details → *Turn capture off*. This stops recording
-  and removes anything still waiting to be sent, plus the per-app times and the
-  count above.
+  and replacing, and removes anything still waiting to be sent, plus the
+  per-app times, the count and the saved policy above.
 - **Remove it:** uninstalling the extension stops capture at the source.
 - **Erase what Shield already kept:** Shield's Settings → Privacy → *Remove
   now* (`POST /api/privacy/scrub`). Sealed entries stay, because removing

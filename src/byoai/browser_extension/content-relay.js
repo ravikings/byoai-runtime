@@ -4,7 +4,9 @@
  * The page-world capture (content.js, "world": "MAIN") can't call
  * chrome.runtime, and this isolated world can't see the page's fetch. The
  * CustomEvent bridge joins them: relay what the page capture emits into
- * capture rows for the service worker.
+ * capture rows for the service worker, and pass the user's choice and
+ * Shield's mode the other way, so the page capture knows whether to replace
+ * personal details. It runs at document_start, before the page's first send.
  *
  * After the extension is reloaded or updated, old content scripts keep
  * running in already-open tabs with no extension behind them ("extension
@@ -32,18 +34,40 @@
   // leaving this script while capture is off.
   // null until the stored choice has been read. A send in those first moments
   // is held (a few at most) rather than lost, then kept or dropped once known.
-  // Keep the version in step with CONSENT_VERSION in background.js.
   let consented = null
   const held = []
   const announce = () => chrome.runtime.sendMessage({ type: 'agent.pageWatched' }, () => void chrome.runtime.lastError)
   const settle = (value) => {
-    consented = value?.version === 1
+    consented = value?.version === globalThis.SHIELD_CONSENT_VERSION
     if (consented) held.splice(0).forEach(send); else held.length = 0
+    tellPage()
   }
+
+  /*
+   * The page-world capture decides whether to replace personal details from
+   * what it hears here: the user's choice and Shield's policy, which the
+   * service worker saves under `shield_policy` only after the paired Shield
+   * proved itself. A string, because objects don't cross between worlds.
+   */
+  let policy = null
+  function tellPage() {
+    window.dispatchEvent(new CustomEvent('shield-agent-config', {
+      detail: JSON.stringify({ consented: consented === true, mode: policy?.mode, apps: policy?.apps ?? null }),
+    }))
+  }
+  // content.js may start before or after this script; it asks once when it does.
+  window.addEventListener('shield-agent-config-request', tellPage)
+
   try {
-    chrome.storage.local.get('consent', (v) => { settle(v?.consent); announce() })
+    chrome.storage.local.get(['consent', 'shield_policy'], (v) => {
+      policy = v?.shield_policy ?? null
+      settle(v?.consent)
+      announce()
+    })
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes.consent) return
+      if (area !== 'local') return
+      if (changes.shield_policy) { policy = changes.shield_policy.newValue ?? null; tellPage() }
+      if (!changes.consent) return
       settle(changes.consent.newValue)
       announce() // so this tab's badge follows the choice without a reload
     })
@@ -63,6 +87,7 @@
   function disable() {
     disabled = true
     window.removeEventListener('shield-agent-capture', onCapture)
+    window.removeEventListener('shield-agent-config-request', tellPage)
     document.removeEventListener('keydown', onKey, true)
     document.removeEventListener('click', onClick, true)
   }

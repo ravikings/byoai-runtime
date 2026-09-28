@@ -1360,10 +1360,9 @@ class Feed:
         self._poll_lock = threading.Lock()
         self._seen_rows: dict[str, int] = {}
         self._current_id = ""
-        # The browser extension never reads message text, so it can't supply
-        # rule hits — it always ships length only. Recorded clean here; if the
-        # request also crosses the desktop proxy for the same app, that side
-        # (with the wire body) does the flagging.
+        # Rule hits for a browser row from an extension before 0.6, which
+        # shipped length only: recorded clean. Newer rows carry their own
+        # rule names (`flags`), found in the page.
         self.BROWSER_FLAGS: list[tuple[str, str, str]] = []
 
     def scan_initial(self) -> int:
@@ -1496,12 +1495,19 @@ class Feed:
                         break
                 return
             first = self._is_first_browser_send(label)
-            verb = (f"First message to {label} in this browser"
+            blocked = r.get("verdict") == "blocked"
+            verb = (f"Message to {label} stopped in this browser" if blocked
+                    else f"First message to {label} in this browser"
                     if first else f"Message to {label}")
+            # Rows from extensions before 0.6 carry no rule names: nothing
+            # was checked, which is not the same as nothing matching.
+            flags_box = (_flags_from_row(r) if isinstance(r.get("flags"), list)
+                         else self.BROWSER_FLAGS)
             self._add(source="browser", surface=f"{label} · browser", ts=ts,
-                      verb=verb, date=date, flags_box=self.BROWSER_FLAGS,
-                      status=status, text_hmac=r.get("text_hmac"),
-                      chars=r.get("chars"))
+                      verb=verb, date=date, flags_box=flags_box,
+                      status="blocked" if blocked else status,
+                      verdict=r.get("verdict"), text_hmac=r.get("text_hmac"),
+                      chars=r.get("chars"), redactions=r.get("redactions"))
         elif kind == "tool.call":
             ident = r.get("identity") or {}
             tool = r.get("tool") or "execute"
@@ -1701,6 +1707,15 @@ def request_problem(method: str, path: str, headers) -> str | None:
     return None
 
 
+# What a browser row may say about which rules fired: known rule names only,
+# so the field can never carry text. Request rules, as the proxy records them.
+_BROWSER_FLAGS = frozenset(
+    f"{tier}:{rule}" for tier, rules in (("high", HIGH_RULES), ("pii", PII_RULES),
+                                         ("agent", AGENT_RULES))
+    for rule, _ in rules)
+_BROWSER_VERDICT = re.compile(r"observe|redact|block|blocked|redacted\(\d{1,2}\)")
+
+
 def clean_browser_row(row: object) -> dict | None:
     """Keep only the fields a browser row is allowed to carry. Anything else,
     message text included, is dropped before it can reach the ledger."""
@@ -1725,6 +1740,17 @@ def clean_browser_row(row: object) -> dict | None:
     # random at the source, carries nothing about the user.
     if isinstance(row.get("row_id"), str) and 8 <= len(row["row_id"]) <= 64:
         out["row_id"] = row["row_id"]
+    # Set by the extension's page capture (content.js), which runs the same
+    # rules before the message leaves the page. Anything not a known rule
+    # name is dropped, not the row.
+    if isinstance(row.get("flags"), list):
+        out["flags"] = list(dict.fromkeys(
+            f for f in row["flags"] if isinstance(f, str) and f in _BROWSER_FLAGS))
+    if isinstance(row.get("redactions"), list):
+        out["redactions"] = sorted({r for r in row["redactions"]
+                                    if isinstance(r, str) and r in RULE_REDACT})
+    if isinstance(row.get("verdict"), str) and _BROWSER_VERDICT.fullmatch(row["verdict"]):
+        out["verdict"] = row["verdict"]
     if isinstance(row.get("ok"), bool):
         out["ok"] = row["ok"]
     if isinstance(row.get("status"), int) and not isinstance(row.get("status"), bool):

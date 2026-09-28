@@ -33,7 +33,8 @@ const ROLLBACK_KEY = 'rollback'
 // The user's agreement to capture, given on the welcome page. Nothing is
 // queued, sent or counted until it exists; withdrawing it removes it again.
 const CONSENT_KEY = 'consent'
-const CONSENT_VERSION = 1
+importScripts('consent.js')
+const CONSENT_VERSION = globalThis.SHIELD_CONSENT_VERSION
 const isGranted = (value) => value?.version === CONSENT_VERSION
 // A synchronous copy of the stored choice. Every gate reads this right before it
 // queues, counts or sends, with no await in between, so a withdrawal (which flips
@@ -41,6 +42,12 @@ const isGranted = (value) => value?.version === CONSENT_VERSION
 let consentOn = false
 const hasConsent = async () => { await restore(); return consentOn }
 const TODAY_KEY = 'today'
+// Shield's mode and per-app toggles, as the paired Shield reported them. The
+// page-world capture reads it (through content-relay.js) to decide whether to
+// replace personal details; with none saved yet, it redacts.
+const POLICY_KEY = 'shield_policy'
+const MODES = ['observe', 'redact', 'block']
+const POLICY_APPS = ['claude', 'chatgpt', 'gemini', 'copilot']
 const IDENTITY_PREFIX = 'byoai-shield-identity:'
 
 const b64bytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -86,6 +93,33 @@ async function checkServer(endpoint, { trustCurrent = false } = {}) {
     return { state: 'paired', deviceId: identity.device_id }
   }
   return { state: saved === identity.public_key ? 'ok' : 'mismatch', deviceId: identity.device_id }
+}
+
+/*
+ * Save Shield's current mode and app toggles. Only from a Shield that just
+ * proved it holds the paired key: anything else on the port could otherwise
+ * switch redaction off by answering "observe". Nothing about the user is
+ * sent to ask; a failure keeps what was saved before.
+ */
+let policyAskedAt = 0
+async function refreshPolicy(endpoint, { verified = false } = {}) {
+  if (!consentOn) return
+  policyAskedAt = Date.now()
+  try {
+    if (!verified) {
+      const check = await checkServer(endpoint)
+      if (check.state !== 'ok' && check.state !== 'paired') return
+    }
+    const res = await fetch(`${endpoint.replace(/\/api\/browser$/, '')}/api/policy`, { cache: 'no-store' })
+    if (!res.ok) return
+    const p = await res.json()
+    const apps = {}
+    for (const app of POLICY_APPS) if (typeof p?.apps?.[app] === 'boolean') apps[app] = p.apps[app]
+    if (!consentOn) return // withdrawn while asking
+    await chrome.storage.local.set({
+      [POLICY_KEY]: { mode: MODES.includes(p?.mode) ? p.mode : 'redact', apps, at: Date.now() },
+    })
+  } catch { /* unreachable: keep what was saved */ }
 }
 
 // A content script shares the extension's id but runs for a web page and reports
@@ -167,6 +201,8 @@ const OFFLINE_BADGE = '-'
 async function markPageWatched(tabId) {
   if (!tabId) return
   if (await hasConsent()) {
+    // Each watched page load re-reads Shield's mode, at most once a minute.
+    if (Date.now() - policyAskedAt > 60_000) getEndpoint().then((e) => refreshPolicy(e))
     chrome.action.setBadgeText({ tabId, text: WATCHED_BADGE })
     chrome.action.setBadgeBackgroundColor({ tabId, color: '#16a34a' })
     chrome.action.setTitle({ tabId, title: WORKING_TITLE })
@@ -177,7 +213,7 @@ async function markPageWatched(tabId) {
   }
 }
 
-const WORKING_TITLE = 'Shield records on this page: app, time, message length. No message content.'
+const WORKING_TITLE = 'Shield on this page: personal details are replaced before sending; app, time and length are noted. No message content leaves.'
 
 function setOffline() {
   chrome.action.setBadgeText({ text: OFFLINE_BADGE })
@@ -217,11 +253,12 @@ function setOfflineIfQueued() {
 chrome.runtime.onInstalled.addListener((details) => {
   chrome.action.setBadgeText({ text: '' })
   // First install: show exactly what this does and ask, before anything runs.
-  // Also for someone upgrading from a build that captured before asking: they
-  // were recording, and are now off until they choose, so tell them once.
+  // Also for someone upgrading from a build that asked less (before 0.5 it
+  // captured without asking; before 0.6 it never rewrote a message): they are
+  // now off until they choose, so tell them once.
   const before = String(details?.previousVersion || '').split('.').map(Number)
-  const capturedBeforeAsking = details?.reason === 'update' && (before[0] === 0 && before[1] < 5)
-  if (details?.reason === 'install' || capturedBeforeAsking) {
+  const askedLess = details?.reason === 'update' && (before[0] === 0 && before[1] < 6)
+  if (details?.reason === 'install' || askedLess) {
     chrome.tabs.create({ url: chrome.runtime.getURL('welcome.html') })
   }
 })
@@ -307,6 +344,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       // from a web page's tab (content scripts) can ask for a check, never
       // for a change of who is trusted.
       const r = await checkServer(endpoint, { trustCurrent: msg.trustCurrent === true && isExtensionPage(sender) })
+      if (r.state === 'ok' || r.state === 'paired') refreshPolicy(endpoint, { verified: true })
       reply?.({ ...r, endpoint })
     }).catch(() => reply?.({ state: 'unreachable' }))
     return true
@@ -321,7 +359,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       if (!consentOn) dropEverythingWaiting()
       const done = consentOn
         ? chrome.storage.local.set({ [CONSENT_KEY]: { version: CONSENT_VERSION, at: Date.now() } })
-        : chrome.storage.local.remove([CONSENT_KEY, LAST_CAPTURE_KEY, TODAY_KEY])
+          .then(() => { getEndpoint().then((e) => refreshPolicy(e)) })
+        : chrome.storage.local.remove([CONSENT_KEY, LAST_CAPTURE_KEY, TODAY_KEY, POLICY_KEY])
       return done
     }).then(() => reply?.({ ok: true }), () => reply?.({ error: 'failed' }))
     return true
@@ -438,6 +477,7 @@ async function flush() {
       body: JSON.stringify({ rows: batch }),
     })
     if (!res.ok) throw new Error(String(res.status))
+    if (Date.now() - policyAskedAt > 60_000) refreshPolicy(endpoint, { verified: true })
     const reply = await res.json().catch(() => null)
     if (await noteWitness(reply?.sealed_total)) setRefused('shorter')
     else setWorking() // synced: green check

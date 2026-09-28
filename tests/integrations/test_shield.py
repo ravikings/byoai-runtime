@@ -1192,3 +1192,82 @@ def test_local_file_cannot_turn_sync_on(tmp_path):
     _managed_sync(tmp_path, cfg, by="Contoso IT", sync="events", locked=("mode",))
     from byoai.integrations.shield import load_policy
     assert load_policy(cfg)["sync"] == "seal"
+
+
+# ------------------------------------------------- browser-side redaction
+
+_CASES = Path(__file__).resolve().parents[1] / "fixtures" / "shield_redaction_cases.json"
+
+
+def test_the_shared_redaction_cases_hold_for_the_python_rules():
+    """The extension's page capture is checked against the same file
+    (web/tests/extension/redaction.test.mjs); both passing is what keeps the
+    desktop proxy and the browser from disagreeing about a personal detail."""
+    from byoai.integrations.shield import HIGH_RULES, flags_for, message_text, redact_json_body
+    for case in json.loads(_CASES.read_text())["cases"]:
+        raw = case.get("raw") or json.dumps(case["body"])
+        want, mode = case["expect"], case["mode"]
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = None
+        text = message_text(body) if isinstance(body, dict) else ""
+        assert (len(text) if text else len(raw)) == want["chars"], case["name"]
+        assert [f"{t}:{r}" for t, r, _ in flags_for(text)
+                if not r.startswith("reply_")] == want["flags"], case["name"]
+        high = [r for r, p in HIGH_RULES if p.search(text)]
+        if mode == "block" and high:
+            assert high == want["blocked"] and want["verdict"] == "blocked", case["name"]
+            continue
+        if mode == "observe":
+            assert want["body"] is None and want["verdict"] == "observe", case["name"]
+            continue
+        out, rules = redact_json_body(raw)
+        assert rules == want["redactions"], case["name"]
+        assert (json.loads(out) if rules else None) == want["body"], case["name"]
+        assert want["verdict"] == (f"redacted({len(rules)})" if rules else mode), case["name"]
+
+
+def test_the_extension_rules_file_is_generated_from_the_python_rules():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gen_extension_rules",
+        Path(__file__).resolve().parents[2] / "scripts" / "gen_extension_rules.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.TARGET.read_text() == mod.render(), (
+        "shield-rules.js is out of date: run python scripts/gen_extension_rules.py")
+
+
+def test_browser_rows_keep_rule_names_but_nothing_else():
+    row = clean_browser_row({
+        "kind": "browser.chat.request", "app": "chatgpt", "chars": 47,
+        "flags": ["pii:emails", "pii:emails", "pii:abdul@coriqo.io", 7, "high:credential_block"],
+        "redactions": ["emails", "abdul@coriqo.io", "password_said"],
+        "verdict": "redacted(1)"})
+    assert row["flags"] == ["pii:emails", "high:credential_block"]
+    assert row["redactions"] == ["emails"]      # password_said is a flag, never replaced
+    assert row["verdict"] == "redacted(1)"
+    assert "verdict" not in clean_browser_row({"kind": "browser.chat.request",
+                                               "verdict": "sent abdul@coriqo.io"})
+
+
+def test_a_redacted_or_stopped_browser_send_shows_what_shield_did(tmp_path):
+    base = _serve(make_cfg(tmp_path))
+    ext = {"Content-Type": "application/json",
+           "Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"}
+    code, _ = _post(base + "/api/browser", {"rows": [
+        {"kind": "browser.chat.request", "app": "claude", "chars": 47, "row_id": "r-redacted",
+         "flags": ["pii:emails"], "redactions": ["emails"], "verdict": "redacted(1)"},
+        {"kind": "browser.chat.request", "app": "claude", "chars": 37, "row_id": "r-blocked",
+         "flags": ["high:credential_block"], "verdict": "blocked"},
+        {"kind": "browser.chat.request", "app": "claude", "chars": 5, "row_id": "r-old-extension"},
+    ]}, ext)
+    assert code == 200
+    items = json.loads(_get(base + "/api/feed")[2])["items"]
+    old, stopped, redacted = items[:3]
+    assert redacted["redactions"] == ["emails"] and redacted["tier"] == "warn"
+    assert [f["rule"] for f in redacted["flags"]] == ["emails"]
+    assert stopped["status"] == "blocked" and stopped["tier"] == "bad"
+    assert "stopped in this browser" in stopped["verb"]
+    assert old["flags"] == [] and old["redactions"] == []
