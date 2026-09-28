@@ -187,6 +187,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the org server answer "Not the proxy" honestly instead of rendering a
   wall of zeros that would read as a quiet proxy.
 
+- **Enrollment — `GET /v1/console/enrollment` and
+  `/console/<tenant>/settings/enrollment`.** The blind-spot's counterpart
+  screen: the overview says an unenrolled device is invisible, and this
+  closes the loop by showing what *this* Mac's enrolment actually is — the
+  organisation it ships to (or "not enrolled — nothing leaves this Mac"),
+  the ship line's real state from the publisher (enrolled at, last send as a
+  duration, next attempt with `0` normalised to *never*, unsent entries only
+  while connected, the refused-device flag, the last error verbatim), the
+  managed policy if any, and the invariant-4 sharing disclosure computed
+  from the **effective** level — so a hand-edited local `sync: events` in
+  policy.json, which the managed merge already collapses back to `seal`,
+  cannot open a disclosure hole through the console either. The privacy-first
+  claim is rendered as evidence, not assertion: ledger rows, rows still
+  carrying text, sealed-with-text count, and the real file paths, all read
+  from disk at request time.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added

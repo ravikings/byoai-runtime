@@ -154,6 +154,8 @@ class ShieldConsoleAPI:
             return self._json(200, self.verdicts(tenant, query))
         if route == "/ledger":
             return self._json(200, self.ledger(tenant, query))
+        if route == "/enrollment":
+            return self._json(200, self.enrollment(tenant, query))
         if route.startswith("/entries/"):
             parts = route[len("/entries/"):].split("/")
             if len(parts) == 2:
@@ -415,6 +417,127 @@ class ShieldConsoleAPI:
                 "ref": None,
             })
         return out
+
+    # ------------------------------------------------------------------
+    # enrollment — who this Mac answers to, and what may leave it
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _epoch_iso(value) -> str | None:
+        """Publisher timestamps arrive as epoch floats (0 = never) or RFC3339
+        strings; the wire speaks only ISO-Z, so both are normalised and a
+        never is None, not 1970."""
+        if value is None or value == 0 or value == 0.0:
+            return None
+        if isinstance(value, (int, float)):
+            return _iso(datetime.fromtimestamp(float(value), timezone.utc))
+        return str(value)
+
+    def enrollment(self, tenant: str, query: dict[str, list[str]]) -> dict:
+        """The blind spot's counterpart: what enrolment this host actually
+        has, which devices it can see, and the disclosure the privacy-first
+        invariant requires — whoever receives activity is always named, in
+        plain words, and cannot be policy-hidden. Every value is read from
+        live state (the publisher's own status, the applied policy, the
+        managed envelope on disk), never echoed from a settings form."""
+        from byoai.integrations.shield import (
+            load_managed_policy,
+            load_policy,
+            managed_summary,
+            privacy_report,
+        )
+        from byoai.integrations.shield_sync import level_words, sync_level
+
+        dev = self._device_state(query)
+        seals = self.feed.seals
+        policy = load_policy(self.cfg)
+        pub = dev["pub"]
+
+        managed = managed_summary(load_managed_policy(self.cfg.managed_policy_path))
+        try:
+            pol_error = self.publisher.policy_status().get("error")
+        except Exception:  # noqa: BLE001 - a missing publisher must not blank the page
+            pol_error = None
+        if managed is not None:
+            managed = {**managed, "error": pol_error}
+
+        # Invariant 4: the sharing disclosure exists whenever a recipient is
+        # named OR the level is above seal — a level above seal is disclosed
+        # even when no organisation is named, and the words come from the
+        # same single-source helper the shield UI uses, so the two screens
+        # can never tell the user two different things about one setting.
+        level = sync_level(policy)
+        by = (managed or {}).get("by")
+        sharing = None
+        if by or level != "seal":
+            by = by or "Your administrator"
+            sharing = {
+                "level": level,
+                "by": by,
+                "since": self._epoch_iso((managed or {}).get("fetched_at")),
+                "words": level_words(level, by),
+            }
+
+        report = privacy_report(self.cfg, seals)
+        return {
+            "tenant": tenant,
+            "as_of": _iso(dev["now"]),
+            "device_id": dev["device_id"],
+            "chain": {
+                "sealed_total": dev["total"],
+                "height": int(dev["chain"].get("entries") or 0),
+                "root": dev["chain"].get("merkle_root"),
+                "tamper_evident": bool(dev["chain"].get("tamper_evident")),
+                "record_id": seals.record_id or None,
+            },
+            "connection": {
+                "connected": bool(pub.get("connected")),
+                "base_url": pub.get("base_url"),
+                "remote_tenant": pub.get("tenant"),
+                "enrolled_at": self._epoch_iso(pub.get("enrolled_at")),
+                "last_sent_at": self._epoch_iso(pub.get("last_sent_at")),
+                "next_attempt_at": self._epoch_iso(pub.get("next_attempt_at")),
+                "every_hours": pub.get("every_hours"),
+                "has_new": bool(pub.get("has_new")),
+                "unsent_entries": (max(0, int(dev["chain"].get("entries") or 0)
+                                       - int(pub.get("last_height") or 0))
+                                   if pub.get("connected") else None),
+                "last_error": pub.get("last_error"),
+                "needs_attention": bool(pub.get("needs_attention")),
+                "sync_pending": (pub.get("sync") or {}).get("pending"),
+            },
+            "managed": managed,
+            "sharing": sharing,
+            "policy": {
+                "mode": policy.get("mode"),
+                "keep_text": bool(policy.get("keep_text")),
+                "retention_days": policy.get("retention_days"),
+                "sync": level,  # the EFFECTIVE level, post managed-merge
+                "apps": {k: bool(v) for k, v in (policy.get("apps") or {}).items()},
+            },
+            # What the ledger holds right now, read from disk — the numbers
+            # behind the privacy-first claim, so the page can prove "no text"
+            # instead of asserting it.
+            "stored": {
+                "ledger_rows": report["ledger_rows"],
+                "rows_with_text": report["rows_with_text"],
+                "sealed_with_text": report["sealed_with_text"],
+                "oldest_row": report["oldest_row"],
+                "less_private": report["less_private"],
+                "paths": {
+                    "ledger": report["ledger_path"],
+                    "seal_state": str(self.cfg.seal_path.resolve()),
+                    "seal_log": str(seals.log_path.resolve()),
+                    "policy": (str(self.cfg.policy_path.resolve())
+                               if self.cfg.policy_path and self.cfg.policy_path.exists()
+                               else None),
+                    "managed_policy": (str(self.cfg.managed_policy_path.resolve())
+                                       if self.cfg.managed_policy_path
+                                       and self.cfg.managed_policy_path.exists() else None),
+                    "keys": str(self.cfg.key_dir.resolve()),
+                },
+            },
+        }
 
     # ------------------------------------------------------------------
     # the four endpoints

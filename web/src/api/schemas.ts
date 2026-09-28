@@ -417,6 +417,80 @@ export const EntryDetail = z.object({
 export type EntryDetail = z.infer<typeof EntryDetail>
 
 /* ------------------------------------------------------------------ *
+ * Enrollment — who this host answers to (§6.9 / blind-spot counterpart)
+ * ------------------------------------------------------------------ */
+
+export const EnrollmentState = z.object({
+  tenant: z.string(),
+  as_of: z.string(),
+  device_id: z.string(),
+  chain: z.object({
+    sealed_total: z.number().int(),
+    height: z.number().int(),
+    root: z.string().nullable(),
+    tamper_evident: z.boolean(),
+    record_id: z.string().nullable(),
+  }),
+  connection: z.object({
+    connected: z.boolean(),
+    base_url: z.string().nullable(),
+    remote_tenant: z.string().nullable(),
+    enrolled_at: z.string().nullable(),
+    last_sent_at: z.string().nullable(),
+    next_attempt_at: z.string().nullable(),
+    every_hours: z.number().nullable(),
+    has_new: z.boolean(),
+    /** Entries sealed since the last accepted send — knowable locally, and
+     *  null when unconnected because there is no ship line to be behind on. */
+    unsent_entries: z.number().int().nullable(),
+    last_error: z.string().nullable(),
+    needs_attention: z.boolean(),
+    sync_pending: z.number().int().nullable(),
+  }),
+  managed: z.object({
+    by: z.string().nullable(),
+    version: z.number().int().nullable(),
+    locked: z.array(z.string()),
+    fetched_at: z.unknown().nullable(),
+    error: z.string().nullable(),
+  }).nullable(),
+  /** Invariant 4's disclosure: whenever activity may leave, or an org owns
+   *  this device, who and what-in-plain-words, computed from the level — a
+   *  level above seal is disclosed even when no organisation is named. */
+  sharing: z.object({
+    level: z.string(),
+    by: z.string(),
+    since: z.string().nullable(),
+    words: z.string(),
+  }).nullable(),
+  policy: z.object({
+    mode: z.enum(['observe', 'redact', 'block']).nullable(),
+    keep_text: z.boolean(),
+    retention_days: z.number().int().nullable(),
+    /** The effective sharing level after the managed merge — a hand-edited
+     *  local `sync` is already collapsed back to `seal` by the loader. */
+    sync: z.string(),
+    apps: z.record(z.boolean()),
+  }),
+  stored: z.object({
+    ledger_rows: z.number().int(),
+    rows_with_text: z.number().int(),
+    sealed_with_text: z.number().int(),
+    oldest_row: z.string().nullable(),
+    less_private: z.boolean(),
+    paths: z.object({
+      ledger: z.string(),
+      seal_state: z.string(),
+      seal_log: z.string(),
+      policy: z.string().nullable(),
+      managed_policy: z.string().nullable(),
+      keys: z.string(),
+    }),
+  }),
+})
+export type EnrollmentState = z.infer<typeof EnrollmentState>
+
+/* ------------------------------------------------------------------ *
  * Runtime (proxy) — existing endpoints, §1.1
  * ------------------------------------------------------------------ */
 

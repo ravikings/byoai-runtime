@@ -18,6 +18,7 @@ import { apiFetch, scopeKey } from './client'
 import {
   CoverageReport,
   DeviceList,
+  EnrollmentState,
   EntryDetail,
   FindingList,
   FleetSummary,
@@ -88,6 +89,7 @@ export const consoleKeys = {
   findings: (scope: Scope) => ['console', 'fleet', 'findings', scopeKey(scope)] as const,
   verdicts: (scope: Scope) => ['console', 'verdicts', scopeKey(scope)] as const,
   ledger: (scope: Scope) => ['console', 'ledger', scopeKey(scope)] as const,
+  enrollment: (scope: Scope) => ['console', 'enrollment', scopeKey(scope)] as const,
 } as const
 
 export function useFleetSummary(scope: Scope): ConsoleQuery<FleetSummary> {
@@ -178,6 +180,21 @@ export function useEntry(tenant: string, deviceId: string, seq: string): Console
         apiFetch(`/entries/${encodeURIComponent(deviceId)}/${encodeURIComponent(seq)}`,
           EntryDetail, { scope: { tenant }, signal }),
       staleTime: 300_000,
+    }),
+  )
+}
+
+export type EnrollmentPayload = import('zod').z.infer<typeof EnrollmentState>
+
+/** Enrollment state is near-static (it changes when a send succeeds or the
+ *  managed policy refreshes), so it polls slower than the fleet screens. */
+export function useEnrollment(scope: Scope): ConsoleQuery<EnrollmentPayload> {
+  return wrap(
+    useQuery({
+      queryKey: [...consoleKeys.enrollment(scope)] as const,
+      queryFn: ({ signal }) => apiFetch('/enrollment', EnrollmentState, { scope, signal }),
+      staleTime: 30_000,
+      refetchInterval: 60_000,
     }),
   )
 }
