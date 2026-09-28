@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import time as _time
+
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from byoai.integrations.shield import Feed, ShieldConfig
@@ -547,3 +549,27 @@ def test_enrollment_ignores_an_unsigned_local_sync_level(tmp_path):
     assert e["sharing"] is None
     assert e["managed"] is None
     assert e["policy"]["sync"] == "seal"
+
+
+@pytest.mark.parametrize("zone", ["America/Chicago", "Asia/Tokyo"])
+def test_a_browser_send_in_the_verdict_stream_keeps_its_real_minute(tmp_path, monkeypatch, zone):
+    """Feed items show browser sends in local time (the seal keeps the
+    extension's UTC stamp). Reading such an item as UTC again would move it
+    by the offset: hours into the past west of UTC, into the future (and out
+    of every window) east of it."""
+    monkeypatch.setenv("TZ", zone)
+    _time.tzset()
+    try:
+        now = datetime.now(timezone.utc)
+        sent = now - timedelta(minutes=4)
+        api = make_api(make_cfg(tmp_path), seed=[{
+            "kind": "browser.chat.request", "app": "claude", "chars": 40,
+            "sent_at": sent.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "wall_clock": sent.astimezone().strftime("%Y-%m-%d %H:%M:%S")}])
+        _, out = get(api, "/verdicts")
+        [row] = out["verdicts"]
+        shown = datetime.fromisoformat(row["ts"].replace("Z", "+00:00"))
+        assert abs((shown - sent).total_seconds()) < 2
+    finally:
+        monkeypatch.delenv("TZ")
+        _time.tzset()

@@ -1271,3 +1271,30 @@ def test_a_redacted_or_stopped_browser_send_shows_what_shield_did(tmp_path):
     assert stopped["status"] == "blocked" and stopped["tier"] == "bad"
     assert "stopped in this browser" in stopped["verb"]
     assert old["flags"] == [] and old["redactions"] == []
+
+
+def test_a_browser_send_shows_in_local_time_and_is_sealed_once(tmp_path, monkeypatch):
+    """The extension stamps sends in UTC; the person reads this Mac's time.
+    The seal keeps the UTC stamp, so reading the ledger again (a restart)
+    finds every browser row already sealed rather than sealing it anew."""
+    import time as _time
+    monkeypatch.setenv("TZ", "America/Chicago")
+    _time.tzset()
+    try:
+        cfg = make_cfg(tmp_path)
+        cfg.ledger.write_text(json.dumps({
+            "kind": "browser.chat.request", "app": "chatgpt", "chars": 47,
+            "sent_at": "2026-09-28T18:18:56.238Z", "wall_clock": "2026-09-28 13:18:58",
+            "row_id": "04b52d1a-8537-4889-9b91-4b6dd77b8999"}) + "\n")
+        feed = Feed(cfg)
+        feed.scan_initial()
+        item = feed.items[0]
+        assert (item["date"], item["ts"]) == ("2026-09-28", "13:18:56")
+        sealed = feed.seals.total
+        again = Feed(cfg)
+        again.scan_initial()
+        assert again.items[0]["ts"] == "13:18:56"
+        assert again.seals.total == sealed == 1
+    finally:
+        monkeypatch.delenv("TZ")
+        _time.tzset()

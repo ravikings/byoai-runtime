@@ -65,6 +65,14 @@ def _parse_bound(raw: str | None) -> datetime | None:
         return None
 
 
+def _item_time(item: dict) -> datetime | None:
+    """A feed item's time. Unlike a sealed payload, a feed item shows this
+    Mac's local time for every source, browser rows included (the feed
+    converts the extension's UTC stamp for display; the seal keeps the UTC
+    text, which is what :func:`_event_time` resolves)."""
+    return _event_time({"date": item.get("date"), "ts": item.get("ts")})
+
+
 def _event_time(payload: dict) -> datetime | None:
     """A sealed payload's stamp, resolved to the clock that actually wrote it.
 
@@ -321,8 +329,7 @@ class ShieldConsoleAPI:
         refused: dict[tuple[str, str], int] = {}
         oldest_seen: datetime | None = None
         for it in list(self.feed.items):
-            dt = _event_time({"date": it.get("date"), "ts": it.get("ts"),
-                              "surface": it.get("surface")})
+            dt = _item_time(it)
             if dt is not None:
                 when = dt.astimezone(timezone.utc)
                 if oldest_seen is None or when < oldest_seen:
@@ -351,8 +358,7 @@ class ShieldConsoleAPI:
             prev_from, prev_to = frm - span, frm
             p_denied = p_total = 0
             for it in list(self.feed.items):
-                dt = _event_time({"date": it.get("date"), "ts": it.get("ts"),
-                                  "surface": it.get("surface")})
+                dt = _item_time(it)
                 if dt is None or it.get("status") == "running":
                     continue
                 when = dt.astimezone(timezone.utc)
@@ -765,8 +771,7 @@ class ShieldConsoleAPI:
         for it in list(self.feed.items):          # newest first
             if it.get("status") == "running":
                 continue
-            dt = _event_time({"date": it.get("date"), "ts": it.get("ts"),
-                              "surface": it.get("surface")})
+            dt = _item_time(it)
             if dt is None:
                 continue
             when = dt.astimezone(timezone.utc)

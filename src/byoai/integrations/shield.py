@@ -1479,8 +1479,14 @@ class Feed:
                 ts = parsed.strftime("%H:%M:%S.%f")
                 ts = ts[:ts.index('.')] if '.' in ts else ts
                 date = parsed.strftime("%Y-%m-%d")
+                # sent_at is UTC; every other row's time is this Mac's local
+                # time, and so is what the person reads. Only the shown time
+                # changes: the seal keeps the UTC one above, since a changed
+                # payload would seal every earlier browser row a second time.
+                local = parsed.astimezone() if parsed.tzinfo else parsed
+                shown_ts, shown_date = local.strftime("%H:%M:%S"), local.strftime("%Y-%m-%d")
             except ValueError:
-                pass
+                shown_ts, shown_date = ts, date
             status = ("answered" if r.get("ok") else "failed"
                       if kind == "browser.chat.status" and "ok" in r
                       else "answered")
@@ -1508,6 +1514,7 @@ class Feed:
                       status="blocked" if blocked else status,
                       verdict=r.get("verdict"), text_hmac=r.get("text_hmac"),
                       chars=r.get("chars"), redactions=r.get("redactions"))
+            self.items[0]["ts"], self.items[0]["date"] = shown_ts, shown_date
         elif kind == "tool.call":
             ident = r.get("identity") or {}
             tool = r.get("tool") or "execute"

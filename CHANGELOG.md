@@ -222,6 +222,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carrying text, sealed-with-text count, and the real file paths, all read
   from disk at request time.
 
+### Fixed
+- **Browser sends showed in UTC, and each one was listed twice.** The
+  Shield screen showed a browser message at the extension's UTC stamp
+  (18:18 for a message sent at 13:18 in Chicago); it now shows this Mac's
+  local time, like every other row. The seal still binds the UTC stamp, so
+  earlier browser rows aren't sealed again on restart; the fleet console
+  and fleet sync read feed items as local time for every source, and only
+  sealed payloads as UTC for browser rows. And the extension's
+  Enter/click fallback, meant for sends that don't go over `fetch`, filed a
+  second length-less row for every send the page capture had already
+  recorded; the relay (extension 0.6.1) now holds the fallback row for up
+  to 5 seconds and drops it when the page capture reports the same send.
+
 ## [0.1.0a7] - 2026-08-26
 
 ### Added

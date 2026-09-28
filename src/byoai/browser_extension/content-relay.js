@@ -29,6 +29,17 @@
   }
 
   let disabled = false
+  // The key/click fallback's state (see maybeSend); up here because
+  // disable() can run before the rest of this script has.
+  // Enter and a click within this long are one send.
+  const ONE_SEND_MS = 1500
+  // How long the fallback row waits for the page capture to report the same
+  // send before it is filed. Generous, since a slow page may start its fetch
+  // late; a websocket-only send is just noted a few seconds later.
+  const FETCH_WAIT_MS = 5000
+  let lastSend = 0
+  let lastFetchSend = 0
+  let pendingFallback = null
   // Nothing is forwarded until the user has agreed on the welcome page. The
   // background worker checks again; this keeps the page-world facts from even
   // leaving this script while capture is off.
@@ -81,6 +92,13 @@
   function onCapture(ev) {
     const row = ev.detail
     if (row && row.kind && !disabled && consented !== false) {
+      if (row.kind === 'browser.chat.request') {
+        // The page capture saw this send, so the key/click fallback for the
+        // same send is not a second message.
+        lastFetchSend = Date.now()
+        clearTimeout(pendingFallback)
+        pendingFallback = null
+      }
       forward(row)
     }
   }
@@ -88,6 +106,7 @@
     disabled = true
     window.removeEventListener('shield-agent-capture', onCapture)
     window.removeEventListener('shield-agent-config-request', tellPage)
+    clearTimeout(pendingFallback)
     document.removeEventListener('keydown', onKey, true)
     document.removeEventListener('click', onClick, true)
   }
@@ -95,8 +114,9 @@
   window.addEventListener('shield-agent-capture', onCapture)
 
   // Fallback for sends that don't go over fetch: watch the send control so a
-  // websocket-only send is still recorded as data-free activity.
-  let lastSend = 0
+  // websocket-only send is still recorded as data-free activity. Enter or a
+  // click comes before the app's fetch, so the fallback row waits (see
+  // FETCH_WAIT_MS) and is dropped if the page capture records the same send.
   function onKey(ev) {
     if (ev.key === 'Enter' && ev.target &&
         ev.target.matches?.('textarea, [contenteditable="true"], input')) {
@@ -111,10 +131,15 @@
   function maybeSend() {
     if (disabled || consented === false) return
     const now = Date.now()
-    if (now - lastSend < 1500) return // the fetch patch already recorded it
+    if (now - lastSend < ONE_SEND_MS) return // Enter and the click for one send
     lastSend = now
-    const row = { kind: 'browser.chat.request', app: location.host, chars: null, wire: 'input' }
-    forward(row)
+    if (now - lastFetchSend < FETCH_WAIT_MS) return // the page capture already has it
+    clearTimeout(pendingFallback)
+    pendingFallback = setTimeout(() => {
+      pendingFallback = null
+      if (disabled || consented === false) return
+      forward({ kind: 'browser.chat.request', app: location.host, chars: null, wire: 'input' })
+    }, FETCH_WAIT_MS)
   }
 
   document.addEventListener('keydown', onKey, true)

@@ -112,10 +112,10 @@ def _flags(item: dict) -> list[dict]:
 
 
 def _occurred_at(item: dict) -> str | None:
-    """UTC ISO time from the item's date and time of day. Browser rows carry
-    the extension's own UTC timestamp; every other source stamps this Mac's
-    local wall clock. (A local time inside a DST fold resolves to the first
-    occurrence, at worst an hour off.)"""
+    """UTC ISO time from the item's date and time of day, which is this
+    Mac's local time for every source (the feed shows browser rows, stamped
+    in UTC by the extension, in local time too). A local time inside a DST
+    fold resolves to the first occurrence, at worst an hour off."""
     date, ts = item.get("date"), item.get("ts")
     if not (isinstance(date, str) and isinstance(ts, str)):
         return None
@@ -123,10 +123,7 @@ def _occurred_at(item: dict) -> str | None:
         local = _dt.datetime.strptime(f"{date} {ts[:8]}", "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
-    if item.get("source") == "browser":
-        utc = local.replace(tzinfo=_dt.timezone.utc)
-    else:
-        utc = local.astimezone(_dt.timezone.utc)
+    utc = local.astimezone(_dt.timezone.utc)
     return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
