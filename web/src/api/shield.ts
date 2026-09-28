@@ -29,6 +29,9 @@ export const ShieldItem = z.object({
   verdict: z.string().nullish(),
   chars: z.number().nullish(),
   redactions: z.array(z.string()).nullish(),
+  /** Tools the AI app ran for the reply (browser), e.g. "web.run"; names only. */
+  tools: z.array(z.string()).nullish(),
+  sources: z.number().nullish(),
   tier: z.enum(['ok', 'warn', 'bad']),
   flags: z.array(ShieldFlag),
   response_stream: z.boolean().optional(),

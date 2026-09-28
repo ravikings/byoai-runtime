@@ -177,6 +177,10 @@
     return { facts, raw: out }
   }
 
+  // A random id for one send, carrying nothing about it.
+  const newId = () => (crypto.randomUUID?.() ??
+    Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''))
+
   function emit(detail) {
     window.dispatchEvent(new CustomEvent('shield-agent-capture', { detail }))
   }
@@ -201,7 +205,9 @@
   // stop, record, then send.
   function send(self, input, init, raw, wire) {
     const { facts, raw: out, blocked } = inspect(raw)
-    const base = { app, wire: wire.slice(0, 60) }
+    // Ties this send's reply row to it, however many sends overlap.
+    const sendId = newId()
+    const base = { app, wire: wire.slice(0, 60), send_id: sendId }
     emit({ kind: 'browser.chat.request', ...base, ...facts })
     if (blocked) return Promise.resolve(refusal(blocked))
     let args = [input, init]
@@ -212,8 +218,87 @@
     }
     return orig.apply(self, args).then((res) => {
       emit({ kind: 'browser.chat.status', app, chars: facts.chars, ok: res.ok, status: res.status })
+      if (config.consented && covered && res.ok &&
+          /event-stream/.test(res.headers.get('content-type') || '')) {
+        try { watchReply(res.clone(), sendId) } catch { /* the reply is the app's, whatever happens here */ }
+      }
       return res
     })
+  }
+
+  /*
+   * Which tools the AI ran for this reply, read from a copy of the reply
+   * stream as it arrives: tool names and a count of the sources a search
+   * returned. The reply's text passes through here only to be parsed as
+   * JSON events and is dropped; nothing of it is kept or sent.
+   *
+   * ChatGPT streams each message as a whole object ({o: "add", v: {message}}):
+   * a tool's own message carries author {role: "tool", name: "web.run"}, and
+   * the assistant's call to it names it as the recipient. Anthropic-style
+   * streams (claude.ai) announce a tool with a content_block_start whose
+   * block is a tool_use or server_tool_use.
+   */
+  const TOOL_NAME = /^[A-Za-z0-9_.:-]{1,48}$/
+  const MAX_TOOLS = 12
+  const MAX_STREAM = 8 * 1024 * 1024 // stop reading a copy past this; the app keeps its own
+
+  function toolsIn(ev, found) {
+    const msg = ev?.v?.message ?? ev?.message
+    if (msg && typeof msg === 'object') {
+      const role = msg.author?.role
+      if (role === 'tool' && typeof msg.author.name === 'string') found.tools.add(msg.author.name)
+      else if (role === 'assistant' && typeof msg.recipient === 'string' &&
+               msg.recipient !== 'all' && msg.recipient !== 'assistant') found.calls.add(msg.recipient)
+      for (const g of msg.metadata?.search_result_groups ?? []) {
+        if (g && typeof g.domain === 'string') found.domains.add(g.domain)
+      }
+    }
+    const block = ev?.content_block
+    if (ev?.type === 'content_block_start' && block &&
+        (block.type === 'tool_use' || block.type === 'server_tool_use') && typeof block.name === 'string') {
+      found.tools.add(block.name)
+    }
+  }
+
+  function summarise(found) {
+    // A call is only listed when no tool answered under that name or a
+    // longer one (ChatGPT addresses "web", then "web.run" answers).
+    const names = [...found.tools]
+    for (const call of found.calls) {
+      if (!names.some((n) => n === call || n.startsWith(call + '.'))) names.push(call)
+    }
+    return names.filter((n) => TOOL_NAME.test(n)).slice(0, MAX_TOOLS)
+  }
+
+  async function watchReply(copy, sendId) {
+    const reader = copy.body?.getReader()
+    if (!reader) return
+    const decoder = new TextDecoder()
+    const found = { tools: new Set(), calls: new Set(), domains: new Set() }
+    let pending = ''
+    let seen = 0
+    const take = (line) => {
+      if (!line.startsWith('data:')) return
+      const data = line.slice(5).trim()
+      if (!data || data === '[DONE]') return
+      try { toolsIn(JSON.parse(data), found) } catch { /* a partial or non-JSON line */ }
+    }
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        seen += value.byteLength
+        if (seen > MAX_STREAM) { reader.cancel().catch(() => {}); break }
+        pending += decoder.decode(value, { stream: true })
+        const lines = pending.split('\n')
+        pending = lines.pop()
+        lines.forEach(take)
+      }
+      take(pending)
+    } catch { /* the stream was cut: report what was seen */ }
+    const tools = summarise(found)
+    if (!tools.length || !config.consented) return
+    emit({ kind: 'browser.chat.reply', app, send_id: sendId, tools, sources: found.domains.size })
   }
 
   window.fetch = function (input, init) {

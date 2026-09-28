@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
-import { REPO } from './env.mjs'
+import { REPO, sleep } from './env.mjs'
 
 const EXT = path.join(REPO, 'src', 'byoai', 'browser_extension')
 const RULES_JS = readFileSync(path.join(EXT, 'shield-rules.js'), 'utf8')
@@ -22,7 +22,7 @@ const { cases } = JSON.parse(readFileSync(path.join(REPO, 'tests', 'fixtures', '
 const SEND_PATH = { 'claude.ai': '/api/organizations/o/chat_conversations/c/completion', 'chatgpt.com': '/backend-api/conversation' }
 
 /** A page on `host` with the capture loaded; `config` is what the relay would say. */
-function page(host, config) {
+function page(host, config, reply = () => new Response('{}', { status: 200 })) {
   const target = new EventTarget()
   const sent = []
   const captured = []
@@ -33,7 +33,7 @@ function page(host, config) {
     dispatchEvent: target.dispatchEvent.bind(target),
     async fetch(input, init) {
       sent.push(input instanceof Request ? await input.text() : init?.body)
-      return new Response('{}', { status: 200 })
+      return reply()
     },
   }
   window.addEventListener('shield-agent-capture', (ev) => captured.push(ev.detail))
@@ -42,7 +42,7 @@ function page(host, config) {
     window.addEventListener('shield-agent-config-request', () =>
       window.dispatchEvent(new CustomEvent('shield-agent-config', { detail: JSON.stringify(config) })))
   }
-  const ctx = vm.createContext({ window, location: window.location, CustomEvent, Request, Response })
+  const ctx = vm.createContext({ window, location: window.location, CustomEvent, Request, Response, TextDecoder, crypto })
   vm.runInContext(RULES_JS, ctx)
   vm.runInContext(CONTENT_JS, ctx)
   const send = (raw, init = {}) =>
@@ -146,5 +146,67 @@ describe('page capture: a body it cannot read', () => {
     await p.window.fetch('https://claude.ai' + SEND_PATH['claude.ai'], { method: 'POST', body: form })
     expect(p.sent).toEqual([form])
     expect(p.captured).toEqual([{ kind: 'browser.chat.request', app: 'claude', chars: null, wire: SEND_PATH['claude.ai'] }])
+  })
+})
+
+// The shapes ChatGPT streamed for "what is the weather in houston today?"
+// (2026-09-28): whole messages as {o: "add", v: {message}} events, text cut.
+const add = (message) => `data: ${JSON.stringify({ p: '', o: 'add', v: { message } })}\n\n`
+const CHATGPT_SEARCH = [
+  'event: delta_encoding\ndata: "v1"\n\n',
+  add({ author: { role: 'user' }, recipient: 'all', content: { content_type: 'text', parts: ['what is the weather in houston today?'] } }),
+  add({ author: { role: 'assistant' }, recipient: 'web', content: { content_type: 'text', parts: [''] } }),
+  add({ author: { role: 'assistant' }, recipient: 'web.run', content: { content_type: 'text', parts: ['{"search_query":[{"q":"Houston weather today"}]}'] } }),
+  add({ author: { role: 'tool', name: 'web.run' }, recipient: 'all', content: { content_type: 'text', parts: [''] },
+    metadata: { search_result_groups: [{ domain: 'weather.gov' }, { domain: 'weather.com' }, { domain: 'weather.gov' }] } }),
+  'data: {"o":"append","p":"/message/content/parts/0","v":"It is 91\\u00b0F and sunny in Houston."}\n\n',
+  add({ author: { role: 'assistant' }, recipient: 'all', content: { content_type: 'text', parts: ['It is 91°F and sunny in Houston.'] } }),
+  'data: [DONE]\n\n',
+]
+const streamOf = (events, split = 7) => () => {
+  const bytes = new TextEncoder().encode(events.join(''))
+  // Delivered in small chunks, so events are cut mid-line as on the wire.
+  return new Response(new ReadableStream({
+    start(c) { for (let i = 0; i < bytes.length; i += split) c.enqueue(bytes.slice(i, i + split)); c.close() },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8' } })
+}
+const settle = () => sleep(20)   // lets the copy of the stream finish being read
+
+describe('page capture: which tools the AI ran for a reply', () => {
+  it('names the tools and counts the sources, and keeps none of the reply', async () => {
+    const p = page('chatgpt.com', agreed('redact'), streamOf(CHATGPT_SEARCH))
+    const res = await p.send(JSON.stringify({ messages: [{ content: { parts: ['weather?'] } }] }))
+    expect(await res.text()).toContain('sunny')          // the app still gets the whole reply
+    await settle()
+    const reply = p.captured.find((r) => r.kind === 'browser.chat.reply')
+    expect(reply).toEqual({ kind: 'browser.chat.reply', app: 'chatgpt', send_id: p.captured[0].send_id, tools: ['web.run'], sources: 2 })
+    expect(p.captured[0].send_id).toMatch(/^[0-9a-f-]{32,36}$/)
+    expect(JSON.stringify(p.captured)).not.toMatch(/91|sunny|Houston weather/)
+  })
+
+  it('files no reply row when no tool ran', async () => {
+    const plain = [CHATGPT_SEARCH[0], CHATGPT_SEARCH[1], CHATGPT_SEARCH[6], CHATGPT_SEARCH[7]]
+    const p = page('chatgpt.com', agreed('redact'), streamOf(plain))
+    await (await p.send(JSON.stringify({ prompt: 'hi' }))).text()
+    await settle()
+    expect(p.captured.map((r) => r.kind)).toEqual(['browser.chat.request', 'browser.chat.status'])
+  })
+
+  it('reads nothing before the user agreed', async () => {
+    const p = page('chatgpt.com', { consented: false, mode: 'redact' }, streamOf(CHATGPT_SEARCH))
+    await (await p.send(JSON.stringify({ prompt: 'hi' }))).text()
+    await settle()
+    expect(p.captured.some((r) => r.kind === 'browser.chat.reply')).toBe(false)
+  })
+
+  it('reads an Anthropic-style tool block', async () => {
+    const events = [
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","name":"web_search","input":{}}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]
+    const p = page('claude.ai', agreed('redact'), streamOf(events))
+    await (await p.send(JSON.stringify({ prompt: 'hi' }))).text()
+    await settle()
+    expect(p.captured.find((r) => r.kind === 'browser.chat.reply')).toMatchObject({ tools: ['web_search'], sources: 0 })
   })
 })

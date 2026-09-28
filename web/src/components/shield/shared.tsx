@@ -138,6 +138,16 @@ export function WhenFilter({ value, onChange }: { value: When; onChange: (w: Whe
   )
 }
 
+/** A tool name as ChatGPT or Claude reports it, in words. Unknown names are shown as they are. */
+const TOOL_LABEL: Record<string, string> = {
+  'web.run': 'Web search', web: 'Web search', web_search: 'Web search', browser: 'Web search',
+  python: 'Code run', 'python.exec': 'Code run', code_execution: 'Code run',
+  bio: 'Memory', canmore: 'Canvas', file_search: 'File search', myfiles_browser: 'File search',
+  image_gen: 'Image generation', 'dalle.text2im': 'Image generation',
+}
+export const toolLabel = (name: string) =>
+  TOOL_LABEL[name] ?? (name.startsWith('api_tool') || name.includes('connector') ? `Connector (${name})` : name)
+
 export type Need = 'all' | 'warn' | 'bad' | 'mcp' | 'browser'
 export const NEED_OPTIONS: readonly (readonly [Need, string])[] = [
   ['all', 'All'], ['warn', 'Caught'], ['bad', 'Stopped or high risk'],

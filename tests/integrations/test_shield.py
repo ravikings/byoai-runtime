@@ -1298,3 +1298,65 @@ def test_a_browser_send_shows_in_local_time_and_is_sealed_once(tmp_path, monkeyp
     finally:
         monkeypatch.delenv("TZ")
         _time.tzset()
+
+
+def test_a_reply_row_keeps_tool_names_and_nothing_else():
+    row = clean_browser_row({"kind": "browser.chat.reply", "app": "chatgpt",
+                             "tools": ["web.run", "web.run", "rm -rf /", 3, "x" * 49],
+                             "sources": 9, "text": "It is sunny"})
+    assert row["tools"] == ["web.run"] and row["sources"] == 9
+    assert "text" not in row
+    assert "sources" not in clean_browser_row({"kind": "browser.chat.reply", "sources": -1})
+
+
+def test_tools_land_on_their_message_and_are_sealed_once(tmp_path):
+    cfg = make_cfg(tmp_path)
+    rows_ = [
+        {"kind": "browser.chat.request", "app": "chatgpt", "chars": 5, "row_id": "a" * 8,
+         "sent_at": "2026-09-28T18:00:00Z", "wall_clock": "2026-09-28 13:00:00"},
+        {"kind": "browser.chat.request", "app": "chatgpt", "chars": 36, "row_id": "b" * 8,
+         "sent_at": "2026-09-28T18:30:00Z", "wall_clock": "2026-09-28 13:30:00"},
+        {"kind": "browser.chat.status", "app": "chatgpt", "ok": True, "status": 200},
+        {"kind": "browser.chat.reply", "app": "chatgpt", "tools": ["web.run"], "sources": 9},
+    ]
+    cfg.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows_))
+    feed = Feed(cfg)
+    feed.scan_initial()
+    newest, older = feed.items[0], feed.items[1]
+    assert newest["tools"] == ["web.run"] and newest["sources"] == 9
+    assert older["tools"] == [] and older["sources"] is None
+    sealed = feed.seals.total
+    again = Feed(cfg)
+    again.scan_initial()                     # a restart replays the ledger
+    assert again.seals.total == sealed and again.items[0]["seal"] == newest["seal"]
+
+
+def test_a_failed_browser_send_marks_the_newest_message(tmp_path):
+    cfg = make_cfg(tmp_path)
+    rows_ = [
+        {"kind": "browser.chat.request", "app": "claude", "chars": 5, "row_id": "c" * 8},
+        {"kind": "browser.chat.request", "app": "claude", "chars": 6, "row_id": "d" * 8},
+        {"kind": "browser.chat.status", "app": "claude", "ok": False, "status": 500},
+    ]
+    cfg.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows_))
+    feed = Feed(cfg)
+    feed.scan_initial()
+    assert [it["status"] for it in feed.items] == ["failed", "answered"]
+
+
+def test_a_late_reply_finds_its_own_message_by_send_id(tmp_path):
+    """Send A in one tab, send B in another, then A's reply (with a web
+    search) finishes: the tools belong to A, not to B, the newer one."""
+    cfg = make_cfg(tmp_path)
+    rows_ = [
+        {"kind": "browser.chat.request", "app": "chatgpt", "chars": 5, "row_id": "e" * 8, "send_id": "send-aaaa"},
+        {"kind": "browser.chat.request", "app": "chatgpt", "chars": 6, "row_id": "f" * 8, "send_id": "send-bbbb"},
+        {"kind": "browser.chat.reply", "app": "chatgpt", "send_id": "send-aaaa", "tools": ["web.run"], "sources": 3},
+    ]
+    cfg.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows_))
+    feed = Feed(cfg)
+    feed.scan_initial()
+    b, a = feed.items[0], feed.items[1]
+    assert (a["tools"], a["sources"]) == (["web.run"], 3)
+    assert (b["tools"], b["sources"]) == ([], None)
+    assert clean_browser_row({"kind": "browser.chat.reply", "send_id": "x y"}).get("send_id") is None
