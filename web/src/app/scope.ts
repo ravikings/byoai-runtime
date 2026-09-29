@@ -370,4 +370,4 @@ export const DEFAULT_TENANT: string =
   typeof import.meta.env.VITE_BYOAI_TENANT === 'string' &&
   import.meta.env.VITE_BYOAI_TENANT !== ''
     ? import.meta.env.VITE_BYOAI_TENANT
-    : 'acme-prod'
+    : 'default'

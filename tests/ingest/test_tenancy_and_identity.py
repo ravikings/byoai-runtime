@@ -291,3 +291,19 @@ def test_checkpoints_from_unenrolled_device_are_refused_like_batches(store):
 
     with pytest.raises(UnknownDeviceError):
         store.accept_checkpoints(stranger, [cp])
+
+
+def test_default_tenant_slug_is_none_until_a_tenant_exists(store):
+    """A fresh store, single-org deployments (§4.2) pick a fallback org
+    rather than serving whatever the caller asks for."""
+    assert store.default_tenant_slug() is None
+
+
+def test_default_tenant_slug_is_the_oldest_tenant(store):
+    """The single-org console defaults to whichever tenant is already in the
+    store, so an existing install upgrades with no config change — the first
+    one created is the one it picks, not the most recently active."""
+    _enrol(store, "acme", "acme-machine")
+    _enrol(store, "globex", "globex-machine")
+
+    assert store.default_tenant_slug() == "acme"

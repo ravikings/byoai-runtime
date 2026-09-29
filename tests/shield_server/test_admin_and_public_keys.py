@@ -90,6 +90,28 @@ async def test_console_router_works_with_admin_token(async_client, cfg):
     assert r.json()["tenant"] == "default"
 
 
+@pytest.mark.parametrize(
+    "path", ["/v1/console/fleet", "/v1/console/fleet/devices",
+             "/v1/console/fleet/coverage", "/v1/console/fleet/findings"]
+)
+async def test_console_router_refuses_other_org(async_client, cfg, path):
+    """The public console is single-org (§4.2): this server serves only
+    `cfg.org`, and any other tenant slug in the query string is a 404, not an
+    (empty or someone else's) fleet — a many-org view is Coriqo's paid MSP
+    console."""
+    r = await async_client.get(path, params={"tenant": "some-other-org"},
+                               headers={"Authorization": f"Bearer {cfg.admin_token}"})
+    assert r.status_code == 404
+
+
+async def test_console_root_lands_on_this_servers_org(async_client, cfg):
+    """/console/ goes to the served org, not the SPA's build-time default,
+    so the free server's console works out of the box."""
+    r = await async_client.get("/console/", follow_redirects=False)
+    assert r.status_code == 307
+    assert r.headers["location"] == f"/console/{cfg.org}/fleet"
+
+
 async def test_mint_and_list_and_revoke_tokens(async_client, cfg):
     headers = {"Authorization": f"Bearer {cfg.admin_token}"}
     r = await async_client.post("/api/v1/shield/tokens", json={"label": "mac1"}, headers=headers)

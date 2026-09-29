@@ -69,7 +69,8 @@ the recorder's shipped evidence; it never writes to a ledger.
 | `BYOAI_CONSOLE` | proxy (shell) | `1` | Set to `0` to stop the proxy serving `/console/` at all (a headless deployment that wants only the API). |
 | `BYOAI_PROXY_URL` | dev server (shell) | `http://127.0.0.1:8787` | Origin the Vite dev server proxies `/v1` to. Set this when the context-cache proxy runs on another host or port. |
 | `VITE_API_BASE` | build/runtime | `/v1/console` | Base path the console calls. Change only if the console API is mounted somewhere other than the proxy's `/v1/console`. |
-| `VITE_BYOAI_TENANT` | build time | `acme-prod` | Tenant the console lands on when a URL names none (`/` and `/console` redirect to `/console/{tenant}/fleet`). Baked in at build time, so a deployment serving one tenant should set it rather than rely on the placeholder default. |
+| `VITE_BYOAI_TENANT` | build time | `default` | Tenant the SPA lands on when a URL names none and it is running without a server redirect (the Vite dev server). Both `byoai-shield-server` and the proxy redirect `/console/` to their own org (`BYOAI_SHIELD_SERVER_ORG`, `BYOAI_CONSOLE_ORG`) before the SPA loads, so a served console never depends on this value. |
+| `BYOAI_CONSOLE_ORG` | proxy (shell) | the store's existing tenant, else `default` | The one org slug `/v1/console/*` serves. Any other `tenant` in the query string gets a 404, not that org's data. The public console is single-org (a many-org view is Coriqo's paid MSP console): an install that already has a tenant in its ingest store keeps working unchanged, since nothing on this side creates a second one. Set this only if you need the served slug to be something other than what is already there. |
 
 ### Installing Shield
 
@@ -199,7 +200,7 @@ app; the console script wraps it. Install with
 | `BYOAI_SHIELD_SERVER_HOST` | `127.0.0.1` | Bind address. |
 | `BYOAI_SHIELD_SERVER_PORT` | `17840` | Bind port. Deliberately not 17831 (`byoai-shield`'s own local port). |
 | `BYOAI_SHIELD_SERVER_PUBLIC_URL` | `http://127.0.0.1:17840` | Returned to devices at enrolment as `coriqo_base_url`. Put a reverse proxy in front and set this to its `https://` address before any device outside this host enrols — the enrolment token and every signed request cross the network in the clear otherwise. |
-| `BYOAI_SHIELD_SERVER_ORG` | `default` | The single tenant slug this server serves. |
+| `BYOAI_SHIELD_SERVER_ORG` | `default` | The single tenant slug this server serves. Enrolment always binds to it (a second org can't be created through this server), and `/v1/console/*` answers 404 for any other `tenant` in the query string — a many-org fleet view is Coriqo's paid MSP console, not this free server's job. |
 | `BYOAI_SHIELD_SERVER_ADMIN_TOKEN` | generated on first run, saved 0600, printed once | Bearer token for the admin API (`/api/v1/shield/*`, `/v1/console/*`) and the console. Setting this env var yourself skips generation and file storage. |
 
 CLI (`byoai-shield-server <command>`):
