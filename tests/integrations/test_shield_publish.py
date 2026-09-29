@@ -651,8 +651,8 @@ def test_the_proxy_marks_itself_running_and_clears_on_stop(tmp_path):
 
 # --------------------------------------------------- managed policy polling
 #
-# Phase 1 of the Shield MSP plan: poll POST /v1/shield/policy, signed exactly
-# like the checkpoint post above; pin the signing key at enrolment or (an
+# Managed policy: poll POST /v1/shield/policy, signed exactly like the
+# checkpoint post above; pin the signing key at enrolment or (an
 # already-enrolled device) by fetching the public-keys list once; verify and
 # apply via byoai.integrations.shield.apply_managed_envelope.
 

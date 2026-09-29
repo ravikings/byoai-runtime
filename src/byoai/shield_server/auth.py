@@ -5,8 +5,7 @@ byte — the released client cannot change, so the server meets it exactly:
 gzip'd body, ``x-coriqo-device`` / ``x-coriqo-signature`` headers,
 ``Ed25519(canonicalize(body-before-gzip))`` verified with
 :meth:`byoai.recorder.keys.DeviceKey.verify` against the public key pinned at
-enrolment. See ``coriqo/api/domains/agents/device_auth.py::current_ledger_device``
-(read for reference only) for the same scheme on Coriqo's side.
+enrolment. Coriqo verifies device posts with the same scheme.
 """
 
 from __future__ import annotations

@@ -187,8 +187,8 @@ trust, so enrolment authorization must be enforced above it.
 
 ## Self-hosted Shield server — `byoai-shield-server`
 
-Phase 1.5 of the Shield MSP plan: a free, self-hosted, single-org control
-plane speaking the exact same wire protocol Coriqo's managed mode does, so
+A free, self-hosted, single-org control plane speaking the exact same wire
+protocol Coriqo's managed mode does, so
 `byoai.integrations.shield_publish.Publisher` enrols and polls it with no
 code changes. `byoai.shield_server.create_app(config)` builds the FastAPI
 app; the console script wraps it. Install with
@@ -238,7 +238,7 @@ flat at the top level plus `managed_by` and `locked`:
 
 Security floor: binds `127.0.0.1` by default, caps request bodies at 16 MiB,
 and never receives message text — only checkpoints and the `shield` state
-block, the same boundary Coriqo's Phase 1 keeps.
+block, the same boundary Coriqo's managed mode keeps.
 
 ## Providers
 

@@ -2,10 +2,8 @@
 and the admin API (tokens, devices, policy authoring, drift) behind the
 bearer admin token.
 
-Wire shapes are pinned to match Coriqo's Phase 1 exactly (see
-``internal_doc/shield_msp_plan.md`` and the reference-only Coriqo files this
-was built against) — the released ``shield_publish.Publisher`` reads these
-responses and must work unchanged.
+Wire shapes are pinned to match Coriqo's managed mode exactly — the released
+``shield_publish.Publisher`` reads these responses and must work unchanged.
 """
 
 from __future__ import annotations

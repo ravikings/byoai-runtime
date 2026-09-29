@@ -64,8 +64,7 @@ recorder = ["cryptography>=42", "rfc3161ng>=2.1"]
 # What `byoai-shield` needs on top of the base install: it signs the seal chain
 # with a device key, so it cannot start without `cryptography`.
 shield = ["cryptography>=42"]
-# The self-hosted, single-org Shield server (Phase 1.5,
-# internal_doc/shield_msp_plan.md): FastAPI + uvicorn to serve it, plus
+# The self-hosted, single-org Shield server: FastAPI + uvicorn to serve it, plus
 # `cryptography` (also in `shield`) to sign policy envelopes.
 shield-server = ["fastapi>=0.100", "uvicorn>=0.30", "cryptography>=42"]
 receipts = ["coriqo-agents[receipts]"]

@@ -2,9 +2,8 @@
  * The fixture fleet.
  *
  * These are not placeholder numbers. They reproduce the figures the design
- * frames settled on (internal_doc/console_design/frame-8-fleet-overview.html
- * and frame-9-coverage.html), so the React app renders the screens that were
- * actually designed rather than a different fleet that happens to type-check.
+ * frames settled on (fleet overview and coverage), so the React app renders
+ * the screens that were actually designed rather than a different fleet that happens to type-check.
  *
  * The shape of the fleet is deliberate, and every awkward property in it is a
  * real property of the system the console is trying to describe:

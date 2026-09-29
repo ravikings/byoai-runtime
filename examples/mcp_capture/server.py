@@ -7,9 +7,9 @@ Answer to "what will we capture": run
 then point any MCP client (Claude connector, MCP Inspector, or client.py in
 this directory) at http://localhost:8800/mcp. Every signal lands in
 ``captures.jsonl`` and echoes to stderr as one-line state; this is a minimal
-wiring of mcp_surface_spec.md §2 (behavior capture at the MCP surface).
+wiring of behavior capture at the MCP surface.
 
-Captured per interaction (the §2 schema, transitional):
+Captured per interaction (transitional schema):
 
   session/init    initialize handshake: client_info name+version, capabilities
   tools/list      which tool(s) a surface enumerated (even without calls)
@@ -255,7 +255,7 @@ def _slim(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _client_info(ctx: Context | None) -> dict[str, Any] | None:
-    """Best-effort client identity from the MCP context (spec §2: which app the
+    """Best-effort client identity from the MCP context (which app the
     user actually lives in). Different SDK versions surface this on different
     attributes; try the plausible ones."""
     if ctx is None:
@@ -275,7 +275,7 @@ def _client_info(ctx: Context | None) -> dict[str, Any] | None:
 
 
 def _identity(ctx: Context | None, payload: dict[str, Any]) -> dict[str, Any]:
-    """Identity captured at call time. In the real gateway (spec §1–2) this
+    """Identity captured at call time. In the real gateway this
     comes from auth (API key or OAuth claims) and client-supplied values are
     reconciled; here it's whatever the client told us, logged so override or
     spoof behavior stays visible instead of becoming an opaque failure."""

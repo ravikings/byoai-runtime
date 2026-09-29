@@ -1,8 +1,7 @@
 # ByoAI Demo Agent Showcase
 
 Client-facing demo: enterprise agents captured live by byoai-runtime, sealed
-by the Coriqo agent recorder, verifiable after the fact. Full spec:
-`internal_doc/demo_agent_showcase_spec.md` (gitignored, internal).
+by the Coriqo agent recorder, verifiable after the fact.
 
 **Status: M5 — feature-complete, plus B6.** All milestones (M1-M5) landed: 10
 agents (8 real, 1 deliberate misfire demo, 1 managed AWS Bedrock Agent), sub-agent spans, the UI, verify,

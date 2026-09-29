@@ -971,8 +971,8 @@ def test_the_extension_declares_icons_that_exist_at_the_stated_sizes():
 
 # ------------------------------------------------------- Shield managed mode
 #
-# Phase 1 of the Shield MSP plan (internal_doc/shield_msp_plan.md): Coriqo
-# signs a policy envelope, the device verifies and applies it. These tests
+# Signed managed policy: Coriqo signs a policy envelope, the device verifies
+# and applies it. These tests
 # cover the pure verify/apply/effective-policy logic in shield.py; the
 # publisher's polling, key-pinning and HTTP-level (locked key, managed field)
 # behaviour is covered in test_shield_publish.py and further down here.

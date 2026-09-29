@@ -3,8 +3,7 @@
 Every model turn and tool call flows through byoai-runtime's Anthropic
 provider and the recorder's public capture API (record_request_body /
 record_response_body against real Anthropic wire-format bodies) — the demo
-never hand-rolls ledger events. See internal_doc/demo_agent_showcase_spec.md
-§4/§6.
+never hand-rolls ledger events.
 
 Sub-agents (B2, B4, H1): a triggering tool name maps to another AgentDef in
 ``agent.sub_agent_tools``. When the parent's tool loop hits that name, it

@@ -1,6 +1,5 @@
 /**
- * Shield devices — the fleet table for the free, self-hosted Shield server
- * (Phase 1.5 console section, `internal_doc/shield_msp_plan.md`).
+ * Shield devices — the fleet table for the free, self-hosted Shield server.
  */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'

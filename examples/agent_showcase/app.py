@@ -19,8 +19,7 @@ set transparently replays its cached fallback transcript instead of calling
 out live (see runner.py's fallback path) — /api/agents reports each agent's
 current live/replay availability under "live".
 
-See internal_doc/demo_agent_showcase_spec.md for the full spec and
-examples/agent_showcase/README.md for setup/status.
+See examples/agent_showcase/README.md for setup/status.
 """
 
 from __future__ import annotations

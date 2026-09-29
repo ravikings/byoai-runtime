@@ -7,9 +7,6 @@ standing in for Coriqo's /v1/ingest/batch — no live Coriqo credentials or
 network access required. Proves the demo's sealed events are shippable
 as-is: signed, gzip-encoded, batched, and watermark-advanced by the real
 Shipper class, not a hand-rolled stand-in.
-
-See internal_doc/demo_agent_showcase_spec.md §9 (Coriqo shipping) and §10
-milestone M5.
 """
 
 from __future__ import annotations

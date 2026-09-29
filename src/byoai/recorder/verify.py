@@ -1278,13 +1278,12 @@ def _verify_anchor(
 
 @dataclass
 class BundleVerifyReport:
-    """Result of verifying an examiner export bundle (spec §10.3), covering
-    all five steps of the sketch in
-    ``internal_doc/recorder_contract_export_bundle.md``: chain,
-    checkpoint signatures, checkpoint-to-epoch inclusion, tenant epoch-root
-    signature, and (when ``check_anchors`` is set) the external anchor
-    receipt. An anchor of type ``"none"`` is legitimately unanchored, not a
-    failure — see :func:`verify_bundle`."""
+    """Result of verifying an examiner export bundle (``docs/seal-format.md``
+    §13.2), covering §11 levels 1-4: chain, checkpoint signatures,
+    checkpoint-to-epoch inclusion, tenant epoch-root signature, and (when
+    ``check_anchors`` is set) the external anchor receipt. An anchor of type
+    ``"none"`` is legitimately unanchored, not a failure — see
+    :func:`verify_bundle`."""
 
     ok: bool
     entries_checked: int

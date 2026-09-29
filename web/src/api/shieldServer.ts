@@ -1,7 +1,7 @@
 /**
- * Client for the free, self-hosted, single-org Shield server's admin API
- * (Phase 1.5, `internal_doc/shield_msp_plan.md`). Distinct from `shield.ts`
- * (the per-Mac Shield settings UI) and from `client.ts`/`schemas.ts` (the
+ * Client for the free, self-hosted, single-org Shield server's admin API.
+ * Distinct from `shield.ts` (the per-Mac Shield settings UI) and from
+ * `client.ts`/`schemas.ts` (the
  * Coriqo-style fleet console, which talks to a different backend on a
  * different port). This module owns exactly the admin-token-gated calls to
  * `/api/v1/shield/*`.
@@ -13,7 +13,7 @@
 import { z } from 'zod'
 
 /* ------------------------------------------------------------------ *
- * Schemas — the admin API contract, Phase 1.5 section of the plan doc.
+ * Schemas — the admin API contract.
  * ------------------------------------------------------------------ */
 
 export const ShieldServerMode = z.enum(['observe', 'redact', 'block'])

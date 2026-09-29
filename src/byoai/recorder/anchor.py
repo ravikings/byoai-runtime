@@ -3,8 +3,8 @@
 Level 4 is the last link in the seal model: a tenant epoch root (level 3,
 see ``merkle.py``) gets submitted to something outside Coriqo's own control,
 so a compromised Coriqo can't quietly rewrite history without also having to
-forge an external timestamp. Two anchor types are supported, matching the
-bundle sketch in ``internal_doc/recorder_contract_export_bundle.md``:
+forge an external timestamp. Two anchor types are supported, specified in
+``docs/seal-format.md`` §10:
 
 - ``rfc3161_tsa``: an RFC 3161 timestamp token from a Time Stamping
   Authority, verified via ``rfc3161ng`` against a TSA certificate supplied in

@@ -1,7 +1,6 @@
 """End-to-end test of verify_bundle() against a bundle assembled from a real
 Ledger + Checkpointer + MockCoriqo epoch — steps 1-3 of the examiner export
-bundle verification path sketched in
-``internal_doc/recorder_contract_export_bundle.md``.
+bundle verification path in ``docs/seal-format.md`` §11.
 
 The bundle-assembly helper here is deliberately test-only (mirrors
 ``mock_coriqo.py``'s own "not real Coriqo" convention): producing a bundle is

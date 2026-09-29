@@ -1,9 +1,7 @@
 """Build, sign and resolve signed Shield policy envelopes.
 
-Matches Coriqo's Phase 1 contract exactly (``internal_doc/shield_msp_plan.md``
-and ``coriqo/api/domains/shield/service.py``, read for reference only — this
-is an independent implementation of the same wire shape, not a shared
-import):
+Matches Coriqo's signed-policy wire shape exactly. This is an independent
+implementation of the same format, not a shared import:
 
 * ``canonicalize`` = :func:`byoai.recorder.canonical.canonicalize` — the
   same byte-identical scheme both repos use.

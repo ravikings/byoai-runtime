@@ -2,7 +2,7 @@
  * The policy-editing form shared by the tenant default and per-device
  * overrides: same fields (mode, apps, keep_text, retention, notice), same
  * lock checkboxes, same client-side validation mirroring the server rules
- * (`shield.apply_policy_update`, `internal_doc/shield_msp_plan.md`).
+ * (`shield.apply_policy_update`).
  */
 import {
   LOCKABLE_KEYS,

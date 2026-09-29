@@ -94,7 +94,7 @@ SYNC_BATCHES_PER_TICK = 10  # batches sent in one window
 SYNC_SEEN_CAP = 2000     # ids remembered so a sent event is never rebuilt
 SYNC_EVERY_S = {"events": 60, "daily": 3600}
 
-# -- managed policy (Shield MSP plan, Phase 1) -------------------------------
+# -- managed policy ------------------------------------------------------------
 #
 # Signed exactly like the checkpoint post above (post_signed_batch): the same
 # device key, the same canonicalize-then-sign scheme, the same "never block

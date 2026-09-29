@@ -22,8 +22,7 @@ export function NotBuilt({ path, tenant }: { path: string; tenant: string }) {
           mandate verdict stream, ledger, sealed-entry detail, the runtime
           figures and the enrollment view are the screens built so far. What
           remains — the verify-job screens and the remaining settings surfaces —
-          are designed (see <span className="mono">internal_doc/console_design/</span>) and
-          specified in <span className="mono">console_ui_spec.md</span> §6, and land on the
+          are designed and land on the
           same shell and data layer as these.
         </p>
       </div>

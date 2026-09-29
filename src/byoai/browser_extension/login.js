@@ -1,7 +1,6 @@
 /**
  * Coriqo account sign-in for the extension — the login building block for
- * the "public self-serve" install path (`internal_doc/shield_sync_spec.md`,
- * "Public (self-serve) install: login required, desktop upsell").
+ * the public self-serve install path.
  *
  * Deliberately NOT wired into `chrome.runtime.onInstalled` yet: today's
  * extension only supports pairing with a LOCAL Shield server

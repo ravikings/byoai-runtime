@@ -1,6 +1,6 @@
 /**
  * Shield server section layout — the console for the free, self-hosted,
- * single-org Shield server (Phase 1.5, `internal_doc/shield_msp_plan.md`).
+ * single-org Shield server.
  * Named `shield-server` rather than `shield` because `/console/$tenant/shield`
  * already redirects to the per-Mac `/shield` screen; this is a different
  * product surface (fleet admin) and must not collide with that route.

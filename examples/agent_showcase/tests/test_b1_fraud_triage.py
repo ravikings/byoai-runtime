@@ -2,7 +2,7 @@
 
 No network access — ANTHROPIC_API_KEY is intentionally left unset/invalid so
 every run exercises the fallback-transcript path, which still seals real
-events through the recorder. See internal_doc/demo_agent_showcase_spec.md §9.
+events through the recorder.
 """
 
 from __future__ import annotations

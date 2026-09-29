@@ -1,6 +1,5 @@
 """M2: all 8 agents complete end-to-end; B2/B4/H1 show a correctly-attributed
 sub-agent span. No network access — every run exercises the fallback path.
-See internal_doc/demo_agent_showcase_spec.md §9 acceptance criterion 1.
 """
 
 from __future__ import annotations

@@ -885,10 +885,10 @@ def load_policy(cfg: ShieldConfig) -> dict:
 
 # --------------------------------------------------------------- managed mode
 #
-# Phase 1 of the Shield MSP plan (internal_doc/shield_msp_plan.md): an MSP
-# sets policy once in Coriqo and it lands on every device. Trust comes from an
-# auditable, open agent — this module verifies the signed envelope and stores
-# it; :mod:`byoai.integrations.shield_publish` polls for it and pins the
+# Signed managed policy: an MSP sets policy once in Coriqo and it lands on
+# every device. Trust comes from an auditable, open agent — this module
+# verifies the signed envelope and stores it;
+# :mod:`byoai.integrations.shield_publish` polls for it and pins the
 # signing key. Locked keys in the stored document take priority over the
 # device's own settings (see :func:`load_policy`); everything else about the
 # device — capture, redaction, sealing — is unaffected by whether a device is

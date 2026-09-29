@@ -1,9 +1,8 @@
 """Self-hosted Shield server — free, single-org control plane.
 
-Phase 1.5 of the Shield MSP plan (``internal_doc/shield_msp_plan.md``): an
-admin with no Coriqo account runs one command, enrols their Macs, sees the
-fleet and sets policy. Speaks the exact same wire protocol Coriqo's Phase 1
-speaks, so the released ``byoai.integrations.shield_publish.Publisher``
+An admin with no Coriqo account runs one command, enrols their Macs, sees
+the fleet and sets policy. Speaks the exact same wire protocol as Coriqo's
+managed mode, so the released ``byoai.integrations.shield_publish.Publisher``
 works against this server completely unchanged — only the address it enrols
 against differs.
 

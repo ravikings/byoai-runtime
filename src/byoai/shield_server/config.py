@@ -1,7 +1,7 @@
-"""Configuration for the self-hosted Shield server (Phase 1.5).
+"""Configuration for the self-hosted Shield server.
 
-Every knob is an env var (``internal_doc/shield_msp_plan.md``, "Config"
-table), so ``byoai-shield-server serve`` needs no flags for the common case.
+Every knob is an env var (listed in CONFIGURATION.md), so
+``byoai-shield-server serve`` needs no flags for the common case.
 The data directory holds everything this server owns: two small SQLite
 databases, the Ed25519 signing key, and the admin token — nothing here ever
 touches message text, which the server never receives in the first place.

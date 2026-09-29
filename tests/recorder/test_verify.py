@@ -1,7 +1,7 @@
 """Tests for the offline ledger verifier.
 
 Ledger fixtures are always built with raw ``sqlite3`` against the schema in
-``internal_doc/recorder_contract.md`` — the verifier is never handed a
+``docs/seal-format.md`` §5.3 — the verifier is never handed a
 database written by the code it is meant to police.
 """
 
