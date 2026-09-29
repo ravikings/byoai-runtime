@@ -18,7 +18,7 @@ import {
 } from '@/api/shieldServer'
 import { useAuthWatch } from './AdminAuth'
 import { defaultPolicyDoc, PolicyForm, type PolicyFormValue } from './PolicyForm'
-import { ConfirmDialog } from '@/components/shield/shared'
+import { ConfirmDialog, SectionHead } from '@/components/shield/shared'
 
 /** Local edit state tracks `managed_by` alongside the policy/locked
  * `PolicyForm` edits, even though `PolicyForm` itself doesn't expose a field
@@ -150,9 +150,12 @@ export function PolicyPanel() {
 
   return (
     <section className="panel" aria-labelledby="shield-policy-h">
-      <header className="sec-head">
-        <h2 className="label" id="shield-policy-h">Shield policy — tenant default</h2>
-      </header>
+      <SectionHead
+        id="shield-policy-h"
+        title="Shield policy — tenant default"
+        accent
+        help="What every enrolled device does by default. A device follows this unless it has its own override below."
+      />
 
       <dl className="keeps-list stacked">
         <dt>Version</dt>
@@ -231,9 +234,11 @@ function DeviceOverrides() {
 
   return (
     <section className="settings-block" aria-labelledby="shield-overrides-h">
-      <header className="sec-head">
-        <h2 className="label" id="shield-overrides-h">Per-device overrides</h2>
-      </header>
+      <SectionHead
+        id="shield-overrides-h"
+        title="Per-device overrides"
+        help="Pick a device to see or set a policy that replaces the tenant default just for it."
+      />
       {devices.length === 0 ? (
         <p className="muted">No devices enrolled yet.</p>
       ) : (

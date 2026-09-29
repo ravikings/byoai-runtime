@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from byoai.ingest import IngestStore
 
@@ -57,8 +57,25 @@ def _inclusion(devices: list[dict[str, Any]]) -> dict[str, int]:
     return {"devices_included": len(reporting), "devices_enrolled": len(devices)}
 
 
-def build_console_router(store: IngestStore) -> APIRouter:
+def build_console_router(store: IngestStore, *, org: str | None = None) -> APIRouter:
+    """Build the read-only fleet console router.
+
+    ``org`` is the one tenant slug this deployment serves (§4.2 of the public/
+    private boundary spec: the public console is single-org, matching the
+    free Shield server — a many-org view is Coriqo's paid MSP console). When
+    set, every route here refuses any other ``tenant`` with 404 rather than
+    silently answering an empty (or, worse, someone else's) fleet for a slug
+    this deployment was never configured to serve. ``None`` keeps the old,
+    unrestricted behaviour for callers that have not been updated yet.
+    """
     router = APIRouter(prefix="/v1/console", tags=["console"])
+
+    def _check_org(tenant: str) -> None:
+        if org is not None and tenant != org:
+            raise HTTPException(
+                status_code=404,
+                detail=f"This deployment serves only tenant {org!r}.",
+            )
 
     @router.get("/fleet")
     def fleet(
@@ -66,10 +83,12 @@ def build_console_router(store: IngestStore) -> APIRouter:
         from_: str | None = Query(None, alias="from"),
         to: str | None = Query(None),
     ) -> dict[str, Any]:
-        # No 404 for an empty tenant. The sibling endpoints answer 200 with
-        # empty lists for exactly this state, and a fleet with nothing enrolled
-        # yet is a real, reportable condition — not a missing resource. Failing
-        # only here made one panel error while the rest of the page loaded.
+        _check_org(tenant)
+        # No 404 for an empty tenant *within* the served org. The sibling
+        # endpoints answer 200 with empty lists for exactly this state, and a
+        # fleet with nothing enrolled yet is a real, reportable condition —
+        # not a missing resource. Failing only here made one panel error
+        # while the rest of the page loaded.
         devices = store.devices(tenant)
 
         reporting = [d for d in devices if d["last_batch_at"] is not None]
@@ -120,6 +139,7 @@ def build_console_router(store: IngestStore) -> APIRouter:
 
     @router.get("/fleet/devices")
     def devices(tenant: str = Query(...)) -> dict[str, Any]:
+        _check_org(tenant)
         rows = store.devices(tenant)
         return {
             "inclusion": _inclusion(rows),
@@ -129,6 +149,7 @@ def build_console_router(store: IngestStore) -> APIRouter:
 
     @router.get("/fleet/coverage")
     def coverage(tenant: str = Query(...)) -> dict[str, Any]:
+        _check_org(tenant)
         report = store.coverage(tenant)
         return {
             "tenant": report["tenant"],
@@ -175,6 +196,7 @@ def build_console_router(store: IngestStore) -> APIRouter:
 
     @router.get("/fleet/findings")
     def findings(tenant: str = Query(...)) -> dict[str, Any]:
+        _check_org(tenant)
         rows = store.devices(tenant)
         # Findings come from verify walks. None run here yet, so the honest
         # answer is an empty list with a total of zero — not a fabricated one.

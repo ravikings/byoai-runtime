@@ -1226,11 +1226,27 @@ async def toggle_config():
 _INGEST_DB = os.environ.get(
     "BYOAI_INGEST_DB", os.path.join(os.path.expanduser("~"), ".byoai", "ingest.db")
 )
+# The one org the console serves; set below once the ingest store opens.
+_console_org = os.environ.get("BYOAI_CONSOLE_ORG", "").strip() or "default"
+
 try:
     from byoai.console import build_console_router
     from byoai.ingest import IngestStore
 
-    app.include_router(build_console_router(IngestStore(_INGEST_DB)))
+    _ingest_store = IngestStore(_INGEST_DB)
+    # Single-org (§4.2 of the public/private boundary spec): the public
+    # console serves exactly one org, matching the free Shield server — a
+    # many-org view is Coriqo's paid MSP console. `BYOAI_CONSOLE_ORG` picks
+    # it explicitly; otherwise default to whichever tenant is already in this
+    # store (an existing single-org install upgrades with no config change),
+    # falling back to "default" — the same default `byoai-shield-server`
+    # uses — for a store that has no tenant yet.
+    _console_org = (
+        os.environ.get("BYOAI_CONSOLE_ORG", "").strip()
+        or _ingest_store.default_tenant_slug()
+        or "default"
+    )
+    app.include_router(build_console_router(_ingest_store, org=_console_org))
 except Exception as exc:  # pragma: no cover - defensive
     # The proxy's own job does not depend on the console API, so a failure to
     # open the ingest store must not stop token caching from serving. Say so
@@ -1259,6 +1275,10 @@ async def console_spa(path: str):
     refresh on a deep route like /console/acme/fleet/coverage still boots the
     SPA, which then resolves the route itself.
     """
+    if path == "":
+        # Single-org: land on the org this proxy serves, not the build-time
+        # default baked into the SPA.
+        return RedirectResponse(url=f"/console/{_console_org}/fleet", status_code=307)
     if console_assets.env_flag_disabled():
         return Response(
             content="The ByoAI console is disabled (BYOAI_CONSOLE=0).\n",

@@ -126,7 +126,9 @@ def create_app(config: ShieldServerConfig) -> FastAPI:
     def _require_admin(authorization: str | None = Header(None)) -> None:
         auth.check_admin_token(authorization, expected=config.admin_token)
 
-    app.include_router(build_console_router(ingest), dependencies=[Depends(_require_admin)])
+    app.include_router(
+        build_console_router(ingest, org=config.org), dependencies=[Depends(_require_admin)]
+    )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -138,6 +140,9 @@ def create_app(config: ShieldServerConfig) -> FastAPI:
 
     @app.api_route("/console/{path:path}", methods=["GET", "HEAD"])
     async def console_spa(path: str):
+        if path == "":
+            # Single-org: land on this server's org, not the SPA's build-time default.
+            return RedirectResponse(url=f"/console/{config.org}/fleet", status_code=307)
         if console_assets.env_flag_disabled():
             return PlainTextResponse(content="The console is disabled (BYOAI_CONSOLE=0).\n",
                                      status_code=404)

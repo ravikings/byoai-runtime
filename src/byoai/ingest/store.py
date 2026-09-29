@@ -263,6 +263,20 @@ class IngestStore:
             assert row is not None
             return int(row["tenant_id"])
 
+    def default_tenant_slug(self) -> str | None:
+        """The oldest tenant slug in this store, or ``None`` if none exists.
+
+        Used by single-org deployments (the public console; §4.2 of the
+        public/private boundary spec) to pick an org to serve with no new
+        config: an existing install already has exactly one tenant (nothing
+        in this codebase creates a second one), so defaulting to whichever
+        one is already there keeps it working unchanged.
+        """
+        row = self._conn.execute(
+            "SELECT slug FROM tenants ORDER BY tenant_id ASC LIMIT 1"
+        ).fetchone()
+        return str(row["slug"]) if row is not None else None
+
     def record_enrolment(self, e: Enrolment) -> None:
         """Bind a device to a tenant. This is the ONLY place tenancy is set.
 

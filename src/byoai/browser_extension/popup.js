@@ -204,6 +204,23 @@ function protection(appKey, mode) {
   return 'Personal details are replaced before a message leaves this page.'
 }
 
+// Renders the same `coriqo_session` login.js writes on a successful sign-in
+// — read-only here, this popup never signs anyone in or out itself.
+function refreshCoriqoAccount() {
+  chrome.storage.local.get('coriqo_session', (v) => {
+    const session = v.coriqo_session
+    const status = el('coriqo-account-status')
+    const button = el('open-login')
+    if (session) {
+      status.textContent = `Signed in as ${session.email} (${session.tenant_slug}).`
+      button.textContent = 'Manage account'
+    } else {
+      status.textContent = 'Not signed in.'
+      button.textContent = 'Sign in to Coriqo'
+    }
+  })
+}
+
 function wire() {
   el('open-shield').addEventListener('click', async (ev) => {
     if (ev.currentTarget.dataset.welcome) {
@@ -246,6 +263,11 @@ function wire() {
     chrome.tabs.create({ url: chrome.runtime.getURL('PRIVACY.md') })
     window.close()
   })
+  el('open-login').addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('login.html') })
+    window.close()
+  })
+  refreshCoriqoAccount()
   el('copy-id').addEventListener('click', () => {
     navigator.clipboard.writeText(chrome.runtime.id)
     el('copy-id').textContent = 'Copied'

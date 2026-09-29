@@ -159,8 +159,6 @@
 
 .coriqo-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: var(--s2); align-items: end; }
 .coriqo-form label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.coriqo-form input { font: inherit; border: var(--hairline); border-radius: var(--radius-sm);
-  padding: 6px 10px; min-width: 0; background: var(--field); color: var(--ink); }
 @media (max-width: 760px) { .coriqo-form { grid-template-columns: minmax(0, 1fr); } }
 
 /* ============ timeline ============ */
@@ -209,6 +207,9 @@
 
 /* stat band: four figures, the first leads; each one is also a filter */
 .shield-stats { display: grid; grid-template-columns: 1.4fr repeat(3, minmax(0, 1fr)); gap: var(--s2); }
+/* Same band, five figures — DevicesPanel's read-only count row also splits
+   "not heard from" out from "quiet", so it needs one more column. */
+.shield-stats.wide { grid-template-columns: 1.2fr repeat(4, minmax(0, 1fr)); }
 .stat-btn { font: inherit; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
   background: var(--field); border: var(--hairline); border-radius: var(--radius); padding: var(--s3) var(--s4);
   transition: border-color .15s ease, box-shadow .15s ease; }
@@ -220,6 +221,13 @@
 .stat-btn:hover { border-color: var(--azure-soft); }
 .stat-btn.on { border-color: var(--azure); box-shadow: 0 0 0 3px var(--azure-glow); }
 .stat-btn:focus-visible { outline: 2px solid var(--azure); outline-offset: 2px; }
+
+/* A read-only count rendered as a plain <div>, not a filter control — Trust's
+   stat band is clickable, but not every stat band is. Without this, the
+   pointer cursor and hover border promise an interaction a <div> with no
+   click handler can never deliver, keyboard or otherwise. */
+.stat-btn.static { cursor: default; }
+.stat-btn.static:hover { border-color: var(--line); }
 
 /* section head: dot + label, one optional line of help */
 .sec-head { margin: 0 0 var(--s2); }
@@ -250,3 +258,50 @@
 .coriqo-form.enrol { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
 @media (max-width: 760px) { .coriqo-form.enrol { grid-template-columns: minmax(0, 1fr); } }
 .coriqo-status { margin: var(--s2) 0; }
+
+/* ============ policy form ============ */
+.policy-form { display: flex; flex-direction: column; gap: var(--s4); }
+.policy-form fieldset {
+  border: var(--hairline); border-radius: var(--radius); padding: var(--s3) var(--s4);
+  margin: 0; display: flex; flex-direction: column; gap: var(--s2);
+}
+.policy-form fieldset:disabled { opacity: .55; }
+.policy-form legend {
+  font-family: var(--font-mono); font-size: var(--t-mono); text-transform: uppercase;
+  letter-spacing: .06em; color: var(--ink-soft); font-weight: 500; padding: 0 var(--s1);
+}
+.policy-form label { display: flex; align-items: center; gap: var(--s2); }
+.policy-form input[type="radio"],
+.policy-form input[type="checkbox"],
+.lock-row input[type="checkbox"] { accent-color: var(--azure); width: 1rem; height: 1rem; }
+.lock-row { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s1); }
+.policy-override { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s3); padding-top: var(--s3); border-top: var(--hairline-soft); }
+
+/* Generic select + the admin-token dialog's bare <input type=password> —
+   same field language as .coriqo-form input, sharing one rule so the look
+   never drifts between the three. Every selector here is scoped to a
+   Shield-specific wrapper — including select, which used to be a bare tag
+   selector that any <select> anywhere in the app would have inherited —
+   so a new consumer elsewhere never picks this up by accident. */
+.coriqo-form input,
+.coriqo-form select,
+.policy-form select,
+.settings-block select,
+.dialog-body input {
+  font: inherit; font-size: var(--t-body); color: var(--ink);
+  background: var(--field); border: var(--hairline); border-radius: var(--radius-sm);
+  padding: 6px 10px; min-width: 0;
+}
+.coriqo-form input:focus,
+.coriqo-form select:focus,
+.policy-form select:focus,
+.settings-block select:focus,
+.dialog-body input:focus { outline: none; border-color: var(--azure); box-shadow: 0 0 0 3px var(--azure-glow); }
+.dialog-body input { width: 100%; margin-top: var(--s1); }
+.dialog-body label { display: block; margin-top: var(--s2); }
+
+/* ============ ledger note / timeline day / pager stat ============ */
+.ledger-note { color: var(--ink-soft); font-size: var(--t-body); line-height: 1.55; max-width: 68ch; margin: var(--s2) 0; }
+.tl-day { display: flex; flex-direction: column; gap: var(--s2); }
+.tl-day + .tl-day { margin-top: var(--s4); }
+.page-stat { font-family: var(--font-mono); font-size: var(--t-mono); color: var(--ink-soft); }

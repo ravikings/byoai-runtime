@@ -4,19 +4,27 @@
   <meta charset="utf-8" />
   <title>Coriqo Shield</title>
   <style>
+    /* Same Coriqo brand tokens as web/src/styles/tokens.css (the console and
+       the personal Shield UI): the extension popup is a third surface of the
+       same product and had drifted onto its own warm/teal palette. These are
+       aliases — same variable names the rules below already use — set to the
+       console's exact values, light and dark, so all three surfaces render
+       as one brand rather than three. The three-state trio (validated/
+       pending/off-scope) maps 1:1 onto this file's ok/wait/bad. */
     :root {
       color-scheme: light dark;
-      --bg: #fbfaf8; --panel: #f2f0ec; --raised: #ffffff; --line: #e4e1db; --text: #1b1a17; --muted: #6b675f;
-      --ok: #0f766e; --ok-bg: #dff3ef; --bad: #b42318; --bad-bg: #fbe6e3; --wait: #8a6100; --wait-bg: #f8ecc9;
-      --btn: #1b1a17; --btn-text: #fbfaf8; --link: #0f766e; --glow: rgba(15,118,110,.14);
-      --shadow: 0 1px 2px rgba(60,50,30,.06), 0 6px 16px -8px rgba(60,50,30,.16);
+      --bg: #f7f8fb; --panel: #eef1f7; --raised: #ffffff; --line: #d8dee9; --text: #0a1834; --muted: #4a5876;
+      --ok: #1f7a3f; --ok-bg: #eaf7f1; --bad: #a3382d; --bad-bg: #fbeeeb; --wait: #9a6a10; --wait-bg: #fdf3e3;
+      --btn: #3d7eff; --btn-text: #ffffff; --link: #3d7eff; --glow: rgba(61,126,255,.16);
+      --shadow: 0 4px 14px rgba(10,24,52,.06);
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #131614; --panel: #1b1f1c; --raised: #202521; --line: #2c322d; --text: #ecefe9; --muted: #9aa39a;
-        --ok: #5eead4; --ok-bg: #12332e; --bad: #f87171; --bad-bg: #2f1917; --wait: #fbbf24; --wait-bg: #2e2510;
-        --btn: #ecefe9; --btn-text: #131614; --link: #5eead4; --glow: rgba(94,234,212,.12);
-        --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 16px -8px rgba(0,0,0,.6);
+        --bg: #0a1834; --panel: #0f1f42; --raised: #16294f; --line: #23386a; --text: #eef3fb; --muted: #aebfdd;
+        --ok: #4ad6a0; --ok-bg: rgba(74,214,160,.12); --bad: #e07066; --bad-bg: rgba(163,56,45,.16);
+        --wait: #e0b15a; --wait-bg: rgba(224,177,90,.12);
+        --btn: #6a9bff; --btn-text: #0a1834; --link: #6a9bff; --glow: rgba(106,155,255,.18);
+        --shadow: 0 4px 14px rgba(0,0,0,.4);
       }
     }
     * { box-sizing: border-box; }
@@ -143,6 +151,12 @@
         <button class="small" id="turn-off">Turn capture off</button>
         <p class="help">Stops recording and removes anything still waiting to be sent.</p>
       </div>
+
+      <label>Coriqo account</label>
+      <p class="help" id="coriqo-account-status">Not signed in.</p>
+      <button class="small" id="open-login">Sign in to Coriqo</button>
+      <p class="help">Optional, and separate from pairing with Shield above — for browser-only
+        capture without a local Shield. A preview, with real limits.</p>
 
       <label>Something wrong?</label>
       <button class="small" id="copy-diag">Copy details for a bug report</button>

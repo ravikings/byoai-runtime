@@ -13,7 +13,7 @@ import {
   type ShieldServerTokenMinted,
 } from '@/api/shieldServer'
 import { useAuthWatch } from './AdminAuth'
-import { ConfirmDialog } from '@/components/shield/shared'
+import { ConfirmDialog, SectionHead } from '@/components/shield/shared'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -77,9 +77,12 @@ export function EnrolPanel() {
 
   return (
     <section className="panel" aria-labelledby="shield-enrol-h">
-      <header className="sec-head">
-        <h2 className="label" id="shield-enrol-h">Enrol a Mac</h2>
-      </header>
+      <SectionHead
+        id="shield-enrol-h"
+        title="Enrol a Mac"
+        accent
+        help="Mint a one-time token, paste it into Shield's settings on that Mac, and it starts enforcing this tenant's policy."
+      />
 
       <form
         className="coriqo-form"
@@ -129,9 +132,11 @@ export function EnrolPanel() {
       )}
 
       <section className="settings-block" aria-labelledby="shield-tokens-h">
-        <header className="sec-head">
-          <h2 className="label" id="shield-tokens-h">Outstanding tokens</h2>
-        </header>
+        <SectionHead
+          id="shield-tokens-h"
+          title="Outstanding tokens"
+          help="Tokens not yet used to enrol a device. Revoke one to stop it from being redeemed."
+        />
         {tokensQuery.isPending && <p className="empty-row" role="status">Loading tokens…</p>}
         {tokensQuery.isError && (
           <p className="empty-row" role="alert">Couldn't load tokens: {tokensQuery.error.message}</p>
