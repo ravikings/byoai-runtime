@@ -78,7 +78,10 @@ async function currentApp() {
     const host = tab?.url ? new URL(tab.url).host : ''
     const seen = (await chrome.storage.local.get('last_capture')).last_capture || {}
     const today = (await chrome.storage.local.get('today')).today
-    return { host, name: APPS[host] || null, lastSeen: seen[host] || null,
+    const health = (await chrome.storage.local.get('health_unmatched')).health_unmatched || {}
+    const stale = Object.keys(health).filter((k) => Date.now() - health[k] < 24 * 3600 * 1000)
+      .map((k) => ({ claude: 'Claude', chatgpt: 'ChatGPT' })[k]).filter(Boolean)
+    return { host, name: APPS[host] || null, lastSeen: seen[host] || null, outdated: stale,
       seen, notedToday: today?.day === new Date().toDateString() ? today.n : 0 }
   } catch {
     return { host: '', name: null, lastSeen: null, seen: {}, notedToday: 0 }
@@ -188,6 +191,9 @@ function render({ state, endpoint, verify, apps, mode, shorter }, app) {
     tab.textContent = `This tab (${app.host}) is not one Shield covers.`
   }
   if (app.name && !(apps && apps[appKey] === false)) tab.append(' ' + protection(appKey, mode))
+  if (app.outdated && app.outdated.length) {
+    tab.append(` Shield may be out of date for ${app.outdated.join(' and ')}: chat traffic it does not recognise was seen.`)
+  }
   if (app.notedToday > 0) {
     tab.append(` Noted today across all apps: ${app.notedToday}.`)
   }

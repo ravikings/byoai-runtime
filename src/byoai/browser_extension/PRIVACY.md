@@ -27,7 +27,7 @@ Per message you send:
 | `sent_at` | ISO timestamp | when |
 | `flags` | `["pii:emails"]` | names of the Shield rules the message matched, never the matched text |
 | `redactions` | `["emails"]` | names of the rules whose matches were replaced before sending |
-| `verdict` | `redacted(1)` | what Shield's policy did: `redacted(n)`, `redact`, `block`, `blocked` or `observe` |
+| `verdict` | `redacted(1)` | what Shield's policy did: `redacted(n)`, `redact`, `block`, `blocked`, `observe` or, after the warn bar, `warned→sent`, `warned→redacted` or `warned→cancelled` |
 
 Per reply in which the AI ran tools (claude.ai and chatgpt.com), one more row:
 
@@ -37,6 +37,13 @@ Per reply in which the AI ran tools (claude.ai and chatgpt.com), one more row:
 | `tools` | `["web.run"]` | names of the tools the AI ran on its own servers (web search, code, connectors), never what they found |
 | `sources` | `9` | how many distinct sites a web search returned, never which |
 | `send_id` | random | the same random id as the message it answers (also on that message's row), so a reply that finishes late is matched to the right message; it carries nothing about you |
+
+Two more kinds of row carry no message text at all:
+
+| Kind | Fields | Why |
+|---|---|---|
+| `browser.chat.attachment` | `app`, `mime`, `bytes` | a file was attached: its type and size, never its content, and it is not scanned or blocked |
+| `browser.health.unmatched` | `app`, `path` | three chat-like requests in ten minutes that Shield did not recognise (the site may have changed): the first 60 characters of the path, no query, no body. The popup then says "Shield may be out of date" |
 
 Nothing else. The extension does not read page content, the DOM, cookies, form
 fields, browsing history or the clipboard. The outgoing message is read in the
@@ -53,10 +60,14 @@ accepts only known rule names.
 On claude.ai and chatgpt.com (and chat.openai.com), when Shield's mode is
 *redact* (the default) or *block*, emails, card numbers, phone numbers,
 SSN-like numbers, wallet addresses and API keys in the message you send are
-replaced with labels such as `[redacted-email]` before the request leaves the
-page, so the AI provider never receives them. In *block* mode, a message that
-carries credential text (`password: ...`) or an executable file name is not
-sent at all: the chat app gets an error answer from the extension. The rules
+replaced with numbered placeholders such as `[EMAIL_1]` (the same value gets the same number within one message; the mapping is dropped after the send) before the request leaves the
+page, so the AI provider never receives them. What happens is set per tier by Shield's `actions` policy
+(`secret`: block, `pii`: redact, `flag`: log by default). *block* stops the
+send: the chat app gets an error answer from the extension. *warn* holds the
+send and shows a bar on the page with three buttons: *Send redacted* (the
+default, Enter), *Send anyway* and *Cancel*. The bar names the kind of thing
+found ("an AWS access key"), never the text itself. If you do nothing for 60
+seconds the send is cancelled; the original is never sent without your choice. The rules
 are the same ones Shield's desktop proxy uses (`shield-rules.js` is generated
 from them). *Record only* (`observe`) leaves messages unchanged, and so does
 an app switched off in Shield. Until the extension has heard from your Shield
@@ -65,7 +76,7 @@ it uses the default, *redact*.
 On gemini.google.com and copilot.microsoft.com messages always go out
 unchanged: those sites send them as form-encoded or websocket traffic the
 extension can't safely rewrite. Sends that don't go through the page's
-`fetch` are noted, not rewritten, and attachments are never read.
+`fetch` are noted, not rewritten, and attachments are never read (only their type and size are noted).
 
 No account, device or user identifier is attached to rows. There is no
 analytics, no telemetry, no advertising and no third-party request. The data is
@@ -95,7 +106,8 @@ setting of Shield, off by default, not of this extension.
 | `chrome.storage.local` `endpoint` | Shield's local address, if you changed it | until removed |
 | `chrome.storage.local` `pinned_shield` | Shield's public key, saved when first paired | until you re-pair |
 | `chrome.storage.local` `witness` / `rollback` | the highest count of sealed entries Shield reported (one number), and a flag if it later dropped | until you re-pair or accept |
-| `chrome.storage.local` `shield_policy` | Shield's mode and which apps it covers, as your paired Shield reported them | refreshed from Shield; removed when you turn capture off |
+| `chrome.storage.local` `shield_policy` | Shield's mode, its per-tier actions and which apps it covers, as your paired Shield reported them | refreshed from Shield; removed when you turn capture off |
+| `chrome.storage.local` `health_unmatched` | the time the canary last fired, per app | until that app's sends are recognised again, or you turn capture off |
 | `chrome.storage.local` `last_capture` / `today` | one "last message noted" time per app, and today's message count | overwritten on each send; removed when you turn capture off |
 
 None of this contains message text, and none of it leaves your computer.

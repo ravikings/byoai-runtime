@@ -42,11 +42,14 @@ const isGranted = (value) => value?.version === CONSENT_VERSION
 let consentOn = false
 const hasConsent = async () => { await restore(); return consentOn }
 const TODAY_KEY = 'today'
+// app -> when Shield last saw chat traffic it does not recognise (the canary).
+const HEALTH_KEY = 'health_unmatched'
 // Shield's mode and per-app toggles, as the paired Shield reported them. The
 // page-world capture reads it (through content-relay.js) to decide whether to
 // replace personal details; with none saved yet, it redacts.
 const POLICY_KEY = 'shield_policy'
 const MODES = ['observe', 'redact', 'block']
+const ACTIONS = ['block', 'warn', 'redact', 'log']
 const POLICY_APPS = ['claude', 'chatgpt', 'gemini', 'copilot']
 const IDENTITY_PREFIX = 'byoai-shield-identity:'
 
@@ -115,9 +118,13 @@ async function refreshPolicy(endpoint, { verified = false } = {}) {
     const p = await res.json()
     const apps = {}
     for (const app of POLICY_APPS) if (typeof p?.apps?.[app] === 'boolean') apps[app] = p.apps[app]
+    const actions = {}
+    for (const tier of ['secret', 'pii', 'flag']) {
+      if (ACTIONS.includes(p?.actions?.[tier])) actions[tier] = p.actions[tier]
+    }
     if (!consentOn) return // withdrawn while asking
     await chrome.storage.local.set({
-      [POLICY_KEY]: { mode: MODES.includes(p?.mode) ? p.mode : 'redact', apps, at: Date.now() },
+      [POLICY_KEY]: { mode: MODES.includes(p?.mode) ? p.mode : 'redact', apps, actions, at: Date.now() },
     })
   } catch { /* unreachable: keep what was saved */ }
 }
@@ -331,6 +338,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     restore().then(() => {
       if (!consentOn) { reply?.({ error: 'capture is off' }); return }
       noteCapture(sender.tab?.url, msg.row.kind)
+      noteHealth(msg.row)
       queue.push({ ...msg.row, sent_at: new Date().toISOString(), row_id: crypto.randomUUID() })
       if (queue.length > MAX_QUEUED) queue = queue.slice(-MAX_QUEUED)
       persist()
@@ -360,7 +368,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       const done = consentOn
         ? chrome.storage.local.set({ [CONSENT_KEY]: { version: CONSENT_VERSION, at: Date.now() } })
           .then(() => { getEndpoint().then((e) => refreshPolicy(e)) })
-        : chrome.storage.local.remove([CONSENT_KEY, LAST_CAPTURE_KEY, TODAY_KEY, POLICY_KEY])
+        : chrome.storage.local.remove([CONSENT_KEY, LAST_CAPTURE_KEY, TODAY_KEY, POLICY_KEY, HEALTH_KEY])
       return done
     }).then(() => reply?.({ ok: true }), () => reply?.({ error: 'failed' }))
     return true
@@ -429,6 +437,21 @@ async function recordCapture(url, kind) {
       [TODAY_KEY]: { day, n: today + (kind === 'browser.chat.request' ? 1 : 0) },
     })
   } catch { /* the badge and queue matter more than this note */ }
+}
+
+// The canary: remember an app whose chat traffic went unrecognised, and
+// forget it once a send of that app is inspected again.
+async function noteHealth(row) {
+  try {
+    if (row.kind !== 'browser.health.unmatched' && !(row.kind === 'browser.chat.request' && row.chars != null)) return
+    if (typeof row.app !== 'string' || !/^[a-z]{1,20}$/.test(row.app)) return
+    const seen = (await chrome.storage.local.get(HEALTH_KEY))[HEALTH_KEY] || {}
+    if (row.kind === 'browser.health.unmatched') seen[row.app] = Date.now()
+    else if (row.app in seen) delete seen[row.app]
+    else return
+    if (!consentOn) return
+    await chrome.storage.local.set({ [HEALTH_KEY]: seen })
+  } catch { /* a note, not a dependency */ }
 }
 
 function isLocalEndpoint(candidate) {

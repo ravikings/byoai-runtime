@@ -61,13 +61,24 @@
    * proved itself. A string, because objects don't cross between worlds.
    */
   let policy = null
+  let toPage = null
   function tellPage() {
-    window.dispatchEvent(new CustomEvent('shield-agent-config', {
-      detail: JSON.stringify({ consented: consented === true, mode: policy?.mode, apps: policy?.apps ?? null }),
-    }))
+    if (!toPage) return
+    toPage.postMessage({ t: 'config', consented: consented === true, mode: policy?.mode,
+      apps: policy?.apps ?? null, actions: policy?.actions ?? null })
   }
-  // content.js may start before or after this script; it asks once when it does.
-  window.addEventListener('shield-agent-config-request', tellPage)
+  /*
+   * One private MessageChannel to the page-world capture, transferred in a
+   * single message now, at document_start, before page scripts run (content.js
+   * is listed first and is already listening). A page can't send config or
+   * warn answers on it: it never holds this end.
+   */
+  try {
+    const channel = new MessageChannel()
+    toPage = channel.port1
+    toPage.onmessage = (ev) => { if (ev.data && ev.data.t === 'warn') onWarn(ev.data) }
+    window.postMessage('shield-agent-port', '*', [channel.port2])
+  } catch { toPage = null }
 
   try {
     chrome.storage.local.get(['consent', 'shield_policy'], (v) => {
@@ -105,13 +116,95 @@
   function disable() {
     disabled = true
     window.removeEventListener('shield-agent-capture', onCapture)
-    window.removeEventListener('shield-agent-config-request', tellPage)
+    // Tell the page first, so sends it is holding go redacted rather than wait.
+    try { toPage && toPage.postMessage({ t: 'relay-closed' }) } catch { /* already closed */ }
+    const closing = toPage
+    toPage = null
+    for (const w of bars.values()) w.finish('cancelled')
+    try { closing && closing.close() } catch { /* already closed */ }
     clearTimeout(pendingFallback)
     document.removeEventListener('keydown', onKey, true)
     document.removeEventListener('click', onClick, true)
   }
 
   window.addEventListener('shield-agent-capture', onCapture)
+
+  /*
+   * The warn bar. The page capture holds a send and asks for it here; the
+   * bar lives in a closed Shadow DOM (the page's CSS and scripts can't
+   * restyle or click it) and shows human names for the rules, never the
+   * matched text: it may be screenshotted. Labels arrive from the page, which
+   * can be forged, so only names in RULE_LABEL become text; anything else
+   * reads as "sensitive data".
+   */
+  const RULE_LABEL = {
+    anthropic_key: 'an Anthropic API key', openai_key: 'an OpenAI API key',
+    aws_access_key: 'an AWS access key', github_token: 'a GitHub token',
+    slack_token: 'a Slack token', google_api_key: 'a Google API key',
+    stripe_key: 'a Stripe key', private_key_block: 'a private key',
+    jwt: 'a JSON web token', conn_string: 'a database URL with a password',
+    bearer: 'a bearer token', credential_assign: 'a password or key assignment',
+    emails: 'an email address', cards: 'a card number', phone_numbers: 'a phone number',
+    ssn_like: 'a social security number', wallets: 'a crypto wallet address', iban: 'an IBAN',
+  }
+  const WARN_MS = 60_000
+  const bars = new Map()
+  let barHost = null
+  let barBox = null
+
+  function answer(sendId, choice) {
+    try { toPage && toPage.postMessage({ t: 'warn-result', send_id: sendId, choice }) } catch { /* page gone */ }
+  }
+
+  function onWarn(req) {
+    if (!req || typeof req.send_id !== 'string' || req.send_id.length > 64 || bars.has(req.send_id)) return
+    const sendId = req.send_id
+    const names = [...new Set((Array.isArray(req.labels) ? req.labels : [])
+      .map((n) => RULE_LABEL[n] ?? 'sensitive data'))].slice(0, 5)
+    let row
+    let timer
+    const finish = (choice) => {
+      if (!bars.delete(sendId)) return
+      clearTimeout(timer)
+      try { row.remove(); if (!barBox.children.length) { barHost.remove(); barHost = null; barBox = null } } catch { /* page gone */ }
+      answer(sendId, choice)
+    }
+    try {
+      if (!barHost) {
+        barHost = document.createElement('div')
+        barHost.style.cssText = 'all:initial;position:fixed;top:0;left:0;right:0;z-index:2147483647'
+        const root = barHost.attachShadow({ mode: 'closed' })
+        const style = document.createElement('style')
+        style.textContent = '.bar{font:14px system-ui,sans-serif;background:#1f2937;color:#fff;padding:10px 16px;' +
+          'display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #4b5563}' +
+          '.msg{flex:1 1 240px}button{font:inherit;border:1px solid #6b7280;border-radius:6px;padding:5px 12px;' +
+          'background:#374151;color:#fff;cursor:pointer}button.main{background:#2563eb;border-color:#2563eb}'
+        barBox = document.createElement('div')
+        root.append(style, barBox)
+        ;(document.documentElement || document.body).append(barHost)
+      }
+      row = document.createElement('div')
+      row.className = 'bar'
+      row.setAttribute('role', 'alertdialog')
+      const msg = document.createElement('span')
+      msg.className = 'msg'
+      msg.textContent = `This message contains ${names.join(', ') || 'sensitive data'}.`
+      const mk = (label, choice, main) => {
+        const b = document.createElement('button')
+        b.textContent = label
+        if (main) b.className = 'main'
+        b.addEventListener('click', () => finish(choice))
+        return b
+      }
+      const def = mk('Send redacted', 'redacted', true)
+      row.append(msg, def, mk('Send anyway', 'sent'), mk('Cancel', 'cancelled'))
+      row.addEventListener('keydown', (e) => { if (e.key === 'Escape') finish('cancelled') })
+      barBox.append(row)
+      def.focus?.() // Enter picks the default
+    } catch { answer(sendId, 'cancelled'); return }
+    timer = setTimeout(() => finish('cancelled'), WARN_MS)
+    bars.set(sendId, { finish })
+  }
 
   // Fallback for sends that don't go over fetch: watch the send control so a
   // websocket-only send is still recorded as data-free activity. Enter or a

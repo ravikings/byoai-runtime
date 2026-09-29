@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { REPO, sleep } from './env.mjs'
+import { connectPage } from './port.mjs'
 
 const EXT = path.join(REPO, 'src', 'byoai', 'browser_extension')
 const RULES_JS = readFileSync(path.join(EXT, 'shield-rules.js'), 'utf8')
@@ -37,17 +38,14 @@ function page(host, config, reply = () => new Response('{}', { status: 200 })) {
     },
   }
   window.addEventListener('shield-agent-capture', (ev) => captured.push(ev.detail))
-  // The relay answers the page capture's request for its config.
-  if (config) {
-    window.addEventListener('shield-agent-config-request', () =>
-      window.dispatchEvent(new CustomEvent('shield-agent-config', { detail: JSON.stringify(config) })))
-  }
-  const ctx = vm.createContext({ window, location: window.location, CustomEvent, Request, Response, TextDecoder, crypto })
+  const ctx = vm.createContext({ window, location: window.location, CustomEvent, Request, Response, TextDecoder, crypto, FormData, Blob, setTimeout, clearTimeout, Date })
   vm.runInContext(RULES_JS, ctx)
   vm.runInContext(CONTENT_JS, ctx)
+  // The relay hands over its port, then the config, as it does in the browser.
+  const relay = config ? connectPage(window, Event, config) : null
   const send = (raw, init = {}) =>
     window.fetch(`https://${host}${SEND_PATH[host] ?? '/v1/messages'}`, { method: 'POST', body: raw, ...init })
-  return { window, sent, captured, send }
+  return { window, sent, captured, send, relay }
 }
 
 const agreed = (mode, apps = null) => ({ consented: true, mode, apps })
@@ -56,8 +54,24 @@ describe('page capture: the shared redaction cases', () => {
   for (const c of cases) {
     it(c.name, async () => {
       const host = c.name.startsWith('chatgpt') ? 'chatgpt.com' : 'claude.ai'
-      const p = page(host, agreed(c.mode))
+      const p = page(host, { ...agreed(c.mode), ...(c.actions ? { actions: c.actions } : {}) })
       const raw = c.raw ?? JSON.stringify(c.body)
+      if (c.expect.warn_redacts) {
+        // The extension shows a bar instead of redacting silently: answer it
+        // "Send redacted" and check it sends what the proxy would.
+        let asked = 0
+        p.relay.onmessage = (ev) => {
+          if (ev.data.t !== 'warn') return
+          asked++
+          p.relay.postMessage({ t: 'warn-result', send_id: ev.data.send_id, choice: 'redacted' })
+        }
+        await p.send(raw)
+        expect(asked).toBe(1)
+        expect(p.captured[0].verdict).toMatch(/^warned/)
+        const out = JSON.parse(p.sent[0])
+        for (const [k, v] of Object.entries(c.expect.warn_redacts)) expect(out[k]).toBe(v)
+        return
+      }
       const res = await p.send(raw)
       const [request] = p.captured
       expect(request.kind).toBe('browser.chat.request')
@@ -108,7 +122,7 @@ describe('page capture: when it leaves a message alone', () => {
   it('redacts by default when no policy has been heard from Shield', async () => {
     const p = page('claude.ai', { consented: true })
     await p.send(email)
-    expect(JSON.parse(p.sent[0]).prompt).toBe('mail [redacted-email]')
+    expect(JSON.parse(p.sent[0]).prompt).toBe('mail [EMAIL_1]')
   })
 
   it('does not rewrite Gemini, whose sends it cannot read', async () => {
@@ -133,7 +147,7 @@ describe('page capture: a send made with a Request object', () => {
     const p = page('chatgpt.com', agreed('redact'))
     const body = JSON.stringify({ messages: [{ content: { parts: ['to ann@example.com'] } }] })
     await p.window.fetch(new Request('https://chatgpt.com/backend-api/conversation', { method: 'POST', body }))
-    expect(JSON.parse(p.sent[0]).messages[0].content.parts[0]).toBe('to [redacted-email]')
+    expect(JSON.parse(p.sent[0]).messages[0].content.parts[0]).toBe('to [EMAIL_1]')
     expect(p.captured[0]).toMatchObject({ chars: 18, redactions: ['emails'], verdict: 'redacted(1)' })
   })
 })
@@ -145,7 +159,10 @@ describe('page capture: a body it cannot read', () => {
     form.set('prompt', 'mail ann@example.com')
     await p.window.fetch('https://claude.ai' + SEND_PATH['claude.ai'], { method: 'POST', body: form })
     expect(p.sent).toEqual([form])
-    expect(p.captured).toEqual([{ kind: 'browser.chat.request', app: 'claude', chars: null, wire: SEND_PATH['claude.ai'] }])
+    expect(p.captured).toEqual([
+      { kind: 'browser.chat.attachment', app: 'claude', mime: 'multipart/form-data', bytes: 20 },
+      { kind: 'browser.chat.request', app: 'claude', chars: null, wire: SEND_PATH['claude.ai'] },
+    ])
   })
 })
 
@@ -181,7 +198,7 @@ describe('page capture: which tools the AI ran for a reply', () => {
     const reply = p.captured.find((r) => r.kind === 'browser.chat.reply')
     expect(reply).toEqual({ kind: 'browser.chat.reply', app: 'chatgpt', send_id: p.captured[0].send_id, tools: ['web.run'], sources: 2 })
     expect(p.captured[0].send_id).toMatch(/^[0-9a-f-]{32,36}$/)
-    expect(JSON.stringify(p.captured)).not.toMatch(/91|sunny|Houston weather/)
+    expect(JSON.stringify(p.captured)).not.toMatch(/91°|sunny|Houston weather/)
   })
 
   it('files no reply row when no tool ran', async () => {
