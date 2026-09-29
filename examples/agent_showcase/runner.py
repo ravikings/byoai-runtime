@@ -14,7 +14,7 @@ tool result — this is what gives the span tree its branches.
 
 H1-H4 are labeled provider="openai"/model="gpt-4o" and make real
 chat-completions calls via OpenAICompatProvider. The recorder's extractor
-only understands Anthropic wire-format bodies (spec §4/§6), so the OpenAI
+only understands Anthropic wire-format bodies, so the OpenAI
 live path normalizes each request/response into that shape (text/tool_use
 content blocks) before handing it to record_request_body/record_response_body
 — the *actual* call on the wire is genuine OpenAI chat-completions; only the

@@ -1,4 +1,5 @@
-"""Device key rotation and revocation for the agent recorder (spec §8.4).
+"""Device key rotation and revocation for the agent recorder
+(``docs/seal-format.md`` §7).
 
 Rotation replaces a device's Ed25519 keypair while preserving verifiable
 continuity of the ledger's hash chain across the key boundary: the OLD key
@@ -26,7 +27,7 @@ fresh, never-cross-signed random identity.
 Revocation reuses the same mechanism with ``reason="revocation"`` (or
 ``"compromise"``): the event's ``effective_epoch`` marks the point after
 which entries still attributed to the old device are no longer trusted,
-while entries signed before it remain valid (spec §8.4).
+while entries signed before it remain valid (``docs/seal-format.md`` §7).
 
 Client-side only. Anchoring the revocation event externally (Coriqo) is out
 of scope here; it will ship like any other ledger event via the shipper.

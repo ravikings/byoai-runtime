@@ -585,8 +585,8 @@ def test_ship_attestations_once_ships_envelope_and_advances_watermark(ledger, ke
     assert body["subject"]["agent_id"] == "agent_1"
     assert body["events"][0]["resource"] == "tool:payments.refund"
     # The request itself is device-signed — the HTTP signature layer, kept
-    # distinct from the envelope's own chain_head already inside `body`
-    # (spec §4): asserting both here is what keeps this test from
+    # distinct from the envelope's own chain_head already inside `body`.
+    # Asserting both here is what keeps this test from
     # conflating the two.
     assert "X-Coriqo-Signature" in request.headers
     assert "chain_head" in body

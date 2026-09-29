@@ -818,7 +818,7 @@ def test_append_recovers_after_another_ledger_object_advances_the_same_file(ledg
 
 
 def test_ledger_logs_when_reopened_after_a_foreign_rotation(ledger_path, caplog):
-    """Documented footgun (spec §7/§8): if some other process rotates this
+    """Known footgun: if some other process rotates this
     device's key (writes a ``key_rotated`` event whose ``old_device_id`` is
     THIS ledger's device_id) while/after this ``Ledger`` object is open,
     everything it appends from then on is stale-key usage that will fail

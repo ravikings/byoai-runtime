@@ -1,6 +1,7 @@
 """Device-side payload redaction for the recorder's three payload modes.
 
-Spec §7. Client-side only. This module decides what payload *bytes* actually
+See ``docs/seal-format.md`` §4.3. Client-side only. This module decides what
+payload *bytes* actually
 ship in an event's ``payload`` field once ``payload_hash`` has already been
 computed over the raw payload (that hash computation lives elsewhere and is
 never touched by this module — see ``recorder.integration``).
@@ -183,7 +184,7 @@ def _scan_spans(text: str) -> list[tuple[int, int, str]]:
     spans = _credit_card_spans(text)
     for kind, pattern in _SCAN_PATTERNS:
         spans.extend((m.start(), m.end(), kind) for m in pattern.finditer(text))
-    # High-entropy is the least specific pattern (spec: over-redacting is the
+    # High-entropy is the least specific pattern (over-redacting is the
     # safe failure mode), so it goes last and only fills gaps the patterns
     # above didn't already claim.
     spans.extend((m.start(), m.end(), "api_key") for m in _HIGH_ENTROPY_SCAN_RE.finditer(text))

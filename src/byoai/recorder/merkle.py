@@ -1,4 +1,4 @@
-"""Epoch Merkle trees over device checkpoints (spec section 6.2, level 3).
+"""Epoch Merkle trees over device checkpoints (``docs/seal-format.md`` §9).
 
 Coriqo builds one of these per tenant per epoch (10 minutes), over the
 checkpoints it received from that tenant's devices in the window. The root
@@ -146,7 +146,7 @@ def verify_inclusion(proof: InclusionProof) -> bool:
     """Independently recompute the root from ``proof`` and compare.
 
     Takes no tree and no network access — this is the offline half of the
-    verification path in spec section 6.3.
+    verification path in ``docs/seal-format.md`` §11.3.
     """
     current = proof.leaf_hash
     for step in proof.steps:

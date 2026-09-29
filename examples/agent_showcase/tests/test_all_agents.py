@@ -123,7 +123,7 @@ def test_replay_reconstructs_run_from_ledger_alone(demo_client):
 
 
 def test_replay_survives_in_memory_state_being_wiped(demo_client):
-    """Spec §9 acceptance criterion 4: kill the in-memory run state and
+    """Acceptance criterion: kill the in-memory run state and
     replay still works, because it reads exclusively from the ledger."""
     client, _ = demo_client
     summary = _run_to_completion(client, "b1-fraud-triage")

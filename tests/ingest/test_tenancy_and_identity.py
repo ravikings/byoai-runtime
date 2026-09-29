@@ -294,7 +294,7 @@ def test_checkpoints_from_unenrolled_device_are_refused_like_batches(store):
 
 
 def test_default_tenant_slug_is_none_until_a_tenant_exists(store):
-    """A fresh store, single-org deployments (§4.2) pick a fallback org
+    """On a fresh store, single-org deployments pick a fallback org
     rather than serving whatever the caller asks for."""
     assert store.default_tenant_slug() is None
 

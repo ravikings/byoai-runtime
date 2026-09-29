@@ -1,4 +1,4 @@
-"""External anchor receipt verification (spec section 6.2, level 4).
+"""External anchor receipt verification (``docs/seal-format.md`` §10).
 
 Level 4 is the last link in the seal model: a tenant epoch root (level 3,
 see ``merkle.py``) gets submitted to something outside Coriqo's own control,
@@ -20,7 +20,7 @@ forge an external timestamp. Two anchor types are supported, specified in
   that the supplied chain terminates at one of them. Even with
   ``tsa_trusted_roots_pem`` supplied, this module does not check the chain's
   ``pathLen``/``keyUsage`` constraints, nor the trusted root certificate's
-  own validity period (see spec section 14). ``verify_bundle``'s
+  own validity period (see ``docs/seal-format.md`` §14). ``verify_bundle``'s
   ``require_pinned_anchors=True`` turns an RFC 3161 receipt whose chain was
   NOT checked against ``tsa_trusted_roots_pem`` into a finding instead of a
   note (same treatment as a Rekor receipt with no ``rekor_public_key_b64``,
@@ -44,7 +44,7 @@ forge an external timestamp. Two anchor types are supported, specified in
   though the path-reconstruction algorithm around them differs. Despite the
   SET name (real Rekor signs its SET with ECDSA), this receipt's SET check
   verifies an Ed25519
-  signature (``keys.DeviceKey.verify``, section 6.2's encoding) over this
+  signature (``keys.DeviceKey.verify``, seal-format §6.2's encoding) over this
   receipt's own canonicalized fields — it does NOT claim
   byte-for-byte compatibility with a live Rekor server's actual SET encoding,
   since this codebase never talks to a real Rekor instance. A real adapter
@@ -231,7 +231,7 @@ def verify_rfc3161_receipt(
     is given (a list of PEM-encoded certificates), the top of the supplied
     chain must either equal one of those roots or be directly issued by one
     of them; otherwise this fails with a note, closing the "unpinned anchor"
-    gap described in spec §14 for callers who supply a trusted root.
+    gap described in ``docs/seal-format.md`` §14 for callers who supply a trusted root.
     """
     try:
         import base64
@@ -351,7 +351,7 @@ def _check_tsa_trust_requirements(
     response: Any,
     tsr_der: bytes,
 ) -> tuple[bool, list[str]]:
-    """Enforce the hardened TSA trust checks from spec §5 hardening.
+    """Enforce the hardened TSA trust checks.
 
     When ``tsa_trusted_roots_pem`` is supplied, callers are asking for real
     trust validation, not just "the chain links together". This requires:

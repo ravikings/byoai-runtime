@@ -1,7 +1,7 @@
 /**
- * The device register (design frame 10) — one row per enrolled device,
- * quietest first. Two rules the markup exists to enforce, both from spec §2/
- * rule 9: a seq is never rendered without its device (the .seq-scoped token
+ * The device register — one row per enrolled device,
+ * quietest first. Two rules the markup exists to enforce: a seq is never
+ * rendered without its device (the .seq-scoped token
  * makes the pair indivisible, because seqs are per-device and collide across
  * a fleet), and silence is a state with its own row styling, not an absence
  * of one — a device that stopped shipping is the row an operator came to

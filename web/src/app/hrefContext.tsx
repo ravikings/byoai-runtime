@@ -4,7 +4,7 @@
  * A link that navigates away from a scoped view must carry the slice with it.
  * Without that, an operator narrows to three devices over seven days, clicks
  * through to Coverage, and is shown the whole fleet over 24h with nothing
- * saying it changed — the opposite of the URL-as-addressing design (spec §4.5).
+ * saying it changed — the opposite of the URL-as-addressing design.
  *
  * The scope travels through React context rather than a module-level variable.
  * An earlier revision kept it in a module global written during Shell's render:

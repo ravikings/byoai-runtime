@@ -1,13 +1,13 @@
 """Batching shipper for the agent recorder — workstream G.
 
 Reads confirmed-unsynced entries off the local :class:`~byoai.recorder.ledger.Ledger`,
-batches them (spec §9.2: 100 events, 1 MB, or 5 seconds — whichever trips
+batches them (100 events, 1 MB, or 5 seconds — whichever trips
 first), gzips and signs the batch, and POSTs it to Coriqo's
 ``/v1/ingest/batch``. Delivery is at-least-once: the server dedupes on
 ``entry_hash``, so a batch that gets partially or fully resent after a crash
 or a timeout is harmless.
 
-The ledger is the source of truth (spec §9.1) — this module never blocks the
+The ledger is the source of truth — this module never blocks the
 agent and never raises out of :meth:`Shipper.run_forever`; failures are
 logged and retried with backoff.
 """
@@ -49,7 +49,7 @@ _CHECKPOINT_INGEST_PATH = "/v1/checkpoints/batch"
 _MAX_BACKOFF_SECONDS = 60.0
 _INITIAL_BACKOFF_SECONDS = 1.0
 
-#: CEI envelope emitter block (spec §1's `emitter` field) for every
+#: CEI envelope emitter block (the envelope's `emitter` field) for every
 #: attestation this runtime ships. Not per-agent — one runtime kind/vendor
 #: for the whole process, matching what `attest_capability_snapshot`'s
 #: `runtime_version` already reports elsewhere.
@@ -261,7 +261,7 @@ class Shipper:
 
         Checkpoints ship on their own watermark and their own endpoint,
         independent of entry shipping — a checkpoint only becomes useful to
-        Coriqo (as a leaf in a tenant epoch tree, §6.2 level 3) once it
+        Coriqo (as a leaf in a tenant epoch tree, ``docs/seal-format.md`` §9) once it
         exists, regardless of whether the entries it summarizes have shipped
         yet. Delivery is at-least-once, same as entries: the server dedupes
         by ``(device_id, seq_end)``.
@@ -311,7 +311,7 @@ class Shipper:
     def ship_attestations_once(self) -> AttestationShipResult | None:
         """One attestation-shipping pass over checkpoints not yet CEI-sealed.
 
-        Reuses the checkpoint windowing (spec §3c — no second, independently
+        Reuses the checkpoint windowing (no second, independently
         cadenced window): for each checkpoint after the attestation
         watermark (oldest first), reads its ``(seq_start, seq_end)`` range
         off the local ledger, groups the CEI-attestable entries in it
@@ -327,8 +327,7 @@ class Shipper:
 
         A checkpoint's envelopes are all-or-nothing: the watermark only
         advances past a checkpoint once every envelope built from it has
-        been accepted or reported ``duplicate`` (spec §3e — "advance ...
-        only on success or duplicate", the same posture checkpoint batch
+        been accepted or reported ``duplicate`` (the same posture checkpoint batch
         sync already has for a rejected checkpoint). A refused (4xx)
         envelope raises :class:`ShipError` and stops this pass at that
         checkpoint; nothing after it in this call is shipped, and the

@@ -504,7 +504,7 @@ tr.verdict-denied  { background: var(--off-scope-bg); }
 .legend .m-opus   { background: var(--navy-line); }
 .legend .m-haiku  { background: var(--gold); }
 /* PROPOSED COMPONENT: .sm — small-multiple cell. Variance per model beats
-   one hero chart (spec 6.6). */
+   one hero chart. */
 .sm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--s4); }
 .sm { margin: 0; }
 .sm figcaption { margin-bottom: var(--s1); }
@@ -545,8 +545,8 @@ tr.verdict-denied  { background: var(--off-scope-bg); }
 .skel-table td { padding-top: var(--s3); padding-bottom: var(--s3); }
 .skel-table tbody tr:hover { background: transparent; cursor: default; }
 
-/* PROPOSED COMPONENT: .gloss — the glossary affordance (spec §5, contextual
-   docs). Any term with a definition in the single glossary wears it; hover
+/* PROPOSED COMPONENT: .gloss — the glossary affordance (contextual docs).
+   Any term with a definition in the single glossary wears it; hover
    reveals the definition, click goes to the published docs entry. */
 .gloss { border-bottom: 1px dotted var(--ice-dim); cursor: help; text-decoration: none; color: inherit; }
 .gloss:hover { border-bottom-color: var(--azure); color: var(--azure); }
@@ -566,8 +566,8 @@ tr.verdict-denied  { background: var(--off-scope-bg); }
 }
 
 /* PROPOSED COMPONENT: .opt-url — the URL an option will navigate to, shown
-   on the option itself. The URL is the product's primary wayfinding artifact
-   (spec §4.5); showing it on every result teaches the addressing scheme
+   on the option itself. The URL is the product's primary wayfinding artifact;
+   showing it on every result teaches the addressing scheme
    instead of hiding it behind the click. */
 .opt-url {
   font-family: var(--font-mono); font-size: var(--t-micro);
@@ -870,7 +870,7 @@ button.search kbd { flex-shrink: 0; }
 .keysheet-sheet { width: auto; margin: 0; padding: var(--s3) var(--s4) var(--s4); }
 
 /* Below tablet the rail collapses to a strip: the console is responsive down
-   to tablet (§5), and the shell is the part that has to give. */
+   to tablet, and the shell is the part that has to give. */
 @media (max-width: 900px) {
   .app { grid-template-columns: var(--rail-w-collapsed) 1fr; }
   .rail-item .glyph { margin: 0 auto; }

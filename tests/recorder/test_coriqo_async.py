@@ -6,8 +6,7 @@ network, and the signature assertions re-derive the signed bytes from the
 recorded request rather than from the client's own helper where it matters —
 a test that asks the client what it signed would pass on any format at all.
 
-The canonical tuple checked here is Coriqo's, verified against
-``api/domains/agents/device_auth.py``: canonical JSON over ``body_sha256``,
+The canonical tuple checked here is Coriqo's: canonical JSON over ``body_sha256``,
 ``method``, ``path`` (query string included), ``public_key`` (the signer's own,
 lowercase hex) and ``timestamp``, with a 120s past / 30s future window.
 """
@@ -477,7 +476,7 @@ async def test_signed_post_covers_the_exact_body_bytes(tmp_path):
 
 
 async def test_attest_capability_snapshot_sends_the_wire_contract(tmp_path):
-    """W-7: the request shape the spec's wire contract names, plus the
+    """W-7: the request shape Coriqo's wire contract names, plus the
     default (never send raw prompt text unless opted in)."""
     seen: list[httpx.Request] = []
 
@@ -595,11 +594,10 @@ async def test_attest_execution_sends_envelope_device_signed(tmp_path):
     client uses.
 
     AIR-7e (a real round trip against a live Coriqo instance) found that
-    `/attestations` depends on `current_ledger_device`
-    (`api/domains/agents/device_auth.py`), the same no-timestamp
+    `/attestations` uses Coriqo's ledger-device check, the same no-timestamp
     `Ed25519(canonicalize(body))` scheme `Shipper._post_signed_batch`
     already speaks for `/ingest/batch`/`/checkpoints/batch` — not
-    `device_headers()`, which the CEI shipping client spec's own text says
+    `device_headers()`, which this method was first written to use
     but which Coriqo's actual live route 401s on ("Device signature did not
     verify"). See `attest_execution`'s docstring for the full account; this
     test pins the corrected contract."""
@@ -650,7 +648,7 @@ async def test_attest_execution_rejects_mismatched_subject(tmp_path):
 
 
 async def test_attest_execution_duplicate_response_is_returned_not_raised(tmp_path):
-    """A `duplicate` response is Coriqo's idempotency signal (spec §1), not
+    """A `duplicate` response is Coriqo's idempotency signal, not
     an error — the client hands it back to the caller (shipper.py) to act
     on, same as it would a fresh accept."""
     client = _device_client(
@@ -667,7 +665,7 @@ async def test_attest_execution_duplicate_response_is_returned_not_raised(tmp_pa
 async def test_attest_execution_4xx_is_not_retried(tmp_path):
     """A refused envelope (bad chain, unbound agent, ...) raises immediately
     and is never resent — a retry after silently reshaping the batch would
-    be a second, divergent attestation, not a retry of the first (spec §3d)."""
+    be a second, divergent attestation, not a retry of the first."""
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

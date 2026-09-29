@@ -1,5 +1,5 @@
 """Tests for verify_checkpoint_epoch_inclusion — the offline link between a
-device checkpoint and a tenant epoch root (spec section 6.3)."""
+device checkpoint and a tenant epoch root (seal-format §11.3)."""
 
 from __future__ import annotations
 

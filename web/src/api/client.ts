@@ -3,7 +3,7 @@
  *
  * One rule drives the whole file: a response that does not match the contract
  * in `schemas.ts` is a *distinct kind of failure* from a network drop or a 500,
- * and it must reach the screen as its own visible state (spec §2.3 — a verdict
+ * and it must reach the screen as its own visible state (a verdict
  * is never rendered without its scope, and a number is never rendered without
  * knowing it is the number the backend promised). So `SchemaMismatchError` is
  * thrown, never logged-and-defaulted, never `catch {}`-ed into a fallback, and
@@ -98,12 +98,12 @@ export function isSchemaMismatch(e: unknown): e is SchemaMismatchError {
 export const API_BASE: string = import.meta.env.VITE_API_BASE ?? '/v1/console'
 
 /* ------------------------------------------------------------------ *
- * Scope serialisation — §2.3, exactly one implementation
+ * Scope serialisation, exactly one implementation
  * ------------------------------------------------------------------ */
 
 /**
  * The single place a scope becomes a query string. No caller hand-builds one:
- * the scope is mirrored in the URL (§4.5) and shown in the scope chip, and
+ * the scope is mirrored in the URL and shown in the scope chip, and
  * three encodings of "the same" scope would make those three disagree.
  *
  * Arrays are emitted as repeated keys (`device_ids=a&device_ids=b`) rather

@@ -95,7 +95,7 @@ async def test_console_router_works_with_admin_token(async_client, cfg):
              "/v1/console/fleet/coverage", "/v1/console/fleet/findings"]
 )
 async def test_console_router_refuses_other_org(async_client, cfg, path):
-    """The public console is single-org (§4.2): this server serves only
+    """The public console is single-org: this server serves only
     `cfg.org`, and any other tenant slug in the query string is a 404, not an
     (empty or someone else's) fleet — a many-org view is Coriqo's paid MSP
     console."""

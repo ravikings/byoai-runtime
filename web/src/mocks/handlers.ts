@@ -1,7 +1,7 @@
 /**
  * MSW v2 handlers for every console endpoint the query hooks call.
  *
- * The handlers apply the scope selector (§2.3) rather than ignoring it, because
+ * The handlers apply the scope selector rather than ignoring it, because
  * a mock that returns the whole fleet regardless of `device_ids` would let a
  * scope-filtering bug ship: the chip would say "3 devices" and the numbers
  * would be the fleet's.

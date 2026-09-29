@@ -1,5 +1,5 @@
 /**
- * The three health dots: coverage, integrity, ingest (spec §6.1).
+ * The three health dots: coverage, integrity, ingest.
  *
  * Three rules this component exists to enforce:
  *
@@ -12,7 +12,7 @@
  *     and the worst member as a sentence, both in the DOM and in the
  *     accessible name.
  *
- * And a dot is a jump link, not status decoration (§4.2 J2): clicking it goes
+ * And a dot is a jump link, not status decoration: clicking it goes
  * to the degraded thing.
  */
 import type { DotState, HealthRollup } from '../app/scope'

@@ -3,11 +3,8 @@
 Most of these prove self-consistency (tool-order independence, key-order
 independence, null/absent-field equivalence, int/float equivalence). The
 `Cross-repo parity` section below additionally byte-compares against literal
-digest values computed from Coriqo's own
-``api/utils/capability_digest.py::compute_capability_digest`` (read from a
-sibling checkout during a 2026-08-30 audit) — real parity, not just internal
-consistency. Update these vectors if Coriqo's own test file
-(``api/tests/test_capability_digest.py``) ever gains new golden values.
+digest values computed by Coriqo's own capability-digest code during a
+2026-08-30 audit — real parity, not just internal consistency.
 """
 
 from __future__ import annotations
@@ -138,8 +135,8 @@ def test_digest_is_deterministic() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cross-repo parity — literal digests computed from Coriqo's
-# api/utils/capability_digest.py, not just this port's own output.
+# Cross-repo parity — literal digests computed by Coriqo's own code, not
+# just this port's own output.
 # ---------------------------------------------------------------------------
 
 

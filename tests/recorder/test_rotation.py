@@ -1,4 +1,4 @@
-"""Tests for device key rotation and revocation (spec §8.4).
+"""Tests for device key rotation and revocation (``docs/seal-format.md`` §7).
 
 Uses the real :class:`Ledger` and :func:`rotate_key` — unlike
 ``test_verify.py``, this module exercises the writer, not just the
@@ -494,7 +494,7 @@ def _emit_checkpoint(ledger, key, seq_start, seq_end, ts="2026-08-10T12:00:00.00
 
 
 def test_verify_ledger_checks_checkpoints_across_key_rotation(tmp_path):
-    """Regression test for spec §11.2: level 2 used to check every
+    """Regression test for ``docs/seal-format.md`` §11.2: level 2 used to check every
     checkpoint against a single pinned key, which cannot pass once a
     checkpoint after the rotation is signed with the new key. verify_ledger
     must build a key timeline from the chain walk instead, so checkpoints on
@@ -652,7 +652,7 @@ def test_verify_ledger_rejects_re_rotation_forged_by_a_retired_key(tmp_path):
 
 
 def test_pinned_key_must_be_the_key_active_at_seq_1_not_the_current_key(tmp_path):
-    """spec §13.2 / CLI --pubkey and pinned_device_public_key_b64: the
+    """``docs/seal-format.md`` §7 / CLI --pubkey and pinned_device_public_key_b64: the
     pinned key is the STARTING key the caller trusts — the key active at
     the very first entry (seq 1) — never the device's current key after a
     rotation the caller doesn't yet know about. Pinning A (the first key,

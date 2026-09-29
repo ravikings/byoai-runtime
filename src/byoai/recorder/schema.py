@@ -2,7 +2,7 @@
 
 One immutable record type (:class:`AgentEvent`) plus the helpers that make it
 hashable in a way a third party can reproduce: canonical dict form, a
-deterministic digest, and the capture clocks from spec §5.5.
+deterministic digest, and the capture clocks.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ __all__ = [
     "sha256_hex",
 ]
 
-# v1: no trace attribution fields. v2 (spec §5.3a): adds trace_id/span_id/
+# v1: no trace attribution fields. v2: adds trace_id/span_id/
 # parent_span_id/continues_from. Kept as two constants (not just "current"
 # and "legacy") because ledger.py and verify.py both need to name the old
 # version explicitly when deciding which fields feed a given row's digest.
@@ -94,7 +94,7 @@ class AgentEvent:
     payload_hash: str
     model: str | None
     provider: str
-    # v2 (spec §5.3a) trace attribution. trace_id/span_id are required for
+    # v2 trace attribution. trace_id/span_id are required for
     # every event captured going forward; parent_span_id/continues_from are
     # nullable (absent means "top-level agent" / "not a resumed session").
     # Legacy v1 rows loaded off disk get placeholder "" values here (see

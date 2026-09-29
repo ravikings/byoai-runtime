@@ -6,7 +6,7 @@
  *    render. Starting it after mount races the first query, which produces an
  *    intermittently empty first paint — the exact class of bug this product
  *    is supposed to be embarrassed by.
- *  - Queries are stale-while-revalidate (§5) but never silently so: screens
+ *  - Queries are stale-while-revalidate but never silently so: screens
  *    stamp "updated Ns ago" from `dataUpdatedAt`.
  */
 import { StrictMode } from 'react'

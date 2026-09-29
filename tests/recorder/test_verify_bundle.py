@@ -4,7 +4,7 @@ bundle verification path in ``docs/seal-format.md`` §11.
 
 The bundle-assembly helper here is deliberately test-only (mirrors
 ``mock_coriqo.py``'s own "not real Coriqo" convention): producing a bundle is
-server-side/proprietary per spec §15.6, this file only needs *a* bundle to
+Coriqo's job, server-side; this file only needs *a* bundle to
 verify against.
 """
 
@@ -279,7 +279,7 @@ def test_verify_bundle_notes_unanchored_epochs_as_legitimate():
     assert report.anchors_checked == 0
     assert report.bad_anchors == []
     # anchor.type == "none" is legitimately unanchored, not silently treated
-    # as passing — an explicit note says so (§6.2's anchor object; fixes the
+    # as passing — an explicit note says so (the epoch's anchor object; fixes the
     # docstring/code mismatch where BundleVerifyReport's docstring already
     # claimed this but the code produced no note at all).
     assert any("no anchor" in n for n in report.notes)
@@ -346,7 +346,7 @@ def test_verify_bundle_require_pinned_anchors_fails_an_unpinned_rekor_anchor():
         }
     )
     # Without require_pinned_anchors, an anchor checked only against its own
-    # claims (no rekor_public_key_b64) still passes — spec §14 item 4.
+    # claims (no rekor_public_key_b64) still passes — seal-format §14 item 2.
     lenient = verify_bundle(bundle)
     assert lenient.bad_anchors == []
 
@@ -425,7 +425,7 @@ def test_verify_bundle_skips_anchor_verification_when_check_anchors_is_false():
     assert any("check_anchors=False" in n for n in report.notes)
 
 
-# --- §14 pinning hardening: pinning now requires something signed --------
+# --- Pinning hardening (seal-format §11.2-11.4): pinning requires a signature
 
 
 def test_verify_bundle_pinned_device_key_with_zero_checkpoints_is_a_finding(tmp_path):
@@ -634,7 +634,7 @@ def test_verify_bundle_never_raises_on_any_single_field_corruption(tmp_path):
     # whole-field allowlists (the same field name fails ok=False for other
     # replacement values, so it can't be blanket-allowlisted).
     KNOWN_LEGITIMATE_LABELS = {
-        # Unpinned calls only prove internal consistency (spec §10.3) — a
+        # Unpinned calls only prove internal consistency — a
         # missing/malformed device object with no pinned_device_public_key_b64
         # just means nothing is checked against it, not a failure.
         "top-level 'device' -> None",

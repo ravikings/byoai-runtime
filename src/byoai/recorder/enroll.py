@@ -1,6 +1,6 @@
 """Device enrollment for the agent recorder — workstream F.
 
-One-shot, CLI-driven flow (spec section 8.2): a device generates (or reuses)
+One-shot, CLI-driven flow: a device generates (or reuses)
 its Ed25519 keypair locally via :func:`load_or_create_device_key`, then POSTs
 only the public key and a single-use enrollment token to Coriqo. Coriqo
 replies with a ``device_id`` that this device is now bound to. The private

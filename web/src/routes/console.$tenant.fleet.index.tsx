@@ -1,5 +1,5 @@
 /**
- * Fleet overview — §6.0.1, design frame 8.
+ * Fleet overview.
  *
  * One screen answering four questions: is everything reporting, do the chains
  * hold, is evidence still leaving the devices, and what is being refused.

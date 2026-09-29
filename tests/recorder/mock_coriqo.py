@@ -57,7 +57,7 @@ class StoredCheckpoint:
 @dataclass
 class Epoch:
     """A tenant-level epoch tree built over checkpoints received so far
-    (spec section 6.2, level 3). Real Coriqo builds one every 10 minutes;
+    (seal-format §9). Real Coriqo builds one every 10 minutes;
     the mock builds one whenever ``MockCoriqo.build_epoch`` is called, since
     tests control time explicitly rather than waiting on a wall clock."""
 
@@ -89,7 +89,7 @@ class MockCoriqo:
     def __init__(self, *, valid_tokens: set[str] | None = None) -> None:
         """``valid_tokens``: single-use enrollment tokens this server will
         accept. Defaults to ``{"cik_live_test"}``. Consumed tokens are
-        removed after use (single-use, matches spec §8.2) — a repeat enroll
+        removed after use (single-use) — a repeat enroll
         with the same token gets 409."""
         self._valid_tokens: set[str] = (
             set(valid_tokens) if valid_tokens is not None else {"cik_live_test"}
@@ -131,8 +131,8 @@ class MockCoriqo:
 
     def build_epoch(self) -> Epoch | None:
         """Build a tenant epoch tree over every checkpoint received so far
-        that isn't already a leaf of an earlier epoch (spec section 6.2,
-        level 3). Returns ``None`` if there is nothing pending.
+        that isn't already a leaf of an earlier epoch (seal-format §9).
+        Returns ``None`` if there is nothing pending.
 
         Real Coriqo does this on a 10-minute timer across all devices in a
         tenant; the mock exposes it as an explicit call so tests control
@@ -307,7 +307,7 @@ class MockCoriqo:
         # Per-checkpoint rejections (distinct from a request-level 401):
         # the request signature only proves the device sent this batch, not
         # that any individual checkpoint inside it is genuine — a checkpoint
-        # that fails its own signature check (§6.2) is reported back here so
+        # that fails its own signature check is reported back here so
         # the shipper can retry it specifically, instead of us either
         # silently dropping it or aborting the whole batch (which would also
         # discard whatever in the same batch was fine).

@@ -1,5 +1,5 @@
 /**
- * The scope chip — the most important control in the product (spec §6.1).
+ * The scope chip — the most important control in the product.
  *
  * It states what every number on screen is counted over. Two rules, both
  * structural rather than stylistic:

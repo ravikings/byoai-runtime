@@ -349,7 +349,7 @@ def derive_session_id(request: Request, body: dict) -> str:
 
 
 def derive_trace_context(request: Request) -> tuple[str, str, str | None, str | None]:
-    """Recorder trace attribution for one request (spec §5.3a).
+    """Recorder trace attribution for one request.
 
     ``trace_id``: the caller's ``X-BYOAI-Trace-Id`` header if sent (a
     sub-agent or a harness that already tracks its own run id), otherwise a
@@ -1234,7 +1234,7 @@ try:
     from byoai.ingest import IngestStore
 
     _ingest_store = IngestStore(_INGEST_DB)
-    # Single-org (§4.2 of the public/private boundary spec): the public
+    # Single-org: the public
     # console serves exactly one org, matching the free Shield server — a
     # many-org view is Coriqo's paid MSP console. `BYOAI_CONSOLE_ORG` picks
     # it explicitly; otherwise default to whichever tenant is already in this

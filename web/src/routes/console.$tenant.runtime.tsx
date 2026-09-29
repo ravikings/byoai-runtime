@@ -1,5 +1,5 @@
 /**
- * Runtime — `/console/{tenant}/runtime` (spec §6.6). The savings screen,
+ * Runtime — `/console/{tenant}/runtime`. The savings screen,
  * built around the one number the product is allowed to cite and the one it
  * never is: *Estimated* (`/v1/stats`, a character heuristic whose own API
  * response tells you not to cite it — so the warning lives on the block

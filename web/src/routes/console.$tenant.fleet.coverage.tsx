@@ -1,5 +1,5 @@
 /**
- * Coverage — the silence report (spec §6.0.2, journey J4).
+ * Coverage — the silence report.
  *
  * The screen no competitor has: a list of things that did NOT happen. The
  * governing constraint is that absence must be as loud as failure. An empty

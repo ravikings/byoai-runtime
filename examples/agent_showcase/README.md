@@ -185,7 +185,7 @@ for Coriqo's `/v1/ingest/batch` (`httpx.MockTransport` — no live Coriqo
 credentials needed to prove the wiring). Confirms the batch is signed
 (`ed25519:`-prefixed device signature), gzip-encoded, accepted, and the
 ledger's sync watermark advances — and that a second ship attempt finds
-nothing left to send. Acceptance criteria (spec §9) all verified: 8 agents
+nothing left to send. Acceptance criteria all verified: 8 agents
 complete end-to-end with correct span parenting, event counts match the
 ledger, verify flips red on tamper and names the exact seq, replay survives
 `_RUNS` being wiped, fallback engages on API outage, and cold start is well

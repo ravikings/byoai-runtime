@@ -1,4 +1,4 @@
-"""Tests for spec §5.3a trace attribution (trace_id/span_id/parent_span_id/
+"""Tests for trace attribution (trace_id/span_id/parent_span_id/
 continues_from) and the v1 -> v2 additive schema migration that carries it.
 
 Three things this file has to prove:

@@ -2,7 +2,7 @@
  * The console's API contract.
  *
  * These schemas are not defensive decoration — they are the specification the
- * ingest backend implements (spec §2). They exist because this product's
+ * ingest backend implements. They exist because this product's
  * failure mode is not a crash, it is a green tick over data nobody validated.
  *
  * Two rules encoded structurally, not by convention:
@@ -62,7 +62,7 @@ export const Posture = z.enum(['fail_open', 'fail_closed'])
 export const Enforcement = z.enum(['observe', 'enforce'])
 
 /* ------------------------------------------------------------------ *
- * Scope — §2.3
+ * Scope
  * ------------------------------------------------------------------ */
 
 export const Scope = z.object({
@@ -88,7 +88,7 @@ export const Inclusion = z.object({
 export type Inclusion = z.infer<typeof Inclusion>
 
 /* ------------------------------------------------------------------ *
- * Fleet — §2.1
+ * Fleet
  * ------------------------------------------------------------------ */
 
 export const FleetSummary = z.object({
@@ -213,7 +213,7 @@ export const FindingList = z.object({
 export type FindingList = z.infer<typeof FindingList>
 
 /* ------------------------------------------------------------------ *
- * Coverage — the silence report, §6.0.2
+ * Coverage — the silence report
  * ------------------------------------------------------------------ */
 
 export const CoverageReport = z.object({
@@ -265,7 +265,7 @@ export const CoverageReport = z.object({
 export type CoverageReport = z.infer<typeof CoverageReport>
 
 /* ------------------------------------------------------------------ *
- * Verify — §2.2. A fleet verdict is a rollup of per-device verdicts,
+ * Verify. A fleet verdict is a rollup of per-device verdicts,
  * never a single tick.
  * ------------------------------------------------------------------ */
 
@@ -302,14 +302,14 @@ export const VerifyJob = z.object({
 })
 
 /* ------------------------------------------------------------------ *
- * Mandate — the verdict stream, §6.5
+ * Mandate — the verdict stream
  * ------------------------------------------------------------------ */
 
 export const VerdictEvent = z.object({
   device_id: z.string(),
   /** The sealed height this verdict is addressable at — null when the
    *  verdict is not in the chain window the host keeps. Never rendered as
-   *  a bare number: a seq is only an address with its device (§2). */
+   *  a bare number: a seq is only an address with its device. */
   seq: z.number().int().nonnegative().nullable(),
   ts: z.string(),
   surface: z.string(),
@@ -353,7 +353,7 @@ export const VerdictStream = z.object({
 export type VerdictStream = z.infer<typeof VerdictStream>
 
 /* ------------------------------------------------------------------ *
- * Ledger — the sealed record, §6.2/6.3
+ * Ledger — the sealed record
  * ------------------------------------------------------------------ */
 
 export const LedgerEntry = z.object({
@@ -417,7 +417,7 @@ export const EntryDetail = z.object({
 export type EntryDetail = z.infer<typeof EntryDetail>
 
 /* ------------------------------------------------------------------ *
- * Enrollment — who this host answers to (§6.9 / blind-spot counterpart)
+ * Enrollment — who this host answers to
  * ------------------------------------------------------------------ */
 
 export const EnrollmentState = z.object({
@@ -491,7 +491,7 @@ export const EnrollmentState = z.object({
 export type EnrollmentState = z.infer<typeof EnrollmentState>
 
 /* ------------------------------------------------------------------ *
- * Runtime (proxy) — existing endpoints, §1.1
+ * Runtime (proxy) — existing endpoints
  * ------------------------------------------------------------------ */
 
 export const PermanentStats = z.object({

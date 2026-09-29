@@ -1,4 +1,4 @@
-"""Signed checkpoints over the device chain (spec section 6.2).
+"""Signed checkpoints over the device chain (``docs/seal-format.md`` §8).
 
 Every ``every_events`` events or ``every_seconds`` seconds — whichever comes
 first — the device emits::

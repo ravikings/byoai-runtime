@@ -13,7 +13,7 @@
  *    of all) a wall of zeros that reads as a quiet proxy.
  *
  * 2. Every caveat string the API returns — `methodology`, `scope_note`,
- *    `sample_size_caveat` — is rendered as first-class UI (spec §6.6: the
+ *    `sample_size_caveat` — is rendered as first-class UI (the
  *    honesty is the feature). Nothing is collapsed into a tooltip.
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'

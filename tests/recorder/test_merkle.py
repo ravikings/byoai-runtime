@@ -1,4 +1,4 @@
-"""Epoch Merkle tree tests — spec section 6.2 level 3."""
+"""Epoch Merkle tree tests — seal-format §9."""
 
 from __future__ import annotations
 

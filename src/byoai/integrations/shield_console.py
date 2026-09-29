@@ -734,7 +734,7 @@ class ShieldConsoleAPI:
     # ------------------------------------------------------------------
 
     def verdicts(self, tenant: str, query: dict[str, list[str]]) -> dict:
-        """The fleet verdict stream, local edition (spec §6.5).
+        """The fleet verdict stream, local edition.
 
         The server-side stream reads sealed ``mandate_verdict`` events; on
         this host the rules decide at capture time, inline, and what each
@@ -878,8 +878,8 @@ class ShieldConsoleAPI:
         }
 
     def ledger(self, tenant: str, query: dict[str, list[str]]) -> dict:
-        """The sealed ledger, newest first, cursor-paginated (spec §6.2 at
-        fleet altitude; this host's fleet is its own chain).
+        """The sealed ledger, newest first, cursor-paginated (at fleet
+        altitude; this host's fleet is its own chain).
 
         Two things this answer gets right by construction rather than by
         promise: the sequence has no gaps (heights run 1..n and ``missing_ranges``
@@ -955,7 +955,7 @@ class ShieldConsoleAPI:
         }
 
     def entry(self, tenant: str, device_id: str, seq_raw: str) -> tuple[int, bytes]:
-        """One sealed entry addressed by device AND seq (§2's rule).
+        """One sealed entry addressed by device AND seq.
 
         Returns the stored payload verbatim plus the Merkle path that places
         it under the checkpoint — the offline-verify story, made linkable at

@@ -3,9 +3,8 @@ recomputes and compares against, so a byte-for-byte port here is what makes
 ``POST .../capability-snapshot`` succeed instead of 422ing on every call.
 
 This is a **port**, not a copy, but as of the parity fix below it is a port
-of Coriqo's *actual* canonicalisation algorithm
-(``api/utils/capability_digest.py``), not of RFC 8785 (JCS). Both this
-module and Coriqo's are Python, so re-implementing Coriqo's own
+of Coriqo's *actual* canonicalisation algorithm, not of RFC 8785 (JCS).
+Both this module and Coriqo's are Python, so re-implementing Coriqo's own
 ``json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`` +
 integral-float-to-int pre-pass here — rather than routing through this
 repo's shared JCS module — gives byte-identical output by construction
@@ -19,7 +18,7 @@ cases anyone thought to test.
     self-consistency, not cross-repo agreement). This module previously
     delegated to :mod:`byoai.recorder.canonical`, this repo's RFC 8785 (JCS)
     canonicalizer — appropriate for its actual job (this repo's ledger
-    hashing) but NOT what Coriqo's ``cap-digest-v1`` spec actually is. Two
+    hashing) but NOT what Coriqo's ``cap-digest-v1`` actually is. Two
     concrete divergences confirmed:
 
     1. **Non-integral float formatting.** Coriqo emits Python's
@@ -49,8 +48,7 @@ cases anyone thought to test.
 
 .. warning::
     **Parity bug found and fixed 2026-08-30 (round 1)**, once Coriqo's
-    actual ``api/utils/capability_digest.py::compute_capability_digest``
-    became readable from a sibling checkout. This module used to hash
+    actual capability-digest code became readable from a sibling checkout. This module used to hash
     ``system_prompt is None`` the same as an empty string. Coriqo embeds a
     literal JSON ``null`` for ``system_prompt_sha256`` when the prompt is
     ``None`` (and reports ``system_prompt_chars=None``, not ``0``) — never a
@@ -87,7 +85,7 @@ DIGEST_SPEC = "cap-digest-v1"
 
 
 def _canon(value: Any) -> Any:
-    """Port of Coriqo's ``api/utils/capability_digest.py::_canon`` — recursively
+    """Port of Coriqo's capability-digest canonicaliser — recursively
     normalise a JSON-compatible value, folding any integral-valued float
     (``1.0``) into its ``int`` form (``1``) so the two serialize identically.
     Dict key sorting itself is left to ``json.dumps(sort_keys=True)`` at the
@@ -185,13 +183,13 @@ def compute_capability_digest(
     ``system_prompt_sha256`` from :func:`system_prompt_sha256` — which is
     ``None`` (JSON ``null`` in the envelope) when ``system_prompt is None``,
     matching Coriqo's own envelope construction exactly. The literal string
-    ``"cap-digest-v1"`` is embedded inside the hashed payload, per spec,
+    ``"cap-digest-v1"`` is embedded inside the hashed payload,
     rather than only sent alongside it as ``digest_spec`` — so a request that
     flips ``digest_spec`` without also changing what got hashed cannot
     produce a digest Coriqo would accept.
 
-    ``tools`` and ``system_prompt`` are the only inputs the spec says the
-    digest covers; ``runtime_version`` deliberately does not enter the
+    ``tools`` and ``system_prompt`` are the only inputs the digest
+    covers; ``runtime_version`` deliberately does not enter the
     envelope (Coriqo's contract only names ``model_id`` inside it).
     """
     prompt_hash = system_prompt_sha256(system_prompt)

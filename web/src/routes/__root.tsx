@@ -1,5 +1,5 @@
 /**
- * The shell (spec §6.1).
+ * The shell.
  *
  * Left rail — Fleet · Ledger · Evidence · Mandate · Runtime · Settings, with
  * Fleet as the default landing route. Top bar, left to right: the scope chip,
@@ -41,7 +41,7 @@ import {
 export const Route = createRootRoute({
   component: Root,
   // A wrong URL still gets the shell, the rail and a way out — a 404 that
-  // strands you with no navigation is the dead end §4.4 exists to forbid.
+  // strands you with no navigation is a dead end.
   notFoundComponent: NotFound,
 })
 
@@ -49,7 +49,7 @@ interface Section {
   readonly key: string
   readonly label: string
   readonly glyph: string
-  /** The `g`-prefixed shortcut key, per §5. */
+  /** The `g`-prefixed shortcut key. */
   readonly hotkey: string
   readonly path: (tenant: string) => string
 }
@@ -134,7 +134,7 @@ function Shell() {
     setStatus(next ?? {})
   }, [])
 
-  /** Scope changes are URL changes — back/forward walk scope history (§4.5). */
+  /** Scope changes are URL changes — back/forward walk scope history. */
   const onScopeChange = useCallback(
     (next: ScopeSearch) => {
       const qs = new URLSearchParams(scopeSearchToParams(next)).toString()
@@ -157,7 +157,7 @@ function Shell() {
     return section
   }, [location.pathname])
 
-  // Keyboard model (§5): `g` then a section key, `?` for the sheet, `⌘K` for
+  // Keyboard model: `g` then a section key, `?` for the sheet, `⌘K` for
   // the palette. An operator console that requires a mouse is a toy.
   useEffect(() => {
     let pendingG = false
@@ -387,7 +387,7 @@ function KeySheet({ onClose }: { onClose: () => void }) {
             ['g then r', 'Runtime'],
             ['g then ,', 'Settings'],
             // Only bindings this handler actually implements are listed.
-            // j/k, Enter and y are specified (§5) but not wired yet; naming
+            // j/k, Enter and y are planned but not wired yet; naming
             // them here told the user an action existed and then did nothing
             // when they pressed it — the console making a claim it cannot keep.
             ['?', 'this sheet'],

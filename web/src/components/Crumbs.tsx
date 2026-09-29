@@ -1,6 +1,6 @@
 /**
- * Breadcrumbs — "where am I", the first of the four orientation questions
- * (§4.1). Present on every screen; every segment but the last is a link back,
+ * Breadcrumbs — "where am I", the first of the four orientation
+ * questions. Present on every screen; every segment but the last is a link back,
  * so browser back is never the only way out.
  */
 import { Fragment } from 'react'

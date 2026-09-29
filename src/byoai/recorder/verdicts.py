@@ -197,14 +197,14 @@ def ledger_payload(
     counted against the denials in that run, and the denominator — "4,120 calls,
     9 of them off-mandate" — is the whole reason allows are recorded.
 
-    ``resource``/``on_behalf_of`` (AIR-7b, CEI shipping client spec §3a) are
+    ``resource``/``on_behalf_of`` (AIR-7b) are
     the two fields the future CEI envelope builder needs and that are not
     captured anywhere else today:
 
     - ``resource`` is ``verdict.tool`` — the exact string
       :class:`~byoai.recorder.mandate.ProposedAction` was checked against the
       mandate with (``verdict.tool`` is set from ``action.tool`` in
-      ``mandate.py``, so this is the same value the spec calls
+      ``mandate.py``, so this is the same value as
       ``action.tool``, with no separate plumbing needed).
     - ``on_behalf_of`` is ``list(effective_scope.chain)``, delegator first,
       when ``effective_scope.delegated`` is true; an empty list otherwise (a
@@ -508,7 +508,7 @@ class VerdictRecorder:
     def _append(self, verdict: Verdict, payload: dict[str, Any]) -> LedgerEntry | None:
         """Seal the ``AgentEvent`` for one verdict.
 
-        AIR-7b design decision (CEI shipping client spec §3a/§5.3): ``resource``
+        AIR-7b design decision: ``resource``
         and ``on_behalf_of`` are carried inside ``payload`` (set by
         ``ledger_payload``) rather than as new ``AgentEvent`` dataclass fields.
 

@@ -1,5 +1,5 @@
 /**
- * The scope line every data screen carries — "what am I looking at" (§4.1).
+ * The scope line every data screen carries — "what am I looking at".
  * A number with no stated scope is a number a user cannot act on, so this
  * strip restates the slice in full: tenant, selection, window, and the
  * included/enrolled fraction that every aggregate on the screen is over.

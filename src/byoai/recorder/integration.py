@@ -4,9 +4,9 @@ Everything else in this package is a pure library. This module is the one
 place that owns process-lifetime state: the on-disk ledger, the device key,
 and the checkpoint scheduler, all gated behind ``BYOAI_RECORDER_ENABLED``.
 
-Failure posture (spec §9.3): recording must never add latency to or block the
+Failure posture: recording must never add latency to or block the
 token stream, and it must never crash the request path. Every public method
-here swallows its own exceptions except for the one case the spec calls out
+here swallows its own exceptions except for the one case called out
 explicitly — ``strict_mode`` plus a ledger write failure — which the caller
 is expected to turn into a 503.
 """
@@ -66,7 +66,7 @@ class Recorder:
         )
         self.payload_mode = payload_mode
         # Per-process/session salt for low-entropy field hashing in redacted
-        # mode (spec §7.2). Generated once and held for the instance's
+        # mode. Generated once and held for the instance's
         # lifetime — not per-event.
         self._session_salt = secrets.token_hex(16)
         self.key: DeviceKey = load_or_create_device_key(base)

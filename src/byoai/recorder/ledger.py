@@ -10,7 +10,7 @@ tampering is detectable offline by a third party.
 
 Design notes:
 
-- Chain per device, never one global chain (spec §6.1/§6.2). Writes serialize
+- Chain per device, never one global chain (``docs/seal-format.md`` §5). Writes serialize
   within a single Ledger instance only, so N devices scale linearly.
 - WAL + ``synchronous=NORMAL``: readers (the verifier, checkpointer) never
   block on an in-flight append, and an append costs a single fsync-free write.
@@ -194,7 +194,7 @@ class Ledger:
         except sqlite3.OperationalError:
             pass  # column already present
 
-        # Ledgers created before schema v2 (spec §5.3a trace attribution)
+        # Ledgers created before schema v2 (trace attribution)
         # have agent_events without these columns; CREATE TABLE IF NOT EXISTS
         # above is a no-op against them, same pattern as sync_state above.
         # Existing rows get NULL in all four — they stay v1-shaped (their
@@ -228,14 +228,14 @@ class Ledger:
 
     def _warn_if_head_is_a_foreign_rotation(self, row: tuple) -> None:
         """Detect (best-effort, log-only) the "out-of-process rotation"
-        footgun documented in spec §7: if some *other* process rotated this
+        footgun: if some *other* process rotated this
         device's key (its own ``rotate_key`` CLI invocation, or a sibling
         process holding the same key material) while this ``Ledger`` object
         was already open, this object's in-memory ``device_id`` is now
         retired — everything it appends from here on will fail verification
         as stale-key usage. This can't be prevented (there is no hot-reload
-        of keys by design, see §7), but a loud, immediate log beats silently
-        producing entries that turn out to be unverifiable much later.
+        of keys by design, see ``docs/seal-format.md`` §7), but a loud,
+        immediate log beats silently producing entries that turn out to be unverifiable much later.
 
         ``row`` is the positional ``(seq, entry_hash, kind, payload)`` tuple
         from :meth:`_resume`'s own query — this connection has no row
@@ -629,7 +629,7 @@ class Ledger:
     # ---------------------------------------------------------- checkpoints
 
     def append_checkpoint(self, cp: dict) -> None:
-        """Persist a signed checkpoint (written by the checkpointer, §6.2).
+        """Persist a signed checkpoint (written by the checkpointer).
 
         Insert-if-absent by ``seq_end``: a second checkpoint arriving for a
         ``seq_end`` that already has one (e.g. a retried emit, or two
@@ -763,7 +763,7 @@ class Ledger:
         attestation watermark rather than the checkpoint-ship watermark: a
         checkpoint already shipped to ``/v1/checkpoints/batch`` can still be
         pending its CEI attestation, since the two cursors advance
-        independently over the same ``seq_end`` id-space (spec §3c). Does not
+        independently over the same ``seq_end`` id-space. Does not
         move the watermark.
         """
         with self._lock:
@@ -783,7 +783,7 @@ class Ledger:
         Mirrors :meth:`get_synced_checkpoint_up_to` exactly: an attestation
         envelope (AIR-7c, ``recorder/attestation.py::build_envelope``) seals
         the same ``(seq_start, seq_end)`` window a checkpoint already defines
-        (spec §3c — one windowing scheme, not two), so this watermark lives in
+        (one windowing scheme, not two), so this watermark lives in
         the same ``seq_end`` id-space as the checkpoint watermark, as a
         sibling column, not a second one derived independently.
         """

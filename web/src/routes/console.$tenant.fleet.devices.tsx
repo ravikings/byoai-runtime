@@ -1,5 +1,5 @@
 /**
- * Devices register — `/console/{tenant}/fleet/devices`, design frame 10.
+ * Devices register — `/console/{tenant}/fleet/devices`.
  *
  * The overview answers "is the fleet well"; this is the list of *which* —
  * one row per enrolled device, quietest first, every seq pinned to its

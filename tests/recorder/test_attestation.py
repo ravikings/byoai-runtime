@@ -1,15 +1,7 @@
 """AIR-7a: compute_chain_head() must byte-match Coriqo's own computation.
 
 The fixture values below were produced by running Coriqo's real
-``api/domains/agents/attestation_ingest.compute_chain_head()`` (which uses
-``api/chain.py``'s ``canonical_bytes``/``sha256_hex``/``GENESIS_PREV_HASH``)
-against the exact event lists below, in the coriqo repo, on 2026-09-22:
-
-    cd coriqo && python3 -c "
-    from api.domains.agents.attestation_ingest import compute_chain_head
-    events = [...]  # see FIXTURE_EVENTS below
-    print(compute_chain_head(events))
-    "
+chain-head computation against the exact event lists below, on 2026-09-22.
 
 This is not a self-consistency check — it pins against Coriqo's real
 server-side output, so a future change to either repo's canonicalization
@@ -169,7 +161,7 @@ def test_seq_is_renumbered_fresh_per_window_not_copied_from_the_ledger(tmp_path)
 
 
 def test_window_boundaries_match_the_callers_seq_range_exactly(tmp_path):
-    """build_envelope does not invent a second windowing scheme (spec §3c):
+    """build_envelope does not invent a second windowing scheme:
     it attests exactly the entries the caller hands it, which is expected to
     be ledger.read_range(checkpoint.seq_start, checkpoint.seq_end)."""
     led = Ledger(tmp_path / "ledger.db", DEVICE)
@@ -212,7 +204,7 @@ def test_on_behalf_of_always_present_making_the_envelope_always_v2(tmp_path):
     """A non-delegated call's on_behalf_of is an empty list, per AIR-7b, but
     the key itself must still be present on every event: Coriqo's
     envelope_schema_version() detects v2 by key presence, not by value, and
-    this runtime emits v2 always going forward (spec §3b)."""
+    this runtime emits v2 always going forward."""
     led = Ledger(tmp_path / "ledger.db", DEVICE)
     try:
         led.append(_verdict_event(resource="tool:a", on_behalf_of=[]))

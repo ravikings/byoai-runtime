@@ -7,7 +7,7 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import { DEFAULT_TENANT } from '../app/scope'
 
 export const Route = createFileRoute('/console/')({
-  // Forward the incoming search. A permalink is journey J2's exit artifact —
+  // Forward the incoming search. A permalink is a shared view —
   // dropping its scope on the way to the default tenant lands the reader on an
   // unfiltered fleet while they believe they are looking at the sender's slice.
   beforeLoad: ({ search }) => {

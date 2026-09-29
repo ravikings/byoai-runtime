@@ -685,7 +685,7 @@ class MandateGate:
         self._report_capability_snapshot = report_capability_snapshot
         # W-7: the digest last successfully sent (or attempted), so repeated
         # calls to attest_capabilities() with an unchanged tool/prompt/model
-        # surface are a no-op — the etag-style skip the spec asks for. There
+        # surface are a no-op — the etag-style skip. There
         # is no server-side field to compare against yet (see
         # capability_digest.py's cross-repo-parity warning), so this is
         # purely local bookkeeping: it prevents re-attesting on every run
@@ -1093,7 +1093,7 @@ class MandateGate:
 
         Returns ``True`` if a report was (attempted to be) sent, ``False`` if
         skipped because the digest matches the last one this gate sent —
-        the etag-style skip the spec calls for. There is no
+        the etag-style skip. There is no
         ``capability_digest`` field on the mandate snapshot to compare
         against yet (Coriqo's side of that addition was not visible when
         this was written), so the comparison is against this gate's own
@@ -1448,7 +1448,7 @@ def mandate_gate(
         client = AsyncCoriqoAgentsClient(identity)
 
     def _on_suspend_observed(snapshot: "MandateSnapshot") -> None:
-        # Best-effort per §9.3: schedule and forget. If there's no running
+        # Best-effort: schedule and forget. If there's no running
         # loop (apply_snapshot called outside the async refresh path — e.g.
         # a test seeding a snapshot directly) there is nothing to schedule
         # onto, so log and move on rather than raising out of apply_snapshot.

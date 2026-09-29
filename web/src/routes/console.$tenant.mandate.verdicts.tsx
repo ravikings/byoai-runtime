@@ -1,5 +1,5 @@
 /**
- * Mandate — the verdict stream (spec §6.5, design §6). The one screen whose
+ * Mandate — the verdict stream. The one screen whose
  * whole subject is decisions, so the posture banner sits above the table:
  * the counts mean nothing until you know whether a "flagged" was allowed
  * through or stopped. On the local host the rules run inline at capture and

@@ -32,7 +32,7 @@ GENESIS_PREV_HASH = "sha256:" + "00" * 32
 # Columns that live on the ledger row itself rather than on the event.
 _CHAIN_COLUMNS = frozenset({"prev_hash", "entry_hash", "event_digest"})
 
-# Columns that exist only from schema v2 onward (spec §5.3a trace
+# Columns that exist only from schema v2 onward (trace
 # attribution), added to agent_events via an additive ALTER TABLE migration
 # (see ledger.py). A pre-migration (v1) row's stored entry_hash/event_digest
 # was computed before these columns existed, so re-deriving its digest must
@@ -108,7 +108,7 @@ class VerifyError(RuntimeError):
 def verify_checkpoint_epoch_inclusion(
     checkpoint: dict[str, Any], proof: InclusionProof, epoch_root: bytes
 ) -> bool:
-    """The missing link in spec section 6.3's verification path: proves
+    """The missing link in the verification path (seal-format §11.3): proves
     ``checkpoint`` (already verified against the device chain and its own
     signature by :func:`_verify_checkpoints` / the caller) was actually
     included in the tenant epoch tree that ``epoch_root`` is the root of.
@@ -1070,7 +1070,8 @@ def _checkpoint_rows(
 def _build_key_timeline(
     initial_key_b64: str, key_rotations: list[dict[str, Any]]
 ) -> tuple[list[tuple[int, str]], list[str]]:
-    """Build the device key active at each point in the chain (spec §11.2).
+    """Build the device key active at each point in the chain
+    (``docs/seal-format.md`` §11.2).
 
     Level 2 used to check every checkpoint against one pinned key, which
     cannot pass after a rotation — the checkpoints before the rotation are
@@ -1079,7 +1080,7 @@ def _build_key_timeline(
     ``key_rotated`` entry whose cross-signature VERIFIED, the active key
     becomes that rotation's ``new_public_key`` from its own ``seq`` onward
     (the rotation event itself, and everything up to and including it, is
-    still signed by the OLD key — see spec §7 item 1 and rotation.py, the
+    still signed by the OLD key — see ``docs/seal-format.md`` §7 and rotation.py, the
     rotation event is "the last event the old identity writes").
 
     A rotation whose cross-signature could NOT be verified (no old key
@@ -1220,7 +1221,8 @@ _EPOCH_SIGNED_FIELDS = ("epoch_index", "root", "epoch_start", "epoch_end", "tena
 
 
 def _verify_epoch_signature(epoch: dict[str, Any]) -> bool | None:
-    """Check an epoch root's tenant-KMS signature (spec §6.2 level 3).
+    """Check an epoch root's tenant-KMS signature
+    (``docs/seal-format.md`` §9.4).
 
     Returns ``None`` — not checked, not failed — when the bundle carries no
     ``tenant_sig``/``tenant_kms_public_key_b64`` for this epoch, matching the
@@ -1244,7 +1246,8 @@ def _verify_anchor(
     rekor_public_key_b64: str | None,
     tsa_trusted_roots_pem: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
-    """Dispatch to the right external anchor verifier (spec §6.2 level 4).
+    """Dispatch to the right external anchor verifier
+    (``docs/seal-format.md`` §10).
 
     Imported lazily for the same reason ``_verify_signature`` imports
     ``keys`` lazily: callers who never verify anchors shouldn't be forced to
@@ -1304,7 +1307,7 @@ class BundleVerifyReport:
     key_rotations: list[dict[str, Any]] = field(default_factory=list)
     stale_key_usage: list[int] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    # §10.3 key pinning: set when the caller supplied
+    # Key pinning (seal-format §11.4): set when the caller supplied
     # pinned_device_public_key_b64 and the bundle's own device key differs.
     device_key_mismatch: bool = False
     # epoch_index values whose tenant_kms_public_key_b64 was not in the
@@ -1313,7 +1316,7 @@ class BundleVerifyReport:
     # Reasons a malformed bundle item (bad shape/type, not a signature or
     # hash failure) was skipped rather than raising.
     malformed_bundle: list[str] = field(default_factory=list)
-    # §14 pinning hardening: when pinned_device_public_key_b64 is supplied,
+    # Pinning hardening (seal-format §11.2): when pinned_device_public_key_b64 is supplied,
     # entries whose seq comes after the last checkpoint's seq_end are never
     # covered by any signed checkpoint at all. Each tuple is an inclusive
     # (first_seq, last_seq) range of such entries.
@@ -1337,7 +1340,8 @@ def verify_bundle(
     require_pinned_anchors: bool = False,
     tsa_trusted_roots_pem: list[str] | None = None,
 ) -> BundleVerifyReport:
-    """Offline verification of an examiner export bundle (spec §10.3).
+    """Offline verification of an examiner export bundle
+    (``docs/seal-format.md`` §13.2).
 
     Re-runs the same chain walk as :func:`verify_ledger`, over
     ``bundle["entries"]`` instead of a SQLite cursor, then re-checks every
@@ -1345,16 +1349,16 @@ def verify_bundle(
     each epoch's tenant signature, and — when ``check_anchors`` is set and an
     epoch's ``anchor.type`` is not ``"none"`` — that epoch's external anchor
     receipt (RFC 3161 TSA or Sigstore Rekor, via ``anchor.py``). This covers
-    all five steps of the verification path in spec §6.3. An epoch with
+    every level of ``docs/seal-format.md`` §11. An epoch with
     ``anchor.type == "none"`` is legitimately unanchored, not a failure, and
     is noted as such rather than silently treated as passing.
 
-    A bundle carries its own device key and tenant key(s) (spec §10.3): by
+    A bundle carries its own device key and tenant key(s) (§13.2): by
     default this only proves the bundle is internally consistent, not who
     wrote it. Passing ``pinned_device_public_key_b64`` and/or
     ``pinned_tenant_public_keys_b64`` (device_key_mismatch /
     tenant_key_mismatches findings on mismatch) closes that gap for a caller
-    who obtained those keys some other way (§10.3).
+    who obtained those keys some other way (seal-format §11.4).
 
     ``require_pinned_anchors=True`` turns an anchor that could only be
     checked against its own claims — a Rekor receipt with no
@@ -1392,10 +1396,10 @@ def verify_bundle(
 
     # The live rotation-timeline walk must never trust a key read out of the
     # bundle itself (device_obj["public_key_b64"] is exactly the untrusted
-    # claim §10.3 warns about) — only a caller-supplied pinned key counts as
-    # a "starting key" here. Without one, this keeps the original,
-    # note-based "can't verify rotations" behaviour (finding #4's "unpinned
-    # calls keep today's behaviour" applies the same way to #1).
+    # claim that pinning exists to avoid) — only a caller-supplied pinned key
+    # counts as a "starting key" here. Without one, this keeps the original,
+    # note-based "can't verify rotations" behaviour, just as other unpinned
+    # calls do.
     walk = _walk_chain(
         entries,
         device_public_keys or {},
@@ -1429,7 +1433,7 @@ def verify_bundle(
 
     unsigned_tail: list[tuple[int, int]] = []
     if pinned_device_public_key_b64 is not None:
-        # §14 pinning hardening: a caller who pins the device key is asking
+        # Pinning hardening (seal-format §11.2): a caller who pins the device key is asking
         # for every entry to actually be covered by a signed checkpoint.
         # Zero checkpoints means nothing at all is signature-checked; any
         # entries after the last checkpoint's seq_end are a silent gap in
@@ -1624,8 +1628,8 @@ def verify_bundle(
 
             # An anchor checked only against its own claims — no rekor key to
             # verify the SET, or no trusted root to check the RFC 3161 chain
-            # against — normally just gets a note (§14 item 4: "an unpinned
-            # anchor passes"). require_pinned_anchors turns that into a
+            # against — normally just gets a note (seal-format §14 item 2: "an
+            # unpinned anchor passes"). require_pinned_anchors turns that into a
             # finding instead, for a caller who wants the anchor to actually
             # prove something about an external log/authority they trust.
             unpinned_anchor = (

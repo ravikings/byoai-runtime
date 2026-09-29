@@ -1,7 +1,6 @@
 """CEI chain-head computation, ported from Coriqo's own algorithm.
 
-Coriqo's ``api/chain.py``/``api/domains/agents/attestation_ingest.py``
-compute a CEI envelope's ``chain_head`` as:
+Coriqo's server-side ingest code computes a CEI envelope's ``chain_head`` as:
 
     H_0 = GENESIS_PREV_HASH  ("0" * 64)
     H_n = sha256_hex(H_{n-1}.encode("utf-8") + canonical_bytes(event_n))
@@ -48,37 +47,34 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------
-# §5 open question 1: which local EventKinds are CEI-attestable.
+# Which local EventKinds are CEI-attestable.
 #
-# Spec recommendation was TOOL_USE + TOOL_RESULT for the first cut. That is
+# Attesting TOOL_USE + TOOL_RESULT might look like the natural first cut. That is
 # NOT what this packet ships, and the deviation is deliberate, not an
 # oversight: AIR-7b (the packet immediately before this one) already landed
 # and threads `resource`/`on_behalf_of` onto exactly one event kind —
 # MANDATE_VERDICT, inside `verdicts.py::ledger_payload()` — and nowhere else.
 # TOOL_USE/TOOL_RESULT events carry neither field today (governed_tool.py's
 # `_record()` for a raw tool call has no equivalent threading). An envelope
-# builder that tried to attest TOOL_USE/TOOL_RESULT per the spec's literal
-# recommendation would ship `resource`/`on_behalf_of`-less events, defeating
+# builder that tried to attest TOOL_USE/TOOL_RESULT would ship
+# `resource`/`on_behalf_of`-less events, defeating
 # the entire point of the CEI v2 fields this program exists to populate.
 #
 # So the call made here: MANDATE_VERDICT is the (only) CEI-attestable kind
-# for this first cut. It is already "an attestable decision" (the spec's own
-# words when floating this as a *future* option), it is the one kind that
+# for this first cut. It is already an attestable decision, it is the one kind that
 # actually carries `resource`/`on_behalf_of` today, and every governed tool
 # call already produces exactly one MANDATE_VERDICT event by construction
 # (verdicts.py records allow/flag/block alike, not just denials) — so this
 # does not lose tool-call coverage relative to attesting TOOL_USE directly,
 # it reuses the row that already has the richer, mandate-checked shape.
 # TOOL_USE/TOOL_RESULT attestation (and whether a pair collapses to one CEI
-# event, per §5 open question 2 — moot here since neither kind is attested)
-# is left for a follow-up packet, same as the spec already deferred
-# MANDATE_VERDICT-as-attestable to "its own follow-up" — just the other kind
-# turned out to be the one ready first.
+# event — moot here since neither kind is attested)
+# is left for a follow-up packet.
 CEI_ATTESTABLE_KINDS: dict[EventKind, str] = {
     EventKind.MANDATE_VERDICT: "MANDATE_VERDICT",
 }
 
-# Coriqo's api/chain.py::GENESIS_PREV_HASH — the "previous hash" of the
+# Coriqo's GENESIS_PREV_HASH — the "previous hash" of the
 # first event in a chain. Not to be confused with this repo's own
 # GENESIS_PREV_HASH in ledger.py ("sha256:" + "00" * 32), which is a
 # different, local-checkpoint-chain convention.
@@ -86,8 +82,8 @@ GENESIS_PREV_HASH = "0" * 64
 
 
 def _sha256_hex_raw(data: bytes) -> str:
-    """Raw lowercase hex digest, matching Coriqo's api/chain.py::sha256_hex
-    exactly (no ``"sha256:"`` prefix — see module docstring)."""
+    """Raw lowercase hex digest, matching Coriqo's sha256_hex exactly (no
+    ``"sha256:"`` prefix — see module docstring)."""
     return hashlib.sha256(data).hexdigest()
 
 
@@ -119,7 +115,7 @@ def build_envelope(
     """Map a batch of local ledger entries onto a CEI v2 envelope.
 
     ``entries`` is expected to already be the same ``(seq_start, seq_end)``
-    window a checkpoint covers (spec §3c — this does not invent its own
+    window a checkpoint covers (this does not invent its own
     windowing; the caller reads ``ledger.read_range(seq_start, seq_end)`` and
     hands the result straight in), in ascending local ``seq`` order, which is
     how :meth:`Ledger.read_range` already returns them.
@@ -135,7 +131,7 @@ def build_envelope(
     local-only, exactly as before this packet.
 
     ``seq`` is renumbered starting at 1 within the envelope — CEI's ``seq`` is
-    a per-window sequence, not the local ledger's never-reset one (spec §2) —
+    a per-window sequence, not the local ledger's never-reset one —
     so an envelope's ``seq`` values say nothing about an event's position in
     the local chain, only its position in this one attestation.
 
@@ -150,7 +146,7 @@ def build_envelope(
     ``on_behalf_of`` is always present on every event, even as an empty list,
     which is what makes this envelope self-identify as v2 to Coriqo's
     ``envelope_schema_version()`` (v2 is detected by *presence* of the key,
-    not by a value) — per spec §3b, this runtime emits v2 always going
+    not by a value) — this runtime emits v2 always going
     forward, never v1. ``resource`` is included only when the local payload
     actually named one; it is optional on both sides.
     """

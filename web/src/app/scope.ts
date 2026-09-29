@@ -1,8 +1,8 @@
 /**
  * Scope lives in the URL. Nothing else.
  *
- * Spec §4.5: "no view state lives only in React state; back/forward always
- * work; a pasted URL reconstructs the exact screen." The tenant is a path
+ * No view state lives only in React state: back/forward always work, and a
+ * pasted URL reconstructs the exact screen. The tenant is a path
  * segment (`/console/{tenant}/…`) because it is identity, not a filter; the
  * scope is the query string because it is a filter *within* that tenant and
  * can never widen past it.
@@ -219,7 +219,7 @@ export function toScope(
 /**
  * What the scope selects, in words. Never returns an empty string: an
  * unfiltered scope is still a scope, and "all devices" is a claim the user
- * needs to see stated (§6.1).
+ * needs to see stated.
  */
 export function scopeSubject(s: ScopeSearch): string {
   const parts: string[] = []
@@ -324,7 +324,7 @@ export interface HealthRollup {
   readonly state_label: string
   /** The worst member, named. "3 of 40 devices silent > 24h". */
   readonly worst: string
-  /** Where the dot jumps to. A dot is a jump link, not decoration (§4.2). */
+  /** Where the dot jumps to. A dot is a jump link, not decoration. */
   readonly href?: string
 }
 
@@ -363,7 +363,7 @@ export function usePublishShellStatus(): PublishShellStatus {
 
 /**
  * The tenant used when the URL does not name one — only `/` ever hits this,
- * and only to redirect. Tenancy is the data model (§5), so the tenant is
+ * and only to redirect. Tenancy is the data model, so the tenant is
  * never inferred once a real URL exists: it is read from the path.
  */
 export const DEFAULT_TENANT: string =

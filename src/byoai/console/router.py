@@ -60,8 +60,8 @@ def _inclusion(devices: list[dict[str, Any]]) -> dict[str, int]:
 def build_console_router(store: IngestStore, *, org: str | None = None) -> APIRouter:
     """Build the read-only fleet console router.
 
-    ``org`` is the one tenant slug this deployment serves (§4.2 of the public/
-    private boundary spec: the public console is single-org, matching the
+    ``org`` is the one tenant slug this deployment serves (the public
+    console is single-org, matching the
     free Shield server — a many-org view is Coriqo's paid MSP console). When
     set, every route here refuses any other ``tenant`` with 404 rather than
     silently answering an empty (or, worse, someone else's) fleet for a slug

@@ -24,7 +24,7 @@ program built (AIR-7a..d) against a live `docker compose` Coriqo instance:
      bearing call" the packet asks for.
   5. Checkpoint the ledger and ship the resulting CEI v2 envelope through
      :meth:`Shipper.ship_attestations_once` — the actual production
-     shipping path (AIR-7d/§3e), not a hand-built request.
+     shipping path (AIR-7d), not a hand-built request.
   6. Assert Coriqo answers ``sealed`` (not ``duplicate``, not refused);
      re-run the same shipping pass and assert it becomes a no-op
      (idempotency — the watermark already advanced past it).
@@ -263,8 +263,8 @@ def test_second_attestation_pass_is_a_no_op(live_setup):
 def test_coriqo_side_offline_verification_reproduces_the_chain(live_setup, tmp_path):
     """Seal a checkpoint over the child agent's chain, export its governance
     events, and run tools/verify_proof.py --attestation on the far side —
-    the same technique api/tests/test_verify_proof_attestation.py uses
-    against a real seal, run here against THIS test's real attestation."""
+    the same technique Coriqo's own tests use against a real seal, run here
+    against THIS test's real attestation."""
     admin = live_setup["admin"]
     mandate_version_id = live_setup["child_mandate_version_id"]
     TENANT_SCHEMA = _tenant_schema(admin)

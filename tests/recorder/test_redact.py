@@ -1,4 +1,5 @@
-"""Tests for the recorder's device-side payload-mode redaction (spec §7)."""
+"""Tests for the recorder's device-side payload-mode redaction
+(``docs/seal-format.md`` §4.3)."""
 
 from __future__ import annotations
 

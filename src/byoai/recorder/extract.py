@@ -5,7 +5,7 @@ Pure, I/O-free translation of an Anthropic ``/v1/messages`` exchange into
 to :meth:`StreamExtractor.feed` after they have already been forwarded
 downstream, so nothing here can add latency to or reorder the token stream.
 
-Design notes that are load-bearing (spec §5.1, §5.2):
+Design notes that are load-bearing:
 
 * SSE frames are parsed incrementally. A chunk boundary may fall anywhere —
   mid-line, between ``\\r`` and ``\\n``, mid-UTF-8-sequence — and the parser
@@ -60,7 +60,7 @@ class PartialEvent:
     model: str | None
     provider: str = PROVIDER
     schema_version: str = EVENT_SCHEMA_VERSION
-    # Trace attribution (spec §5.3a). trace_id/span_id are set by whoever
+    # Trace attribution. trace_id/span_id are set by whoever
     # calls extract_request_events/extract_response_events/StreamExtractor
     # (the proxy request handler, per capture call) — "" here only shows up
     # if a caller genuinely didn't supply one, which integration.py's

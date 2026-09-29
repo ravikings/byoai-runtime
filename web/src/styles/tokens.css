@@ -93,7 +93,7 @@
   color-scheme: light;
 }
 
-/* Dark mode is a token swap by design (spec §7). Structure only — the
+/* Dark mode is a token swap by design. Structure only — the
    console ships light first; these values are provisional. */
 :root[data-theme="dark"] {
   --ink: #eef3fb;

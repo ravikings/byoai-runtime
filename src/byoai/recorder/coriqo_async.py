@@ -988,8 +988,8 @@ class AsyncCoriqoAgentsClient:
         ``coriqo_agent_id``.
 
         POSTs ``envelope`` verbatim to Coriqo's live contract
-        (``POST {ENFORCEMENT_PREFIX}/attestations`` — CEI shipping client
-        spec §1; unlike its sibling enforcement calls there is no
+        (``POST {ENFORCEMENT_PREFIX}/attestations``; unlike its sibling
+        enforcement calls there is no
         ``/agents/{id}/`` path segment for this endpoint, because the
         envelope already names its subject agent in ``envelope["subject"]``).
         ``coriqo_agent_id`` is taken as its own argument, rather than read
@@ -998,13 +998,12 @@ class AsyncCoriqoAgentsClient:
         is for — this raises ``ValueError`` if the two disagree instead of
         sending a mismatched envelope Coriqo would have to notice for us.
 
-        **Signing scheme correction (AIR-7e).** The spec text this method
-        was first built against (CEI shipping client spec §1) says this
-        route is signed with ``device_headers()``, the same tuple-based
+        **Signing scheme correction (AIR-7e).** This method was first
+        written to sign this route with ``device_headers()``, the same tuple-based
         enforcement scheme ``attest_capability_snapshot``/``record_verdict``
         use. That is wrong for the route Coriqo actually ships:
         ``POST {ENFORCEMENT_PREFIX}/attestations`` depends on
-        ``current_ledger_device`` (``api/domains/agents/device_auth.py``),
+        Coriqo's ledger-device signature check,
         the SECOND, raw signature scheme this codebase's own
         ``Shipper._post_signed_batch`` already speaks for
         ``/ingest/batch``/``/checkpoints/batch`` —
@@ -1015,19 +1014,17 @@ class AsyncCoriqoAgentsClient:
         but wrong signature that Coriqo 401s with "Device signature did not
         verify" — caught only by AIR-7e's real round trip against a live
         server, never by a mock transport that only replays what a client
-        already believes the contract is. ``device_auth.py``'s own
-        docstring on ``current_ledger_device`` explains why an attestation
-        route reasonably shares the no-timestamp ledger scheme rather than
+        already believes the contract is. An attestation route reasonably
+        shares the no-timestamp ledger scheme rather than
         the replay-windowed enforcement one: ingest here is idempotent by
         construction (dedup on ``chain_head``), so a replayed attestation
         tells Coriqo nothing it was not already told — the same reasoning
-        that scheme was built for. Coriqo's route is the fixed point (CEI
-        shipping client spec: "Target contract … already live — do not
-        change") — this client conforms to it, not the other way round.
+        that scheme was built for. Coriqo's route is the fixed point — this
+        client conforms to it, not the other way round.
 
         Modeled directly on :meth:`attest_capability_snapshot`: device-signed,
         never retried. Coriqo's idempotency key for this endpoint is the
-        envelope's own ``chain_head`` (spec §1) — a resend of the exact same
+        envelope's own ``chain_head`` — a resend of the exact same
         envelope comes back ``duplicate`` and reseals nothing, while a client
         retry that silently reshaped the batch first would produce a
         different ``chain_head`` under the same window, i.e. a second,

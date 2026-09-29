@@ -1,5 +1,5 @@
 /**
- * Ledger — the sealed record, `/console/{tenant}/ledger` (spec §6.2).
+ * Ledger — the sealed record, `/console/{tenant}/ledger`.
  *
  * Every other console screen reads a rollup; this one reads the record
  * itself. On the local host the ledger is the seal chain: heights 1..n, each
@@ -10,8 +10,8 @@
  * the walk that just ran proved there isn't one), and cursor paging means
  * "showing N of the chain" is a page — never the product's whole reach.
  *
- * Sessions and trajectories are the fleet-server rollups the spec makes the
- * primary list; a single device cannot compute them and the wire says null
+ * Sessions and trajectories are fleet-server rollups; a single device
+ * cannot compute them and the wire says null
  * rather than pretending an empty list is an answer.
  */
 import { useEffect, useMemo } from 'react'
@@ -49,7 +49,7 @@ function LedgerPage() {
   const scope = useMemo(() => toScope(tenant, search), [tenant, search])
 
   // The cursor is the oldest seq of the previous page, read straight off the
-  // URL: it is view state, and view state lives in the address (§4.5) — the
+  // URL: it is view state, and view state lives in the address — the
   // scope params alone are parsed by the tenant route, so the page reads the
   // raw string rather than widening the shared scope type.
   const location = useLocation()

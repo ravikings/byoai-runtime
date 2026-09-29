@@ -5,7 +5,7 @@ once with mode 0600, and never leaves the machine — there is deliberately no
 export path for it on :class:`DeviceKey`. The public half and a derived,
 restart-stable ``device_id`` are the only things callers can read.
 
-See spec section 8 (identity and enrollment).
+See ``docs/seal-format.md`` §6 (keys and signatures).
 """
 
 from __future__ import annotations

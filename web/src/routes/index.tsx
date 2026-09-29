@@ -1,5 +1,5 @@
 /**
- * `/` — Fleet is the default landing surface (§6.0), so the bare root is a
+ * `/` — Fleet is the default landing surface, so the bare root is a
  * redirect, never a screen of its own. A console whose home page is a chooser
  * is a console that makes you decide before it has told you anything.
  */

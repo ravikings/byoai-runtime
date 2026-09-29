@@ -5,20 +5,20 @@
  * Deliberately NOT wired into `chrome.runtime.onInstalled` yet: today's
  * extension only supports pairing with a LOCAL Shield server
  * (`background.js`'s `isLocalEndpoint()` refuses anything else) — the
- * direct-to-Coriqo capture pipeline this login is *for* (S3 in the sync
- * spec: WebCrypto device key, JS redaction rules, direct sync) does not
+ * direct-to-Coriqo capture pipeline this login is *for* (WebCrypto device
+ * key, JS redaction rules, direct sync) does not
  * exist yet. Gating the current, working, local-only flow behind a login
  * wall with no capture behind it would only add friction for zero benefit.
  * This page is reachable today as an optional, manual entry point (a link
  * in the popup's Details panel) so the auth half can be built, tested and
- * committed independently of S3's data-plane work.
+ * committed independently of that data-plane work.
  *
  * Talks directly to Coriqo's public (no-JWT) magic-link endpoints from the
  * extension's own origin — the same "CORS answers for our origin, no host
  * permission needed" approach already used for the local Shield pairing
- * check in `background.js`, and the one the sync spec's CORS spike already
- * covers for `/v1/shield/*`. `/api/v1/auth/*` needs the same allowance on
- * Coriqo's side; this file assumes it exists rather than working around its
+ * check in `background.js`, and the one `/v1/shield/*` already relies on.
+ * `/api/v1/auth/*` needs the same allowance on Coriqo's side; this file
+ * assumes it exists rather than working around its
  * absence.
  */
 const API_BASE_KEY = 'coriqo_api_base'

@@ -4,7 +4,7 @@
  * parsed once, in one place, and a child cannot invent its own encoding.
  *
  * The tenant is a path segment because it is identity: the scope selector
- * filters *within* a tenant and can never widen past it (§5).
+ * filters *within* a tenant and can never widen past it.
  */
 import { Outlet, createFileRoute } from '@tanstack/react-router'
 import { parseScopeSearch, type ScopeSearch } from '../app/scope'
