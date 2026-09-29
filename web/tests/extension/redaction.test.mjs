@@ -82,7 +82,7 @@ describe('page capture: the shared redaction cases', () => {
 })
 
 describe('page capture: when it leaves a message alone', () => {
-  const email = JSON.stringify({ prompt: 'mail abdul@coriqo.io' })
+  const email = JSON.stringify({ prompt: 'mail ann@example.com' })
 
   it('changes nothing before the user agreed, and names no rules', async () => {
     const p = page('claude.ai', { consented: false, mode: 'redact' })
@@ -113,7 +113,7 @@ describe('page capture: when it leaves a message alone', () => {
 
   it('does not rewrite Gemini, whose sends it cannot read', async () => {
     const p = page('gemini.google.com', agreed('redact'))
-    const raw = JSON.stringify({ prompt: 'mail abdul@coriqo.io' })
+    const raw = JSON.stringify({ prompt: 'mail ann@example.com' })
     await p.window.fetch('https://gemini.google.com/v1/messages', { method: 'POST', body: raw })
     expect(p.sent).toEqual([raw])
     expect(p.captured[0].verdict).toBeUndefined()
@@ -131,7 +131,7 @@ describe('page capture: when it leaves a message alone', () => {
 describe('page capture: a send made with a Request object', () => {
   it('reads a copy of the body and rewrites it', async () => {
     const p = page('chatgpt.com', agreed('redact'))
-    const body = JSON.stringify({ messages: [{ content: { parts: ['to abdul@coriqo.io'] } }] })
+    const body = JSON.stringify({ messages: [{ content: { parts: ['to ann@example.com'] } }] })
     await p.window.fetch(new Request('https://chatgpt.com/backend-api/conversation', { method: 'POST', body }))
     expect(JSON.parse(p.sent[0]).messages[0].content.parts[0]).toBe('to [redacted-email]')
     expect(p.captured[0]).toMatchObject({ chars: 18, redactions: ['emails'], verdict: 'redacted(1)' })
@@ -142,7 +142,7 @@ describe('page capture: a body it cannot read', () => {
   it('notes the send without a length, and leaves it alone', async () => {
     const p = page('claude.ai', agreed('redact'))
     const form = new FormData()
-    form.set('prompt', 'mail abdul@coriqo.io')
+    form.set('prompt', 'mail ann@example.com')
     await p.window.fetch('https://claude.ai' + SEND_PATH['claude.ai'], { method: 'POST', body: form })
     expect(p.sent).toEqual([form])
     expect(p.captured).toEqual([{ kind: 'browser.chat.request', app: 'claude', chars: null, wire: SEND_PATH['claude.ai'] }])
