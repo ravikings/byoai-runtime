@@ -9,16 +9,28 @@ import {
   RETENTION_DAYS, enrolWithCoriqo, fetchCoriqo, fetchInstalledApps, fetchPolicy, fetchPrivacy,
   publishSeal, savePolicy, scrubStoredText,
 } from '@/api/shield'
-import type { ShieldPolicy, ShieldSharing } from '@/api/shield'
+import type { ShieldAction, ShieldPolicy, ShieldSharing } from '@/api/shield'
 import { APP_NAME, ConfirmDialog, SectionHead, plural } from './shared'
 
 const MODES = [
-  ['redact', 'Replace personal details', 'Emails, card numbers, phone numbers, SSNs, wallet addresses and API keys become labels such as [redacted-email].', true],
-  ['block', 'Replace, and stop high-risk sends', 'Also stops messages that carry credentials or executable file names. The app sees an error.', false],
+  ['redact', 'Check and act', 'Each kind of hit gets the action set below. By default a secret stops the send and personal details become placeholders such as [EMAIL_1].', true],
   ['observe', 'Record only', 'Messages go out unchanged. Shield records which rules matched.', false],
 ] as const
 
-type Weaker = { change: Partial<ShieldPolicy>; kind: 'observe' | 'keep_text' }
+type Weaker = { change: Partial<ShieldPolicy>; kind: 'observe' | 'keep_text' | 'actions' }
+
+const TIERS = [
+  ['secret', 'Secrets', 'API keys and tokens, private keys, login tokens, database passwords.'],
+  ['pii', 'Personal details', 'Emails, card and phone numbers, SSNs, IBANs, wallet addresses.'],
+  ['flag', 'Signals', 'Words like "deploy" or "password", executable file names. Recorded only by default.'],
+] as const
+const ACTION_LABEL: Record<ShieldAction, string> = {
+  block: 'Stop the send', warn: 'Ask first', redact: 'Replace', log: 'Record only',
+}
+const STRICT: ShieldAction[] = ['log', 'redact', 'warn', 'block']
+const DEFAULT_ACTIONS = { secret: 'block', pii: 'redact', flag: 'log' } as const
+// Apps only the desktop proxy sees, through their public API.
+const API_APPS = new Set(['github_copilot', 'mistral', 'deepseek', 'groq', 'openrouter', 'together', 'gemini_api'])
 
 export function Settings() {
   const qc = useQueryClient()
@@ -39,6 +51,12 @@ export function Settings() {
     const p = policy.data
     if (p && next.mode === 'observe' && p.mode !== 'observe') return setAsking({ change: next, kind: 'observe' })
     if (p && next.keep_text && !p.keep_text) return setAsking({ change: next, kind: 'keep_text' })
+    if (p && next.actions) {
+      const now = p.actions ?? DEFAULT_ACTIONS
+      const lower = (Object.keys(next.actions) as (keyof typeof now)[])
+        .some(t => STRICT.indexOf(next.actions![t]) < STRICT.indexOf(now[t]))
+      if (lower) return setAsking({ change: next, kind: 'actions' })
+    }
     save.mutate(next)
   }
   if (policy.isPending) return <p className="empty-row" role="status">Loading settings…</p>
@@ -73,20 +91,39 @@ export function Settings() {
           <SectionHead id="mode-h" title="Before a message leaves" accent
             help="What Shield does to personal details in what you send." />
           {locked.has('mode') && <p className="muted setting-help">Set by {p.managed?.by || 'your administrator'}.</p>}
+          {p.mode === 'block' && (
+            <p className="muted setting-help">This Mac uses the older "stop high-risk sends" setting. It now works
+              the same as Check and act: what stops a send is set per kind below.</p>
+          )}
           {MODES.map(([mode, title, note, recommended]) => (
             <label key={mode} className="mode-row">
-              <input type="radio" name="shield-mode" checked={p.mode === mode}
+              <input type="radio" name="shield-mode" checked={p.mode === mode || (mode === 'redact' && p.mode === 'block')}
                 disabled={locked.has('mode')}
                 onChange={() => change({ mode })} />
               <b>{title}{recommended && <> <span className="tag ok">Recommended</span></>}</b>
               <span>{note}</span>
             </label>
           ))}
+          {p.mode !== 'observe' && TIERS.map(([tier, title, note]) => {
+            const cur = (p.actions ?? DEFAULT_ACTIONS)[tier]
+            return (
+              <label key={tier} className="row-app">
+                <span>
+                  <b>{title}</b>
+                  <span className="muted setting-help">{note}</span>
+                </span>
+                <select aria-label={`${title}: action`} value={cur}
+                  onChange={e => change({ actions: { ...(p.actions ?? DEFAULT_ACTIONS), [tier]: e.target.value as ShieldAction } })}>
+                  {STRICT.slice().reverse().map(a => <option key={a} value={a}>{ACTION_LABEL[a]}</option>)}
+                </select>
+              </label>
+            )
+          })}
           <p className="muted setting-help">
-            In Chrome, the Shield extension (0.6 or later) does this on claude.ai and chatgpt.com before the
-            message leaves the page. On gemini.google.com and copilot.microsoft.com messages go out unchanged and
-            are only recorded, because those sites don't send them in a form Shield can safely rewrite. Files you
-            attach are never checked.
+            In Chrome, the Shield extension (0.8 or later) does this on claude.ai and chatgpt.com before the
+            message leaves the page; "Ask first" shows a bar with Send redacted, Send anyway and Cancel. The desktop
+            proxy can't show that bar, so there "Ask first" replaces. On gemini.google.com and copilot.microsoft.com
+            messages go out unchanged and are only recorded. Attached files are recorded by type and size, never read.
           </p>
         </section>
 
@@ -97,7 +134,9 @@ export function Settings() {
             help="On: Shield checks what the app sends. Off: its traffic passes through, unchecked and unrecorded." />
           {locked.has('apps') && <p className="muted setting-help">Set by {p.managed?.by || 'your administrator'}.</p>}
           {Object.entries(p.apps).map(([app, on]) => {
-            const where = installed.data
+            const where = API_APPS.has(app)
+              ? 'Checked when the desktop proxy sees its API traffic. Not yet tested against live traffic.'
+              : installed.data
               ? installed.data[app] ? 'Installed on this Mac.' : 'Not found in Applications; the web version is still covered.'
               : ''
             return covered.has(app) ? (
@@ -136,12 +175,14 @@ export function Settings() {
 
       {asking && (
         <ConfirmDialog
-          title={asking.kind === 'observe' ? 'Send messages unchanged?' : 'Keep message previews?'}
-          confirmLabel={asking.kind === 'observe' ? 'Send unchanged' : 'Keep previews'}
+          title={asking.kind === 'observe' ? 'Send messages unchanged?' : asking.kind === 'actions' ? 'Make Shield less strict?' : 'Keep message previews?'}
+          confirmLabel={asking.kind === 'observe' ? 'Send unchanged' : asking.kind === 'actions' ? 'Make less strict' : 'Keep previews'}
           busy={save.isPending}
           onCancel={() => { setAsking(null); save.reset() }}
           onConfirm={() => save.mutate({ ...asking.change, acknowledge: 'less_private' })}>
-          {asking.kind === 'observe'
+          {asking.kind === 'actions'
+            ? <p>More of what you type will reach the AI app as typed. Shield will still record which rules matched.</p>
+            : asking.kind === 'observe'
             ? <p>Emails, card numbers, phone numbers and keys will reach the AI app as typed. Shield
               will only record which rules matched. The notice on this Mac will say so.</p>
             : <p>Shield will store up to 200 characters of each message on this Mac, with personal

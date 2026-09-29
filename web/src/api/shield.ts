@@ -125,12 +125,17 @@ export const ShieldSharing = z.object({
 })
 export type ShieldSharing = z.infer<typeof ShieldSharing>
 
+export const ShieldAction = z.enum(['block', 'warn', 'redact', 'log'])
+export type ShieldAction = z.infer<typeof ShieldAction>
+
 export const ShieldPolicy = z.object({
   mode: z.enum(['observe', 'redact', 'block']),
   apps: z.record(z.boolean()),
   keep_text: z.boolean(),
   retention_days: z.number().int().positive(),
   notice: z.boolean(),
+  /** What happens per kind of hit: secrets, personal details, flags. */
+  actions: z.object({ secret: ShieldAction, pii: ShieldAction, flag: ShieldAction }).optional(),
   /** Apps the capture proxy can read. Served, not saved: the others can't
    * be turned on yet. */
   covered_apps: z.array(z.string()).optional(),

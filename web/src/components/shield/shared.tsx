@@ -17,11 +17,18 @@ export const RULE_LABEL: Record<string, string> = {
   password_said: 'credentials mentioned', executable_masquerade: 'dangerous file',
   credential_block: 'credentials in text', tool_intent: 'agent action intent',
   connector_tool_call: 'tool call', reply_pii_echo: 'personal data echoed in reply',
+  anthropic_key: 'Anthropic API key', openai_key: 'OpenAI API key', aws_access_key: 'AWS access key',
+  github_token: 'GitHub token', slack_token: 'Slack token', google_api_key: 'Google API key',
+  stripe_key: 'Stripe key', private_key_block: 'private key', jwt: 'login token (JWT)',
+  conn_string: 'database password', bearer: 'bearer token', credential_assign: 'password or secret',
+  iban: 'bank account (IBAN)', oversize: 'very large message',
   reply_leak: 'secret echoed in reply', reply_toxic: 'harsh language in reply',
 }
 
 export const APP_NAME: Record<string, string> = {
   claude: 'Claude', chatgpt: 'ChatGPT', gemini: 'Gemini', copilot: 'Copilot',
+  github_copilot: 'GitHub Copilot', mistral: 'Mistral', deepseek: 'DeepSeek', groq: 'Groq',
+  openrouter: 'OpenRouter', together: 'Together', gemini_api: 'Gemini API',
 }
 
 export const ruleLabel = (rule: string) => RULE_LABEL[rule] ?? rule
