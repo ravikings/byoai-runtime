@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in to Coriqo</title>
+  <style>
+    /* Same Coriqo brand tokens as popup.html/welcome.html — one palette
+       across every extension surface and the console. */
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f8fb; --panel: #eef1f7; --raised: #ffffff; --line: #d8dee9; --text: #0a1834; --muted: #4a5876;
+      --ok: #1f7a3f; --ok-bg: #eaf7f1; --bad: #a3382d; --bad-bg: #fbeeeb;
+      --btn: #3d7eff; --btn-text: #ffffff; --link: #3d7eff; --glow: rgba(61,126,255,.16);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a1834; --panel: #0f1f42; --raised: #16294f; --line: #23386a; --text: #eef3fb; --muted: #aebfdd;
+        --ok: #4ad6a0; --ok-bg: rgba(74,214,160,.12); --bad: #e07066; --bad-bg: rgba(163,56,45,.16);
+        --btn: #6a9bff; --btn-text: #0a1834; --link: #6a9bff; --glow: rgba(106,155,255,.18);
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; padding: 28px 16px 40px; background: var(--bg); color: var(--text);
+      font: 15px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif; }
+    main { max-width: 420px; margin: 0 auto; }
+    h1 { font-size: 20px; line-height: 1.3; margin: 0 0 4px; }
+    .lead { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+    label { display: block; margin: 14px 0 5px; font-size: 12px; font-weight: 600; color: var(--muted); }
+    input[type=email], input[type=text] {
+      width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px;
+      background: var(--raised); color: var(--text); font: inherit; font-size: 14px;
+    }
+    input:focus { outline: none; border-color: var(--btn); box-shadow: 0 0 0 3px var(--glow); }
+    button { font: inherit; font-weight: 600; font-size: 14px; border-radius: 10px; padding: 10px 16px;
+      cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+    button.primary { background: var(--btn); color: var(--btn-text); border-color: var(--btn); width: 100%; margin-top: 16px; }
+    button.primary:disabled { opacity: .5; cursor: not-allowed; }
+    button.link { border: 0; background: none; padding: 0; color: var(--link); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
+    .msg { margin: 10px 0 0; font-size: 13px; min-height: 16px; }
+    .msg.bad { color: var(--bad); }
+    .msg.ok { color: var(--ok); }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 18px 0 0; }
+    .card p { margin: 0 0 6px; font-size: 13px; }
+    .card p:last-child { margin-bottom: 0; }
+    .signed-in { display: flex; align-items: center; gap: 10px; }
+    .signed-in .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+    .fine { color: var(--muted); font-size: 12px; margin-top: 18px; }
+    .fine a { color: var(--link); }
+    .step { display: none; }
+    .step.active { display: block; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Sign in to Coriqo</h1>
+  <p class="lead" id="lead">
+    Optional. This links Shield's browser-only capture to your Coriqo account
+    — separate from pairing with a local Shield on this Mac, which needs no
+    sign-in at all.
+  </p>
+
+  <section class="step active" id="step-request">
+    <label for="email">Work email</label>
+    <input type="email" id="email" autocomplete="email" placeholder="you@company.com" />
+    <label for="workspace">Coriqo workspace</label>
+    <input type="text" id="workspace" autocomplete="off" spellcheck="false" placeholder="e.g. acme-msp" />
+    <button class="primary" id="send" disabled>Send sign-in link</button>
+    <p class="msg" id="request-msg"></p>
+  </section>
+
+  <section class="step" id="step-consume">
+    <div class="card">
+      <p><b>Check your email.</b> Open the sign-in link, then come back here and
+        paste it (or just the code from the end of the link) below.</p>
+    </div>
+    <label for="token">Sign-in link or code</label>
+    <input type="text" id="token" autocomplete="off" spellcheck="false" placeholder="paste it here" />
+    <button class="primary" id="consume" disabled>Finish signing in</button>
+    <p class="msg" id="consume-msg"></p>
+    <p class="fine"><button class="link" id="back">Use a different email</button></p>
+  </section>
+
+  <section class="step" id="step-done">
+    <div class="card">
+      <div class="signed-in">
+        <span class="dot" aria-hidden="true"></span>
+        <span>Signed in as <b id="done-email"></b> (<span id="done-workspace"></span>)</span>
+      </div>
+    </div>
+    <div class="card" id="upsell-card">
+      <p><b>Browser-only has real limits.</b> No redact or block here — only
+        an in-page warning. The chain that proves nothing was tampered with
+        is weaker than desktop Shield's, and it only covers the browser:
+        Claude Desktop, MCP and agents need desktop Shield.</p>
+      <p>Installing desktop Shield later is a strict upgrade, not a restart —
+        the same account carries over, and nothing you've set up here is
+        lost.</p>
+      <p><a id="install-desktop" href="https://github.com/ravikings/byoai-runtime#readme"
+            target="_blank" rel="noopener">Install the desktop app &rarr;</a></p>
+    </div>
+    <p class="fine"><button class="link" id="sign-out">Sign out</button></p>
+  </section>
+
+  <p class="fine">
+    This does not turn on capture by itself — the extension's own consent
+    screen still decides that. <a id="open-privacy" href="#">What Coriqo sees</a>
+  </p>
+</main>
+<script src="login.js"></script>
+</body>
+</html>

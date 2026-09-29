@@ -6,7 +6,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchDevices, revokeDevice, type ShieldServerDevice } from '@/api/shieldServer'
 import { useAuthWatch } from './AdminAuth'
-import { ConfirmDialog } from '@/components/shield/shared'
+import { ConfirmDialog, SectionHead } from '@/components/shield/shared'
 
 const POLL_MS = 30_000
 
@@ -53,12 +53,45 @@ export function DevicesPanel() {
   }
 
   const devices = query.data.devices
+  const counts = {
+    protecting: devices.filter((d) => d.protecting === true).length,
+    quiet: devices.filter((d) => d.protecting === false).length,
+    unheard: devices.filter((d) => d.protecting === null).length,
+    revoked: devices.filter((d) => d.revoked).length,
+  }
 
   return (
     <section className="panel" aria-labelledby="shield-devices-h">
-      <header className="sec-head">
-        <h2 className="label" id="shield-devices-h">Shield devices</h2>
-      </header>
+      <SectionHead
+        id="shield-devices-h"
+        title="Shield devices"
+        accent
+        help="Every Mac enrolled with this Shield server, and whether it's currently protecting."
+      />
+      {devices.length > 0 && (
+        <div className="shield-stats wide" role="group" aria-label="Device status counts">
+          <div className="stat-btn lead static">
+            <span className="value">{devices.length}</span>
+            <span className="unit">enrolled</span>
+          </div>
+          <div className="stat-btn static">
+            <span className="value">{counts.protecting}</span>
+            <span className="unit">protecting</span>
+          </div>
+          <div className="stat-btn warn static">
+            <span className="value">{counts.quiet}</span>
+            <span className="unit">quiet</span>
+          </div>
+          <div className="stat-btn warn static">
+            <span className="value">{counts.unheard}</span>
+            <span className="unit">not heard from</span>
+          </div>
+          <div className="stat-btn bad static">
+            <span className="value">{counts.revoked}</span>
+            <span className="unit">revoked</span>
+          </div>
+        </div>
+      )}
       {devices.length === 0 ? (
         <p className="empty-row">No devices enrolled yet. Mint a token from Enrol a Mac.</p>
       ) : (

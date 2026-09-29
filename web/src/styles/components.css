@@ -286,7 +286,11 @@ tbody tr:last-child td { border-bottom: none; }
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--s4); }
 .stat .value { font-size: var(--t-verdict); font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .stat .unit { font-family: var(--font-mono); font-size: var(--t-mono); color: var(--ink-soft); }
-.stat .provenance { font-family: var(--font-mono); font-size: var(--t-micro); color: var(--ice-dim); margin-top: var(--s1); }
+/* .provenance — the denominator/detail line under a figure. Standalone: the
+   shared <Provenance> component and several panels (integrity, entry detail)
+   use it outside a .stat block, and the look must not depend on that
+   ancestor. */
+.provenance { font-family: var(--font-mono); font-size: var(--t-micro); color: var(--ice-dim); margin-top: var(--s1); }
 /* Methodology text from the API is rendered, never dropped into a tooltip. */
 .methodology { font-size: var(--t-mono); color: var(--ink-soft); line-height: 1.5; margin-top: var(--s3); padding-top: var(--s3); border-top: var(--hairline-soft); }
 
@@ -355,8 +359,13 @@ tbody tr:last-child td { border-bottom: none; }
 .finding.unknown { border-left-color: var(--ice-soft); }
 .finding .what { line-height: 1.5; }
 .finding .where { margin-top: var(--s1); display: flex; gap: var(--s2); align-items: center; }
-.finding .ref { font-family: var(--font-mono); font-size: var(--t-mono); color: var(--azure); text-decoration: none; white-space: nowrap; }
-.finding .ref:hover { text-decoration: underline; }
+
+/* .ref — the console's one inline-reference-link style (mono, azure, no
+   underline until hover). Standalone, not scoped to .finding: every fleet
+   screen links out to a coverage report, a device or a seq the same way,
+   inside a .finding row or a plain paragraph alike. */
+.ref { font-family: var(--font-mono); font-size: var(--t-mono); color: var(--azure); text-decoration: none; white-space: nowrap; }
+.ref:hover { text-decoration: underline; }
 
 /* Gauge — a bounded reading against a declared limit, with the band that
    changes the outcome marked in the track itself rather than in a caption.

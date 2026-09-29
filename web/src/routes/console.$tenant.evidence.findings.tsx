@@ -85,9 +85,10 @@ function FindingsPage() {
               const link = refLink(tenant, f, href)
               return (
                 <div key={f.id} className={`finding ${f.severity}`}>
-                  <span className={dotClass(f.severity)} style={{ marginTop: '.35rem' }} />
+                  <span className={dotClass(f.severity)} style={{ marginTop: '.35rem' }} aria-hidden="true" />
                   <div className="what">
                     <div>
+                      <span className="mono dim">{f.severity}</span>{' '}
                       <b>{f.kind}</b> — {f.what}
                     </div>
                     <div className="where">
@@ -107,7 +108,6 @@ function FindingsPage() {
                       )}
                     </div>
                   </div>
-                  <span className="tag">{f.severity}</span>
                 </div>
               )
             })
