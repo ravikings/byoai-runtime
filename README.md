@@ -273,7 +273,7 @@ byoai-shield examples/mcp_capture/captures.jsonl      # or point it at another l
 | `examples/mcp_server/` | ByoAI-over-MCP tool server (stdio or streamable HTTP). |
 | `examples/mcp_capture/` | Real MCP session (`client.py`) against an echo-backed `server.py`: tool calls, cache hits, stream deltas, and client identity from the `initialize` handshake land in `captures.jsonl`. |
 | `examples/desktop_proxy_capture.py` | Loads the packaged capture proxy (`byoai.integrations.shield_proxy`) against the example ledger: Claude Desktop chat sends and replies go through the same rules → redact → seal path (admin-consented CA + `NODE_EXTRA_CA_CERTS`). |
-| `src/byoai/browser_extension/` | Chrome (MV3) extension that records agent chat sends in the browser (claude.ai, chatgpt.com, gemini.google.com, copilot.microsoft.com) into the same ledger. Load it unpacked from `chrome://extensions` → Developer mode → Load unpacked; it ships text-free facts to `POST /api/browser` on `127.0.0.1:17831` (endpoint configurable, enforced local-only, in the popup). On claude.ai and chatgpt.com it also applies Shield's mode in the page, before the message leaves the browser: in *Replace personal details* (`redact`, the default) emails, card and phone numbers, SSN-like numbers, wallet addresses and API keys become labels such as `[redacted-email]`; in `block` a message with credential text or an executable file name is not sent and the chat app gets a `403`; in *Record only* (`observe`) the message goes out unchanged. The mode and per-app toggles come from the paired Shield's `GET /api/policy` (redact until it has heard from Shield), and an app switched off there is left alone. The rules are the desktop proxy's own: `shield-rules.js` is generated from `byoai.integrations.shield` by `python scripts/gen_extension_rules.py`, a test fails if it is stale, and `tests/fixtures/shield_redaction_cases.json` is checked against both the Python and the extension code. Gemini and Copilot send form-encoded or websocket traffic the extension can't safely rewrite, so there it records only. The message text itself never leaves the page: what lands in the ledger is "a message was sent, N characters", plus the names of the rules it matched and what was replaced (`flags`, `redactions`, `verdict`; the server keeps only known rule names), sealed like every other row. From a copy of the reply stream it also records which tools the AI ran on its own servers for that reply (`tools`, e.g. `web.run` for ChatGPT's web search, and `sources`, how many sites a search returned), attached to and sealed with the message; Shield shows them as "Web search", "Code run" and so on. That is a record, not a control: those tools run after the message has left, so turning them off is a setting of the ChatGPT or Claude workspace. Version 0.6 asks for agreement again, since rewriting messages is new. Rows obey the per-app policy toggles, the queue survives service-worker restarts (session storage, 50-row cap), and retries are deduped by row id. Unpacked, it has a fixed extension ID (`jbbongpiablbbmfflcaafjbeejeododc`, set by the `key` in its manifest), so `BYOAI_SHIELD_EXTENSION_IDS` can be set once for every install; a Chrome Web Store copy gets the store's own ID, which the popup shows under Details. `python scripts/package_extension.py --minify` (or `npm run build:extension` from `web/`) builds the store zip, `dist/coriqo-shield-<version>.zip`, with every script minified and no sourcemaps; the readable source stays in this repo. Nothing is recorded until you agree: installing opens a welcome page that says exactly what is noted, and capture stays off until you choose *Agree and turn on capture* (the popup's *Turn capture off* reverses it and clears anything waiting). It pairs with your Shield the first time it connects (Shield signs a fresh nonce with its device key; the extension pins the public key), and afterwards refuses to send anything to a different program listening on the same port. If Shield's sealed count is ever lower than the extension remembers, the popup warns and keeps warning (badge `!`) until you press Accept, even when the count later catches up. A Shield too old to answer the pairing check is retried every 30 seconds and recovers on its own once updated and restarted. Its popup shows reachability, whether it is talking to *your* Shield, when the last message on the current tab was noted, the seal chain height, the id to pin trust, and a direct link to the Shield UI (`/shield`), which is where the full experience lives (the extension itself has no timeline by design — the local server already has one). See its data-protection record in `src/byoai/browser_extension/PRIVACY.md`; real-browser end-to-end tests live in `web/tests/extension/` (they skip themselves unless a Chromium is available — see `CHROMIUM_PATH` in CONFIGURATION.md). |
+| `src/byoai/browser_extension/` | Chrome (MV3) extension that records agent chat sends in the browser (claude.ai, chatgpt.com, gemini.google.com, copilot.microsoft.com) into the same ledger. Load it unpacked from `chrome://extensions` → Developer mode → Load unpacked; it ships text-free facts to `POST /api/browser` on `127.0.0.1:17831` (endpoint configurable, enforced local-only, in the popup). On claude.ai and chatgpt.com it also applies Shield's mode in the page, before the message leaves the browser: what happens comes from the policy's `actions` (see "Privacy-first by default"): by default a detected secret stops the send (a `403`), personal details (emails, card and phone numbers, SSN-like numbers, wallet addresses) become numbered placeholders such as `[EMAIL_1]`, and flag-tier hits are only recorded; in *Record only* (`observe`) the message goes out unchanged. A tier set to *warn* holds the send behind a small bar in the page (*Send redacted*, *Send anyway*, *Cancel*; no answer in 60 s cancels, and the original is never sent on a timeout). The mode, actions and per-app toggles come from the paired Shield's `GET /api/policy` (defaults until it has heard from Shield), and an app switched off there is left alone. The rules are the desktop proxy's own: `shield-rules.js` is generated from `byoai.integrations.shield` by `python scripts/gen_extension_rules.py`, a test fails if it is stale, and `tests/fixtures/shield_redaction_cases.json` is checked against both the Python and the extension code. Gemini and Copilot send form-encoded or websocket traffic the extension can't safely rewrite, so there it records only. A file attached in the page is recorded as a fact (`browser.chat.attachment`: type and size), never read or scanned. If three send-looking POSTs to a chat host go unrecognised in ten minutes with none inspected, the extension emits `browser.health.unmatched` (a path prefix, no body) and the popup says Shield may be out of date for that app. The message text itself never leaves the page: what lands in the ledger is "a message was sent, N characters", plus the names of the rules it matched and what was replaced (`flags`, `redactions`, `verdict`; the server keeps only known rule names), sealed like every other row. From a copy of the reply stream it also records which tools the AI ran on its own servers for that reply (`tools`, e.g. `web.run` for ChatGPT's web search, and `sources`, how many sites a search returned), attached to and sealed with the message; Shield shows them as "Web search", "Code run" and so on. That is a record, not a control: those tools run after the message has left, so turning them off is a setting of the ChatGPT or Claude workspace. Version 0.6 asks for agreement again, since rewriting messages is new. Rows obey the per-app policy toggles, the queue survives service-worker restarts (session storage, 50-row cap), and retries are deduped by row id. Unpacked, it has a fixed extension ID (`jbbongpiablbbmfflcaafjbeejeododc`, set by the `key` in its manifest), so `BYOAI_SHIELD_EXTENSION_IDS` can be set once for every install; a Chrome Web Store copy gets the store's own ID, which the popup shows under Details. `python scripts/package_extension.py --minify` (or `npm run build:extension` from `web/`) builds the store zip, `dist/coriqo-shield-<version>.zip`, with every script minified and no sourcemaps; the readable source stays in this repo. Nothing is recorded until you agree: installing opens a welcome page that says exactly what is noted, and capture stays off until you choose *Agree and turn on capture* (the popup's *Turn capture off* reverses it and clears anything waiting). It pairs with your Shield the first time it connects (Shield signs a fresh nonce with its device key; the extension pins the public key), and afterwards refuses to send anything to a different program listening on the same port. If Shield's sealed count is ever lower than the extension remembers, the popup warns and keeps warning (badge `!`) until you press Accept, even when the count later catches up. A Shield too old to answer the pairing check is retried every 30 seconds and recovers on its own once updated and restarted. Its popup shows reachability, whether it is talking to *your* Shield, when the last message on the current tab was noted, the seal chain height, the id to pin trust, and a direct link to the Shield UI (`/shield`), which is where the full experience lives (the extension itself has no timeline by design — the local server already has one). See its data-protection record in `src/byoai/browser_extension/PRIVACY.md`; real-browser end-to-end tests live in `web/tests/extension/` (they skip themselves unless a Chromium is available — see `CHROMIUM_PATH` in CONFIGURATION.md). |
 | `examples/ui/keepalive.sh` | launchd-friendly supervisor for the three surfaces (MCP gateway, capture proxy, shield): runs them as a group and exits nonzero if any dies, so `com.coriqo.keepalive` (see the script header) restarts what's missing — survives crashes and reboots. |
 
 ### `byoai-shield` — packaged capture shield (source promotion)
@@ -336,12 +336,22 @@ defence against a local wipe.
 Shield polices what goes to AI apps, so it keeps **what happened, not what
 was said**. With no settings changed:
 
-* **`redact` is the default mode.** Emails, card numbers, phone numbers,
-  SSN-like numbers, wallet addresses and API keys inside the message fields
-  of the outgoing JSON (`prompt`, `messages[].content`) become labels such as
-  `[redacted-email]` before the request leaves the Mac. `block` also stops
-  credential and executable-file sends locally (the app gets a 403);
-  `observe` only records.
+* **`redact` is the default mode, and it acts per tier.** The policy's
+  `actions` map sends each rule tier to `block`, `warn`, `redact` or `log`.
+  Defaults: `secret: block` (API keys and tokens, private keys, JWTs,
+  database URLs with passwords, Luhn-valid card numbers), `pii: redact`
+  (emails, phone numbers, SSNs, IBANs, wallet addresses become numbered
+  placeholders such as `[EMAIL_1]`, the same value getting the same number in
+  one message; the mapping is not kept), `flag: log`. When several rules hit,
+  the strictest action wins (`block > warn > redact > log`). `credential_assign`
+  (`password = ...` style text) always warns. `observe` logs everything and
+  changes nothing. **Behaviour change:** in the default `redact` mode a
+  detected secret now stops the send (`403`) instead of being replaced.
+  Three noisy rules, `executable_masquerade`, `tool_intent` and
+  `password_said`, are log-only now. `warn` shows a bar in the browser
+  extension; the desktop proxy has no UI inside another app, so it treats
+  `warn` as `redact`. Lowering a tier (or `observe`, or `keep_text`) through
+  the settings API needs `"acknowledge": "less_private"`.
 * **No message text on disk.** Ledger rows and seal payloads hold the app,
   verdict, rule ids, message length and an HMAC-SHA256 fingerprint keyed by
   a per-device secret (`~/.byoai/shield/fingerprint.key`, mode 0600), so a
@@ -377,6 +387,46 @@ now (switching to `observe`, turning `keep_text` on) must carry
 the Settings screen asks for that in a confirmation dialog, and the Trust
 page flags a weaker setup with a one-click "Restore defaults". The MCP
 capture gateway (`examples/mcp_capture/server.py`) writes rows the same way.
+
+### Shield FAQ
+
+**Does my text leave my machine?** No. The rules run in your browser or on
+your Mac. Shield records rule names, lengths and a keyed fingerprint, never the
+text.
+
+**What does it catch, and what happens?** Secrets (Anthropic, OpenAI, AWS,
+GitHub, Slack, Google and Stripe keys, private keys, JWTs, database URLs with
+passwords, Luhn-valid card numbers) are stopped by default; personal details
+are replaced with `[EMAIL_1]`-style placeholders. An admin can set any tier to
+*warn*.
+
+**Will it block normal work?** Words like "deploy" or "password" and file names
+like `setup.sh` are recorded, not blocked. The rules are run against a benign
+sample corpus in the test suite; that lowers false blocks, it does not
+guarantee none.
+
+**Do you detect prompt injection?** Not in the browser. Injection arrives
+through tools and documents the AI reads on the provider's servers, which a
+page-level filter never sees.
+
+**Do you scan uploaded files?** No. Shield records that a file was attached
+(type and size), not what is in it.
+
+**Which apps are covered?** Browser: Claude and ChatGPT read and redact;
+Gemini and Copilot record only. Desktop proxy: Claude, ChatGPT, and (off by
+default) GitHub Copilot chat, Mistral, DeepSeek, Groq, OpenRouter, Together
+and the Gemini API. Those last seven are built from public API docs and are
+untested against live traffic. Cursor, Windsurf and Perplexity are not covered.
+Hosts match exactly or on a dot boundary (`*.example.com`), so
+`evil-openai.com` does not count as OpenAI.
+
+**What if a site changes and Shield stops matching?** It fails open, so chat
+keeps working, but it now says so: `browser.health.unmatched` (extension) and
+`desktop.health.unmatched` (proxy) rows are recorded after three unrecognised
+send-looking requests in ten minutes.
+
+**Can someone turn it off?** On an unmanaged machine, yes. It guards against
+accidents, not a determined user.
 
 ### The Shield screen — `/shield` in `web/`
 

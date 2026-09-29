@@ -8,7 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Behaviour change: in the default `redact` mode a detected secret now stops
+  the send (`403`) instead of being replaced.** Shield's policy has a new
+  `actions` map (`secret`, `pii`, `flag`, each `block`, `warn`, `redact` or
+  `log`; defaults `block`, `redact`, `log`). The strictest action of a
+  message's hits wins, `observe` logs everything, and lowering a tier needs
+  `"acknowledge": "less_private"`. `credential_assign` always warns. Three
+  rules, `executable_masquerade`, `tool_intent` and `password_said`, are
+  log-only now. Placeholders are numbered per message (`[EMAIL_1]`) instead of
+  `[redacted-email]`.
+
 ### Added
+- **Shield browser extension 0.8.0: a warn bar, health events and attachment
+  facts.** A tier set to `warn` holds the send behind a bar in the page (send
+  redacted, send anyway, cancel; 60 s without an answer cancels, and the
+  original is never sent on a timeout). The desktop proxy has no UI in another
+  app, so it treats `warn` as `redact`. Unrecognised send-looking POSTs (three
+  in ten minutes, none inspected) emit `browser.health.unmatched` /
+  `desktop.health.unmatched` and the popup says Shield may be out of date. A
+  file attached in the page is recorded as `browser.chat.attachment` (type and
+  size only, not scanned).
+- **Desktop proxy: new app toggles, off by default.** `github_copilot`,
+  `mistral`, `deepseek`, `groq`, `openrouter`, `together` and `gemini_api`.
+  Fixtures come from public API documentation and are untested against live
+  traffic. Cursor, Windsurf and Perplexity are not covered. Host matching is
+  now exact or on a dot boundary instead of a substring.
 - **Shield records which tools the AI ran for a browser reply.** Web search,
   code, connectors and memory run on ChatGPT's and Claude's own servers after
   the message has left, so no browser or proxy can stop them; until now they

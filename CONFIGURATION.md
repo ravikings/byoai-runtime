@@ -120,6 +120,26 @@ Implemented in `src/byoai/integrations/shield_console.py` beside the rules
 it follows; `byoai.console.router` is the fleet-server side of the same
 contract.
 
+### Shield policy `actions` and desktop app toggles
+
+`GET|POST /api/policy` on `byoai-shield` (and a managed policy from a server) carry an `actions` map. The global `mode` stays the master switch: `observe` logs every hit, and `redact` and `block` both use the table.
+
+| Key | Values | Default | What it does |
+|---|---|---|---|
+| `actions.secret` | `block` `warn` `redact` `log` | `block` | API keys and tokens, private keys, JWTs, database URLs with passwords, Luhn-valid card numbers. Was replaced before; a detected secret now stops the send (`403`) in the default mode. |
+| `actions.pii` | same | `redact` | Emails, phone numbers, SSNs, IBANs, wallet addresses, replaced by numbered placeholders (`[EMAIL_1]`). |
+| `actions.flag` | same | `log` | Conduct and intent rules. `executable_masquerade`, `tool_intent` and `password_said` are log-only. |
+
+The strictest action of all hits wins (`block > warn > redact > log`). `credential_assign` always warns unless its tier is set stricter. An unknown value falls back to the tier default; a write with a bad key or value is refused. A write that lowers a tier (or sets `observe`, or `keep_text`) must carry `"acknowledge": "less_private"`.
+
+`warn` shows a bar in the browser extension (*Send redacted*, *Send anyway*, *Cancel*; 60 s without an answer cancels). The desktop proxy has no UI inside another app, so `warn` behaves as `redact` there.
+
+New desktop-proxy app toggles, all **off** by default and turned on in Shield's Settings or `apps` in the policy: `github_copilot`, `mistral`, `deepseek`, `groq`, `openrouter`, `together`, `gemini_api`. Their request fixtures come from public API documentation and are untested against live traffic. Hosts match exactly or on a dot boundary. Cursor, Windsurf and Perplexity are not covered.
+
+Health and attachment rows (no text, no body): `browser.health.unmatched` and `desktop.health.unmatched` (host or app and a path prefix of at most 60 characters, after three unrecognised send-looking POSTs in ten minutes with none inspected), and `browser.chat.attachment` / `desktop.chat.attachment` (`mime`, size only; the file is not read or scanned).
+
+What is scanned: every string in the request body except id-like keys (`id`, `*_id`, `uuid`, `model`, `signature`, media types) and base64 payloads, so system prompts, tool results, tool inputs and document text count as much as the typed message. Secret rules always scan the whole body; personal-detail and flag rules scan the first and last 1,000,000 characters of a body over 2,000,000 and add `flag:oversize`. A private key block is replaced whole when its END line follows within 8 KB; otherwise the send is still stopped on the header. In the extension, policy and warn answers travel over a private channel set up before the page's own scripts run, so the page can't lower the policy or answer the warn bar itself; with no live channel a held send is redacted, never sent as typed.
+
 ### Shield managed mode
 
 Once enrolled with Coriqo, Shield can be put into managed mode: a Coriqo
