@@ -218,11 +218,48 @@ class Ledger:
     def _resume(self) -> tuple[str, int]:
         """Restore the chain head from disk so a crash resumes, not restarts."""
         row = self._conn.execute(
-            "SELECT seq, entry_hash FROM agent_events ORDER BY seq DESC LIMIT 1"
+            "SELECT seq, entry_hash, kind, payload FROM agent_events "
+            "ORDER BY seq DESC LIMIT 1"
         ).fetchone()
         if row is None:
             return GENESIS_PREV_HASH, 1
+        self._warn_if_head_is_a_foreign_rotation(row)
         return row[1], row[0] + 1
+
+    def _warn_if_head_is_a_foreign_rotation(self, row: tuple) -> None:
+        """Detect (best-effort, log-only) the "out-of-process rotation"
+        footgun documented in spec §7: if some *other* process rotated this
+        device's key (its own ``rotate_key`` CLI invocation, or a sibling
+        process holding the same key material) while this ``Ledger`` object
+        was already open, this object's in-memory ``device_id`` is now
+        retired — everything it appends from here on will fail verification
+        as stale-key usage. This can't be prevented (there is no hot-reload
+        of keys by design, see §7), but a loud, immediate log beats silently
+        producing entries that turn out to be unverifiable much later.
+
+        ``row`` is the positional ``(seq, entry_hash, kind, payload)`` tuple
+        from :meth:`_resume`'s own query — this connection has no row
+        factory set, unlike the read-only one the verifier uses.
+        """
+        try:
+            _seq, _entry_hash, kind, payload_text = row
+            if kind != _kind_value(EventKind.KEY_ROTATED):
+                return
+            payload = json.loads(payload_text) if isinstance(payload_text, str) else {}
+            if payload.get("old_device_id") == self.device_id:
+                log.error(
+                    "ledger %s: the head event is a key_rotated that retired "
+                    "this ledger's own device_id (%s) — some other process "
+                    "rotated this device's key while this Ledger instance was "
+                    "open (or is being reopened after that happened). Every "
+                    "entry appended from this instance from now on will fail "
+                    "verification as stale-key usage. Restart the recorder "
+                    "process to pick up the new key.",
+                    self.path,
+                    self.device_id,
+                )
+        except (KeyError, TypeError, ValueError):  # pragma: no cover - defensive
+            pass
 
     @property
     def head(self) -> str:
@@ -270,66 +307,109 @@ class Ledger:
                 return None
 
     def _append_locked(self, event: AgentEvent) -> LedgerEntry:
-        seq = self._next_seq
-        prev_hash = self._head
-        # The event carries the seq that is actually written, so the digest
-        # commits to its position too — a row cannot be reordered or replayed
-        # at a different seq without breaking its own digest.
-        stamped = _with_seq(event, seq)
-        digest = event_digest(stamped)
-        entry_hash = compute_entry_hash(prev_hash, seq, digest)
+        # Up to two attempts: the in-memory (_head, _next_seq) pair can go
+        # stale if something else advanced the on-disk chain out from under
+        # this Ledger object without going through it — e.g. `coriqo-verify`'s
+        # sibling `rotate_key` CLI appending a KEY_ROTATED event to the same
+        # ledger file while this process still has it open (a second Ledger
+        # instance on one file). The first INSERT then collides on the
+        # `seq` primary key (or, if seq happens to still be free, some other
+        # writer's row), which SQLite reports as an IntegrityError. Rather
+        # than fail every append from then on (dropping events silently in
+        # non-strict mode), resync from disk once and retry with the correct
+        # seq/prev_hash before giving up.
+        for attempt in range(2):
+            seq = self._next_seq
+            prev_hash = self._head
+            # The event carries the seq that is actually written, so the
+            # digest commits to its position too — a row cannot be reordered
+            # or replayed at a different seq without breaking its own digest.
+            stamped = _with_seq(event, seq)
+            digest = event_digest(stamped)
+            entry_hash = compute_entry_hash(prev_hash, seq, digest)
 
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            self._conn.execute(
-                "INSERT INTO agent_events (seq, event_id, schema_version, device_id, "
-                "session_id, kind, ts_device, ts_monotonic_ns, tool_use_id, tool_name, "
-                "payload, payload_hash, model, provider, event_digest, prev_hash, "
-                "entry_hash, trace_id, span_id, parent_span_id, continues_from) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    seq,
-                    stamped.event_id,
-                    stamped.schema_version,
-                    stamped.device_id,
-                    stamped.session_id,
-                    _kind_value(stamped.kind),
-                    stamped.ts_device,
-                    stamped.ts_monotonic_ns,
-                    stamped.tool_use_id,
-                    stamped.tool_name,
-                    canonicalize(stamped.payload).decode("utf-8"),
-                    stamped.payload_hash,
-                    stamped.model,
-                    stamped.provider,
-                    digest,
-                    prev_hash,
-                    entry_hash,
-                    stamped.trace_id,
-                    stamped.span_id,
-                    stamped.parent_span_id,
-                    stamped.continues_from,
-                ),
-            )
-            self._conn.execute("COMMIT")
-        except Exception:
+            self._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            raise
-
-        # Only advance in-memory chain state after the row is durable, so a
-        # failed write cannot leave the head pointing at an entry nobody has.
-        self._head = entry_hash
-        self._next_seq = seq + 1
-        return LedgerEntry(
-            seq=seq,
-            prev_hash=prev_hash,
-            entry_hash=entry_hash,
-            event_digest=digest,
-            event=stamped,
-        )
+                self._conn.execute(
+                    "INSERT INTO agent_events (seq, event_id, schema_version, device_id, "
+                    "session_id, kind, ts_device, ts_monotonic_ns, tool_use_id, tool_name, "
+                    "payload, payload_hash, model, provider, event_digest, prev_hash, "
+                    "entry_hash, trace_id, span_id, parent_span_id, continues_from) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        seq,
+                        stamped.event_id,
+                        stamped.schema_version,
+                        stamped.device_id,
+                        stamped.session_id,
+                        _kind_value(stamped.kind),
+                        stamped.ts_device,
+                        stamped.ts_monotonic_ns,
+                        stamped.tool_use_id,
+                        stamped.tool_name,
+                        canonicalize(stamped.payload).decode("utf-8"),
+                        stamped.payload_hash,
+                        stamped.model,
+                        stamped.provider,
+                        digest,
+                        prev_hash,
+                        entry_hash,
+                        stamped.trace_id,
+                        stamped.span_id,
+                        stamped.parent_span_id,
+                        stamped.continues_from,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                if attempt == 0:
+                    # Re-read the real head (max seq + its entry_hash) from
+                    # the DB and rebuild prev_hash/next_seq from it, same as
+                    # a fresh Ledger opening this file would on startup —
+                    # _resume() is exactly that logic, already correct.
+                    self._head, self._next_seq = self._resume()
+                    continue
+                raise
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+            else:
+                try:
+                    self._conn.execute("COMMIT")
+                except sqlite3.Error:
+                    # A failed COMMIT (e.g. a transient disk I/O error) must
+                    # not leave the connection wedged inside an open
+                    # transaction — the next append()'s BEGIN IMMEDIATE
+                    # would then fail forever with "cannot start a
+                    # transaction within a transaction". Roll back so the
+                    # ledger recovers and the *next* append can succeed;
+                    # this append itself still surfaces the failure to the
+                    # caller (via the existing except Exception / strict
+                    # mode handling one level up).
+                    try:
+                        self._conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                    raise
+                # Only advance in-memory chain state after the row is
+                # durable, so a failed write cannot leave the head pointing
+                # at an entry nobody has.
+                self._head = entry_hash
+                self._next_seq = seq + 1
+                return LedgerEntry(
+                    seq=seq,
+                    prev_hash=prev_hash,
+                    entry_hash=entry_hash,
+                    event_digest=digest,
+                    event=stamped,
+                )
+        raise AssertionError("unreachable: loop always returns or raises")
 
     def _on_write_failure(self, event: AgentEvent, exc: Exception, *, queue: bool = True) -> None:
         log.error(
@@ -549,13 +629,38 @@ class Ledger:
     # ---------------------------------------------------------- checkpoints
 
     def append_checkpoint(self, cp: dict) -> None:
-        """Persist a signed checkpoint (written by the checkpointer, §6.2)."""
+        """Persist a signed checkpoint (written by the checkpointer, §6.2).
+
+        Insert-if-absent by ``seq_end``: a second checkpoint arriving for a
+        ``seq_end`` that already has one (e.g. a retried emit, or two
+        concurrent checkpointers racing) must never silently overwrite the
+        original — the row keyed only by ``seq_end`` was previously
+        ``INSERT OR REPLACE``, which let a later checkpoint quietly replace
+        an earlier one covering the exact same range, discarding whichever
+        signature/chain_head lost the race with no record it ever existed.
+        If a row is already there with different content, the original is
+        kept and the collision is logged, never raised from this hot path.
+        """
+        body = canonicalize(cp).decode("utf-8")
         with self._lock:
             self._require_open()
             self._conn.execute("BEGIN IMMEDIATE")
             try:
+                existing = self._conn.execute(
+                    "SELECT body FROM checkpoints WHERE seq_end = ?",
+                    (int(cp["seq_end"]),),
+                ).fetchone()
+                if existing is not None:
+                    self._conn.execute("COMMIT")
+                    if existing[0] != body:
+                        log.warning(
+                            "checkpoint seq_end=%s already recorded with different "
+                            "content; keeping the original, discarding this one",
+                            cp["seq_end"],
+                        )
+                    return
                 self._conn.execute(
-                    "INSERT OR REPLACE INTO checkpoints (seq_end, device_id, seq_start, "
+                    "INSERT INTO checkpoints (seq_end, device_id, seq_start, "
                     "chain_head, ts_device, sig, body) VALUES (?,?,?,?,?,?,?)",
                     (
                         int(cp["seq_end"]),
@@ -564,7 +669,7 @@ class Ledger:
                         cp["chain_head"],
                         cp["ts_device"],
                         cp["sig"],
-                        canonicalize(cp).decode("utf-8"),
+                        body,
                     ),
                 )
                 self._conn.execute("COMMIT")

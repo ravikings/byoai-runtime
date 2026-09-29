@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from byoai.recorder.canonical import canonicalize, sha256_hex
+from byoai.recorder.canonical import CanonicalizationError, canonicalize, sha256_hex
 from byoai.recorder.ledger import compute_entry_hash
 from byoai.recorder.merkle import (
     InclusionProof,
@@ -51,7 +51,7 @@ class VerifyReport:
     broken_links: list[int]  # seqs where the re-derived chain did not hold
     bad_signatures: list[int]  # checkpoint seq_end values that failed
     gaps: list[tuple[int, int]]
-    unpaired_tool_uses: list[str]  # tool_use_ids with no result — a FINDING
+    unpaired_tool_uses: list[str]  # tool_use_ids with no result — reported, NOT a finding
     orphan_tool_results: list[str]  # results with no tool_use — stronger finding
 
     # Descriptive context for the human report. Not part of the integrity
@@ -78,10 +78,26 @@ class VerifyReport:
     # folded into `ok`: a failing receipts section sets ok False. The detail
     # (findings, reasons, notes) is in here.
     receipts: dict[str, Any] | None = None
+    # Ledger-path pinning hardening: set when public_key_b64 was supplied
+    # but the ledger has zero checkpoint rows at all, so nothing could be
+    # signature-checked. Folded into `ok`.
+    no_signed_checkpoints: bool = False
+    # Set when public_key_b64 was supplied but the checkpoints table could
+    # not even be read (as opposed to an individual row's body being bad,
+    # which is instead reported per-row via bad_signatures/notes). Folded
+    # into `ok`.
+    unreadable_checkpoints: bool = False
+    # Inclusive (first_seq, last_seq) of entries after the last checkpoint's
+    # seq_end when public_key_b64 was supplied — informational on the
+    # ledger path (a live, still-recording ledger always has such a tail;
+    # this is NOT folded into `ok`), but reported so a caller pinning a key
+    # knows exactly how far signed coverage reaches.
+    unsigned_tail: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["gaps"] = [list(g) for g in self.gaps]
+        data["unsigned_tail"] = list(self.unsigned_tail) if self.unsigned_tail else None
         return data
 
 
@@ -117,15 +133,33 @@ def verify_checkpoint_epoch_inclusion(
 
 
 def _forged_rotations(key_rotations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Rotations whose cross-signature was checked and did NOT verify.
+    """Rotations that are findings, not merely "unchecked".
+
+    Two ways a rotation ends up here:
+
+    - ``cross_signature_verified is False`` — the legacy, ``device_public_keys``
+      -based check (used when no starting/pinned key was supplied to the
+      chain walk) found a signature that does not verify.
+    - ``valid is False`` — the live active-key walk (used when a starting key
+      *was* supplied, see :func:`_check_rotation_live`) found the rotation
+      fails one of its four required conditions: signature against the
+      CURRENT active key, old_device_id/event.device_id matching the active
+      id, or new_device_id matching derive_device_id(new_public_key). This
+      is a strict superset of the signature-only check — a rotation can have
+      a verifying signature and still be forged, if it was cross-signed by a
+      RETIRED key posing as the active one.
 
     Excludes rotations where ``cross_signature_verified`` is ``None`` (not
-    checked, e.g. no public key supplied for the old device) — those are
-    reported separately via notes, not treated as forged. Shared by
-    :func:`_verify` and :func:`verify_bundle` so the two can never disagree
-    on what counts as "forged".
+    checked at all) and ``valid`` is absent — those are reported separately
+    via notes, not treated as forged. Shared by :func:`_verify` and
+    :func:`verify_bundle` so the two can never disagree on what counts as
+    "forged".
     """
-    return [r for r in key_rotations if r["cross_signature_verified"] is False]
+    return [
+        r
+        for r in key_rotations
+        if r["cross_signature_verified"] is False or r.get("valid") is False
+    ]
 
 
 def _verify_signature(public_key_b64: str, data: bytes, sig: str) -> bool:
@@ -213,12 +247,105 @@ def _check_rotation(
             and _verify_signature(old_pubkey, canonicalize(signed_fields), cross_signature)
         )
 
+    # The rotation finding here: new_device_id must actually be the id the
+    # new public key derives to, or the ledger's later device_id-based
+    # bookkeeping (key timeline, stale-key checks) is trusting an
+    # unsubstantiated claim. Checked independently of the cross-signature —
+    # a device_id that doesn't match its own key is worth flagging even if
+    # no old public key was supplied to check the cross-signature at all.
+    device_id_matches_public_key: bool | None = None
+    if isinstance(new_public_key, str) and isinstance(new_id, str):
+        from byoai.recorder.keys import derive_device_id
+
+        try:
+            device_id_matches_public_key = derive_device_id(new_public_key) == new_id
+        except Exception:
+            device_id_matches_public_key = False
+
     return {
         "old_device_id": old_id,
         "new_device_id": new_id,
+        "new_public_key": new_public_key,
         "reason": payload.get("reason"),
         "effective_epoch": payload.get("effective_epoch"),
         "cross_signature_verified": verified,
+        "device_id_matches_public_key": device_id_matches_public_key,
+    }
+
+
+def _check_rotation_live(
+    payload: dict[str, Any],
+    active_key: str,
+    active_id: str | None,
+    event_device_id: Any,
+) -> dict[str, Any]:
+    """Validate a KEY_ROTATED entry against the key/id CURRENTLY active in
+    the chain walk (the hardening for the "retired key re-rotation"
+    finding).
+
+    Unlike :func:`_check_rotation` — which looks the cross-signing key up in
+    a caller-supplied ``device_public_keys`` dict, keyed by whatever
+    ``old_device_id`` the payload itself claims — this checks the signature
+    against ``active_key``, the key the walk has itself established as
+    current as of this point in the chain. An attacker who still holds a
+    RETIRED device key can produce a payload whose cross-signature verifies
+    fine against *that* key and whose ``old_device_id`` label matches it too
+    — but ``old_device_id`` will not match ``active_id`` (the walk moved
+    past that key at the real rotation), so this is still correctly flagged
+    as forged and does NOT advance the timeline.
+
+    A rotation is ``valid`` only when ALL of the following hold:
+
+    - its cross-signature verifies against ``active_key``;
+    - ``payload["old_device_id"] == active_id``;
+    - the KEY_ROTATED event's own ``device_id == active_id``;
+    - ``new_device_id == derive_device_id(new_public_key)``.
+    """
+    old_id = payload.get("old_device_id")
+    new_id = payload.get("new_device_id")
+    new_public_key = payload.get("new_public_key")
+    cross_signature = payload.get("cross_signature")
+
+    signed_fields = {
+        "old_device_id": old_id,
+        "new_device_id": new_id,
+        "new_public_key": new_public_key,
+    }
+    cross_signature_verified = bool(
+        isinstance(cross_signature, str)
+        and _verify_signature(active_key, canonicalize(signed_fields), cross_signature)
+    )
+
+    device_id_matches_public_key: bool | None = None
+    if isinstance(new_public_key, str) and isinstance(new_id, str):
+        from byoai.recorder.keys import derive_device_id
+
+        try:
+            device_id_matches_public_key = derive_device_id(new_public_key) == new_id
+        except Exception:
+            device_id_matches_public_key = False
+
+    old_id_matches_active = active_id is not None and old_id == active_id
+    event_device_id_matches_active = active_id is not None and event_device_id == active_id
+
+    valid = bool(
+        cross_signature_verified
+        and old_id_matches_active
+        and event_device_id_matches_active
+        and device_id_matches_public_key
+    )
+
+    return {
+        "old_device_id": old_id,
+        "new_device_id": new_id,
+        "new_public_key": new_public_key,
+        "reason": payload.get("reason"),
+        "effective_epoch": payload.get("effective_epoch"),
+        "cross_signature_verified": cross_signature_verified,
+        "device_id_matches_public_key": device_id_matches_public_key,
+        "old_id_matches_active": old_id_matches_active,
+        "event_device_id_matches_active": event_device_id_matches_active,
+        "valid": valid,
     }
 
 
@@ -487,10 +614,14 @@ class _ChainWalk:
     stale_key_usage: list[int]
     derived: dict[int, str]
     notes: list[str]
+    malformed: list[str]
 
 
 def _walk_chain(
-    entries: Iterable[dict[str, Any]], device_public_keys: dict[str, str]
+    entries: Iterable[dict[str, Any]],
+    device_public_keys: dict[str, str],
+    *,
+    starting_public_key_b64: str | None = None,
 ) -> _ChainWalk:
     """Re-derive and check the hash chain over normalized entries.
 
@@ -500,6 +631,28 @@ def _walk_chain(
     ``entries`` array. This is the one chain-walking implementation; both
     :func:`verify_ledger` and :func:`verify_bundle` call it so a finding in
     one can never fail to appear in the other.
+
+    ``starting_public_key_b64``, when given, is a key the CALLER trusts (a
+    pinned key, or the key the caller connected with) — never anything read
+    out of the untrusted chain data itself. When supplied, the walk builds
+    the active device key/id live, inline, as it walks: each ``KEY_ROTATED``
+    entry is checked against ``active_key``/``active_id`` as of that point
+    (see :func:`_check_rotation_live`), and only a rotation that passes all
+    four of its conditions advances them. This is what closes the "retired
+    key re-rotation" gap: a rotation forged by a device holding a RETIRED
+    key cannot take over the timeline, because its ``old_device_id`` will
+    not match the walk's own ``active_id`` — no matter what
+    ``device_public_keys`` says. Every non-rotation entry whose
+    ``device_id`` no longer matches ``active_id`` at its seq is also a
+    finding (folded into ``stale_key_usage``).
+
+    ``device_public_keys`` remains supported for backward compatibility
+    (and is exactly what's used when ``starting_public_key_b64`` is
+    ``None`` — the original, note-based "can't verify rotations without a
+    key" behaviour) but can never override the live timeline: if both are
+    given and a rotation's ``new_device_id`` has an entry in
+    ``device_public_keys`` that disagrees with its actual ``new_public_key``,
+    that's surfaced as a note, not used for anything.
     """
     broken_links: list[int] = []
     gaps: list[tuple[int, int]] = []
@@ -526,72 +679,171 @@ def _walk_chain(
     # key keep forging entries under the old device_id by simply backdating
     # ts_device to before the rotation's effective_epoch.
     retired_devices: dict[str, int] = {}
+    malformed: list[str] = []
+
+    have_starting_key = starting_public_key_b64 is not None
+    active_key: str | None = starting_public_key_b64
+    active_id: str | None = None
+    if have_starting_key:
+        from byoai.recorder.keys import derive_device_id
+
+        try:
+            active_id = derive_device_id(active_key)
+        except Exception:
+            active_id = None
+            notes.append(
+                "starting_public_key_b64 could not be used to derive a device_id "
+                "— rotation timeline tracking disabled for this run"
+            )
+            have_starting_key = False
 
     entries_checked = 0
     for entry in entries:
         entries_checked += 1
-        seq = int(entry["seq"])
+        # A hand-tampered or partially-written bundle can
+        # carry an entry of the wrong shape entirely (not a dict, missing
+        # "seq"/"event"/hash fields, a non-dict "event", etc). That must be
+        # reported as a finding, never raise — so the whole per-entry body is
+        # one try/except. A malformed entry is skipped: it does not
+        # contribute to derived[], device/session lists, tool pairing or the
+        # gap/link state, which is the same as if it were simply absent (and
+        # its absence is separately visible as a gap or a broken link at the
+        # next entry, if any).
+        try:
+            if not isinstance(entry, dict):
+                raise TypeError("entry is not an object")
+            raw_seq = entry["seq"]
+            # seq is load-bearing for chain ordering, gap detection and
+            # link/hash re-derivation, so it must be a genuine int — not a
+            # bool (bool is an int subclass in Python: isinstance(True, int)
+            # is True and int(True) == 1 would silently accept it), not a
+            # numeric string, and not a float (even a whole one, since a
+            # float seq was never actually written by the recorder).
+            if isinstance(raw_seq, bool) or not isinstance(raw_seq, int):
+                raise TypeError("seq is not a real int")
+            seq = raw_seq
+            event = entry["event"]
+            stored_prev = entry["prev_hash"]
+            stored_entry = entry["entry_hash"]
+            if not isinstance(event, dict):
+                raise TypeError("event is not an object")
+            if not isinstance(stored_prev, str) or not isinstance(stored_entry, str):
+                raise TypeError("prev_hash/entry_hash are not strings")
 
-        # The chain is defined to start at seq 1, so a missing prefix is a
-        # gap too, not just a hole between consecutive rows (matches
-        # Ledger.missing_ranges()'s definition of a gap).
-        if prev_seq is None and seq > 1:
-            gaps.append((1, seq - 1))
-        elif prev_seq is not None and seq != prev_seq + 1:
-            gaps.append((prev_seq + 1, seq - 1))
+            # The chain is defined to start at seq 1, so a missing prefix is a
+            # gap too, not just a hole between consecutive rows (matches
+            # Ledger.missing_ranges()'s definition of a gap).
+            if prev_seq is None and seq > 1:
+                gaps.append((1, seq - 1))
+            elif prev_seq is not None and seq != prev_seq + 1:
+                gaps.append((prev_seq + 1, seq - 1))
 
-        event = entry["event"]
-        stored_prev = entry["prev_hash"]
-        stored_entry = entry["entry_hash"]
+            # Link check uses the *stored* previous hash so that a single
+            # tampered row is reported once, at its own seq, instead of
+            # cascading.
+            derived_entry = compute_entry_hash(stored_prev, seq, _event_digest(event))
+            derived[seq] = derived_entry
 
-        # Link check uses the *stored* previous hash so that a single tampered
-        # row is reported once, at its own seq, instead of cascading.
-        derived_entry = compute_entry_hash(stored_prev, seq, _event_digest(event))
-        derived[seq] = derived_entry
+            if stored_prev != prev_stored_hash or derived_entry != stored_entry:
+                broken_links.append(seq)
 
-        if stored_prev != prev_stored_hash or derived_entry != stored_entry:
-            broken_links.append(seq)
+            prev_seq = seq
+            prev_stored_hash = stored_entry
 
-        prev_seq = seq
-        prev_stored_hash = stored_entry
+            dev = event.get("device_id")
+            if dev and dev not in device_ids:
+                device_ids.append(str(dev))
+            ses = event.get("session_id")
+            if ses and ses not in session_ids:
+                session_ids.append(str(ses))
+            ts = event.get("ts_device")
+            if ts:
+                ts_values.append(str(ts))
 
-        dev = event.get("device_id")
-        if dev and dev not in device_ids:
-            device_ids.append(str(dev))
-        ses = event.get("session_id")
-        if ses and ses not in session_ids:
-            session_ids.append(str(ses))
-        ts = event.get("ts_device")
-        if ts:
-            ts_values.append(str(ts))
+            kind = event.get("kind")
+            kind = kind.value if isinstance(kind, EventKind) else kind
+            tuid = event.get("tool_use_id")
+            if tuid:
+                if kind == EventKind.TOOL_USE.value and tuid not in tool_uses:
+                    tool_uses[str(tuid)] = seq
+                elif kind == EventKind.TOOL_RESULT.value and tuid not in tool_results:
+                    tool_results[str(tuid)] = seq
 
-        kind = event.get("kind")
-        kind = kind.value if isinstance(kind, EventKind) else kind
-        tuid = event.get("tool_use_id")
-        if tuid:
-            if kind == EventKind.TOOL_USE.value and tuid not in tool_uses:
-                tool_uses[str(tuid)] = seq
-            elif kind == EventKind.TOOL_RESULT.value and tuid not in tool_results:
-                tool_results[str(tuid)] = seq
+            if have_starting_key:
+                # The live-timeline path (a starting/pinned key was
+                # supplied): any non-rotation entry not attributed to the
+                # currently-active device is a finding, decided purely from
+                # seq order (the walk's own active_id), never from the
+                # payload's own claims.
+                if kind != EventKind.KEY_ROTATED.value and dev and str(dev) != active_id:
+                    stale_key_usage.append(seq)
+            else:
+                # Legacy path (no starting key): a device_id change
+                # immediately after a KEY_ROTATED event is the *point* of
+                # cross-signing continuity, not tampering — so this only
+                # flags entries still attributed to a device whose key was
+                # already retired. The KEY_ROTATED event itself is the last
+                # thing signed by the OLD device_id (see rotation.py), so it
+                # must not be flagged — only entries *after* it (seq
+                # strictly greater than the rotation event's own seq) that
+                # still carry the retired device_id are stale. This is
+                # decided purely from seq, the trusted append order, never
+                # from the device-controlled ts_device.
+                if dev and dev in retired_devices and seq > retired_devices[dev]:
+                    stale_key_usage.append(seq)
 
-        # A device_id change immediately after a KEY_ROTATED event is the
-        # *point* of cross-signing continuity, not tampering — so this check
-        # only flags entries still attributed to a device whose key was
-        # already retired. The KEY_ROTATED event itself is the last thing
-        # signed by the OLD device_id (see rotation.py), so it must not be
-        # flagged — only entries *after* it (seq strictly greater than the
-        # rotation event's own seq) that still carry the retired device_id
-        # are stale. This is decided purely from seq, the trusted append
-        # order, never from the device-controlled ts_device.
-        if dev and dev in retired_devices and seq > retired_devices[dev]:
-            stale_key_usage.append(seq)
-
-        if kind == EventKind.KEY_ROTATED.value:
-            rotation = _check_rotation(event.get("payload") or {}, device_public_keys)
-            key_rotations.append(rotation)
-            old_id = rotation.get("old_device_id")
-            if old_id:
-                retired_devices[str(old_id)] = seq
+            if kind == EventKind.KEY_ROTATED.value:
+                raw_payload = event.get("payload")
+                # A key_rotated event's payload is a dict of claims
+                # (old/new device_id, new_public_key, cross_signature, ...)
+                # that _check_rotation/_check_rotation_live call .get() on.
+                # A malformed payload (str, list, ...) must not crash the
+                # walk — treat it as an empty/unsubstantiated claim, which
+                # both rotation checkers already handle as "fails to verify".
+                payload = raw_payload if isinstance(raw_payload, dict) else {}
+                if not isinstance(raw_payload, dict) and raw_payload is not None:
+                    malformed.append(
+                        f"malformed_bundle: key_rotated payload at seq {seq} is not "
+                        "an object, treated as empty"
+                    )
+                if have_starting_key:
+                    rotation = _check_rotation_live(payload, active_key, active_id, dev)
+                    rotation["seq"] = seq
+                    key_rotations.append(rotation)
+                    new_id = rotation.get("new_device_id")
+                    new_key = rotation.get("new_public_key")
+                    if rotation.get("valid"):
+                        active_key = new_key
+                        active_id = new_id
+                    else:
+                        notes.append(
+                            f"key rotation at seq {seq} ({rotation.get('old_device_id')} "
+                            f"-> {new_id}): REJECTED — does not match the key/id "
+                            "actually active at this point in the chain (forged or "
+                            "attempted re-rotation from a retired key); the active "
+                            "key/id are unchanged"
+                        )
+                    pinned = device_public_keys.get(str(new_id)) if new_id else None
+                    if (
+                        pinned is not None
+                        and isinstance(new_key, str)
+                        and pinned != new_key
+                    ):
+                        notes.append(
+                            f"device_public_keys entry for {new_id} disagrees with "
+                            "the key timeline established by the chain walk — "
+                            "device_public_keys is ignored for rotation validity"
+                        )
+                else:
+                    rotation = _check_rotation(payload, device_public_keys)
+                    rotation["seq"] = seq
+                    key_rotations.append(rotation)
+                    old_id = rotation.get("old_device_id")
+                    if old_id:
+                        retired_devices[str(old_id)] = seq
+        except (KeyError, TypeError, ValueError) as exc:
+            malformed.append(f"malformed_bundle: entry skipped, {exc}")
+            continue
 
     unpaired_tool_uses = sorted(t for t in tool_uses if t not in tool_results)
     orphan_tool_results = sorted(
@@ -610,6 +862,12 @@ def _walk_chain(
             )
         elif not rotation["cross_signature_verified"]:
             notes.append(f"{seq_note}: cross-signature does NOT verify")
+        if rotation.get("device_id_matches_public_key") is False:
+            notes.append(
+                f"{seq_note}: new_device_id does not match "
+                "derive_device_id(new_public_key) — the claimed id is not "
+                "actually derived from the key it is paired with"
+            )
 
     return _ChainWalk(
         entries_checked=entries_checked,
@@ -624,6 +882,7 @@ def _walk_chain(
         stale_key_usage=stale_key_usage,
         derived=derived,
         notes=notes,
+        malformed=malformed,
     )
 
 
@@ -638,35 +897,91 @@ def _verify(
     event_columns = [c for c in all_columns if c not in _CHAIN_COLUMNS]
 
     rows = conn.execute("SELECT * FROM agent_events ORDER BY seq ASC").fetchall()
-    entries = [
-        {
-            "seq": row["seq"],
-            "prev_hash": row["prev_hash"],
-            "entry_hash": row["entry_hash"],
-            "event": _row_to_event_dict(row, event_columns),
-        }
-        for row in rows
-    ]
-
-    walk = _walk_chain(entries, device_public_keys)
-
-    try:
-        checkpoints = _checkpoint_rows(conn)
-        checkpoint_notes: list[str] = []
-    except (sqlite3.DatabaseError, ValueError) as exc:
-        checkpoints = []
-        checkpoint_notes = [f"checkpoint table unreadable: {exc}"]
-
-    if checkpoint_notes:
-        bad_signatures: list[int] = []
-        checkpoints_checked = 0
-        cp_notes = checkpoint_notes
-    else:
-        bad_signatures, checkpoints_checked, cp_notes = _verify_checkpoints(
-            checkpoints, walk.derived, public_key_b64
+    entries: list[dict[str, Any]] = []
+    row_malformed: list[str] = []
+    for row in rows:
+        # A corrupted row (e.g. a payload column that isn't valid JSON) must
+        # not raise out of the whole verification pass — _row_to_event_dict
+        # does a bare json.loads with no guard of its own, so wrap it here.
+        # An entry that can't even be reconstructed is reported as malformed
+        # and skipped, exactly like _walk_chain's own per-entry handling of
+        # a malformed entry it receives.
+        try:
+            event = _row_to_event_dict(row, event_columns)
+        except (ValueError, TypeError) as exc:
+            seq = row["seq"] if "seq" in row.keys() else "?"
+            row_malformed.append(f"malformed_bundle: ledger row at seq {seq} skipped, {exc}")
+            continue
+        entries.append(
+            {
+                "seq": row["seq"],
+                "prev_hash": row["prev_hash"],
+                "entry_hash": row["entry_hash"],
+                "event": event,
+            }
         )
 
-    notes = [*walk.notes, *cp_notes]
+    walk = _walk_chain(entries, device_public_keys, starting_public_key_b64=public_key_b64)
+    walk.malformed = [*row_malformed, *walk.malformed]
+
+    no_signed_checkpoints = False
+    unreadable_checkpoints = False
+    unsigned_tail: tuple[int, int] | None = None
+
+    try:
+        checkpoints, bad_row_seq_ends, bad_row_notes = _checkpoint_rows(conn)
+    except (sqlite3.DatabaseError, ValueError) as exc:
+        # The checkpoint TABLE itself could not even be read (as opposed to
+        # an individual row's body being bad JSON, which _checkpoint_rows
+        # already handles per-row). A caller who pinned a public key asked
+        # for every checkpoint to be signature-checked — being unable to
+        # read the table at all must not silently pass that request.
+        checkpoints = []
+        bad_row_seq_ends = []
+        bad_row_notes = [f"checkpoint table unreadable: {exc}"]
+        if public_key_b64 is not None:
+            unreadable_checkpoints = True
+
+    if not checkpoints and not bad_row_notes and public_key_b64 is not None:
+        # A ledger with zero checkpoint rows at all — nothing is
+        # signature-checked, and unlike the "no --pubkey supplied" case
+        # (handled as a note inside _verify_checkpoints) this is a request
+        # for verification that could not be honored, so it must fail ok.
+        no_signed_checkpoints = True
+
+    if checkpoints:
+        bad_signatures, checkpoints_checked, cp_notes = _verify_checkpoints(
+            checkpoints, walk.derived, public_key_b64, walk.key_rotations
+        )
+    elif bad_row_notes:
+        # Every row present was unreadable — don't also emit
+        # _verify_checkpoints' generic "no checkpoints present" note, which
+        # would misleadingly suggest there were no rows at all.
+        bad_signatures, checkpoints_checked, cp_notes = [], 0, []
+    else:
+        bad_signatures, checkpoints_checked, cp_notes = _verify_checkpoints(
+            [], walk.derived, public_key_b64, walk.key_rotations
+        )
+    bad_signatures = [*bad_row_seq_ends, *bad_signatures]
+    cp_notes = [*bad_row_notes, *cp_notes]
+
+    if public_key_b64 is not None and checkpoints:
+        # Entries after the last checkpoint's seq_end are never covered by
+        # any signature — informational on the ledger path (a *live*
+        # ledger always has such a tail, since the newest events haven't
+        # been checkpointed yet), but worth surfacing so a caller pinning a
+        # key knows exactly how far the signed coverage actually reaches.
+        last_seq_end = max(_safe_seq_end(cp.get("seq_end", -1)) for cp in checkpoints)
+        tail_seqs = sorted(s for s in walk.derived if s > last_seq_end)
+        if tail_seqs:
+            unsigned_tail = (tail_seqs[0], tail_seqs[-1])
+            cp_notes.append(
+                f"unsigned_tail: entries seq {tail_seqs[0]}-{tail_seqs[-1]} come "
+                f"after the last checkpoint (seq_end={last_seq_end}) — covered "
+                "only by the hash chain, not a signature"
+            )
+
+    notes = [*walk.notes, *cp_notes, *walk.malformed]
 
     forged_rotations = _forged_rotations(walk.key_rotations)
 
@@ -677,6 +992,9 @@ def _verify(
         or walk.orphan_tool_results
         or walk.stale_key_usage
         or forged_rotations
+        or walk.malformed
+        or no_signed_checkpoints
+        or unreadable_checkpoints
     )
 
     return VerifyReport(
@@ -698,33 +1016,118 @@ def _verify(
         notes=notes,
         key_rotations=walk.key_rotations,
         stale_key_usage=walk.stale_key_usage,
+        no_signed_checkpoints=no_signed_checkpoints,
+        unreadable_checkpoints=unreadable_checkpoints,
+        unsigned_tail=unsigned_tail,
     )
 
 
-def _checkpoint_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def _checkpoint_rows(
+    conn: sqlite3.Connection,
+) -> tuple[list[dict[str, Any]], list[int], list[str]]:
+    """Parse every row of the ``checkpoints`` table.
+
+    Each row is parsed independently: a single corrupted row (bad JSON in
+    ``body``, a non-object body, ...) must not disable checking of every
+    OTHER checkpoint in the ledger — it is reported as its own failed
+    checkpoint (in the returned seq_end list and notes) and skipped, while
+    the rest are still returned for :func:`_verify_checkpoints` to check
+    normally. This function itself never raises on row content.
+    """
     columns = _columns(conn, "checkpoints")
     if not columns:
-        return []
+        return [], [], []
     rows = conn.execute("SELECT * FROM checkpoints").fetchall()
     out: list[dict[str, Any]] = []
+    bad_seq_ends: list[int] = []
+    bad_notes: list[str] = []
     for row in rows:
-        # The only schema this codebase writes stores each checkpoint as a
-        # JSON blob in a `body` column (see ledger.py's _SCHEMA). Fall back
-        # to reconstructing one from raw columns only for a ledger written
-        # by some other schema shape, not a case any writer here produces.
-        if "body" in columns and row["body"]:
-            cp = json.loads(row["body"])
-        else:
-            cp = {k: row[k] for k in columns if k not in {"id", "rowid"}}
+        row_seq_end = row["seq_end"] if "seq_end" in row.keys() else None
+        try:
+            # The only schema this codebase writes stores each checkpoint as
+            # a JSON blob in a `body` column (see ledger.py's _SCHEMA). Fall
+            # back to reconstructing one from raw columns only for a ledger
+            # written by some other schema shape, not a case any writer here
+            # produces.
+            if "body" in columns and row["body"]:
+                cp = json.loads(row["body"])
+            else:
+                cp = {k: row[k] for k in columns if k not in {"id", "rowid"}}
+            if not isinstance(cp, dict):
+                raise ValueError(f"checkpoint body is a {type(cp).__name__}, not an object")
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            bad_seq_ends.append(_safe_seq_end(row_seq_end))
+            bad_notes.append(
+                f"checkpoint row (seq_end={row_seq_end!r}) could not be parsed and is "
+                f"treated as a failed checkpoint: {exc}"
+            )
+            continue
         out.append(cp)
-    out.sort(key=lambda c: int(c.get("seq_end", 0)))
-    return out
+    out.sort(key=lambda c: _safe_seq_end(c.get("seq_end", -1)))
+    return out, bad_seq_ends, bad_notes
+
+
+def _build_key_timeline(
+    initial_key_b64: str, key_rotations: list[dict[str, Any]]
+) -> tuple[list[tuple[int, str]], list[str]]:
+    """Build the device key active at each point in the chain (spec §11.2).
+
+    Level 2 used to check every checkpoint against one pinned key, which
+    cannot pass after a rotation — the checkpoints before the rotation are
+    signed with the old key, the ones after with the new one. This builds a
+    timeline instead: start with ``initial_key_b64``, and at each
+    ``key_rotated`` entry whose cross-signature VERIFIED, the active key
+    becomes that rotation's ``new_public_key`` from its own ``seq`` onward
+    (the rotation event itself, and everything up to and including it, is
+    still signed by the OLD key — see spec §7 item 1 and rotation.py, the
+    rotation event is "the last event the old identity writes").
+
+    A rotation whose cross-signature could NOT be verified (no old key
+    supplied, or a forged cross-signature) does *not* extend the timeline:
+    later checkpoints keep being checked against the last known-good key,
+    matching the old single-key behaviour for everything after an
+    unverifiable handover, plus a note explaining why.
+
+    Returns ``(timeline, notes)``. ``timeline`` is a list of
+    ``(seq_threshold, key_b64)`` pairs sorted ascending by ``seq_threshold``
+    (the first entry is always ``(0, initial_key_b64)``, since every real
+    seq is >= 1).
+    """
+    timeline: list[tuple[int, str]] = [(0, initial_key_b64)]
+    notes: list[str] = []
+    for r in key_rotations:
+        seq = r.get("seq")
+        new_key = r.get("new_public_key")
+        if r.get("cross_signature_verified") is True and isinstance(new_key, str):
+            timeline.append((int(seq), new_key))
+        else:
+            notes.append(
+                f"key rotation at seq {seq} ({r.get('old_device_id')} -> "
+                f"{r.get('new_device_id')}): cross-signature not verified — "
+                "checkpoints after this point are still checked against the "
+                "previously active key (supply the old device's public key "
+                "to verify continuity across this rotation)"
+            )
+    return timeline, notes
+
+
+def _key_active_at(timeline: list[tuple[int, str]], seq_end: int) -> str:
+    """The key active for a checkpoint whose ``seq_end`` is given, per the
+    timeline built by :func:`_build_key_timeline`."""
+    active = timeline[0][1]
+    for seq_threshold, key in timeline[1:]:
+        if seq_end > seq_threshold:
+            active = key
+        else:
+            break
+    return active
 
 
 def _verify_checkpoints(
     checkpoints: list[dict[str, Any]],
     derived: dict[int, str],
     public_key_b64: str | None,
+    key_rotations: list[dict[str, Any]] | None = None,
 ) -> tuple[list[int], int, list[str]]:
     bad: list[int] = []
     notes: list[str] = []
@@ -732,24 +1135,51 @@ def _verify_checkpoints(
     if not checkpoints:
         return [], 0, ["no checkpoints present in this ledger"]
 
+    timeline: list[tuple[int, str]] | None = None
     if public_key_b64 is None:
         notes.append(
             f"{len(checkpoints)} checkpoint(s) present but NOT signature-checked "
             "— rerun with --pubkey to verify device signatures"
         )
+    else:
+        timeline, timeline_notes = _build_key_timeline(public_key_b64, key_rotations or [])
+        notes.extend(timeline_notes)
 
     for cp in checkpoints:
-        seq_end = int(cp.get("seq_end", -1))
+        raw_seq_end = cp.get("seq_end", -1)
+        # seq_end is used as a dict key against derived[] and to select the
+        # active key from the rotation timeline, so it must be a genuine
+        # int. int("abc")/int(None) raise, and this whole function must
+        # never raise on untrusted checkpoint data — a checkpoint with an
+        # unusable seq_end is reported as a failed checkpoint instead.
+        if isinstance(raw_seq_end, bool) or not isinstance(raw_seq_end, int):
+            bad.append(raw_seq_end if isinstance(raw_seq_end, int) else -1)
+            notes.append(
+                f"checkpoint has invalid seq_end ({raw_seq_end!r}): not a real int, "
+                "treated as failed"
+            )
+            continue
+        seq_end = raw_seq_end
         failed = False
 
         sig = cp.get("sig")
         if public_key_b64 is not None:
+            active_key = _key_active_at(timeline, seq_end)  # type: ignore[arg-type]
             unsigned = {k: v for k, v in cp.items() if k != "sig"}
-            if not isinstance(sig, str) or not _verify_signature(
-                public_key_b64, canonicalize(unsigned), sig
-            ):
+            try:
+                canonical_unsigned = canonicalize(unsigned)
+            except CanonicalizationError as exc:
                 failed = True
-                notes.append(f"checkpoint ending at seq {seq_end}: signature does not verify")
+                notes.append(
+                    f"checkpoint ending at seq {seq_end}: cannot be canonicalized "
+                    f"({exc}), treated as failed"
+                )
+            else:
+                if not isinstance(sig, str) or not _verify_signature(
+                    active_key, canonical_unsigned, sig
+                ):
+                    failed = True
+                    notes.append(f"checkpoint ending at seq {seq_end}: signature does not verify")
         elif not isinstance(sig, str):
             failed = True
             notes.append(f"checkpoint ending at seq {seq_end}: missing signature")
@@ -770,6 +1200,20 @@ def _verify_checkpoints(
             bad.append(seq_end)
 
     return bad, len(checkpoints), notes
+
+
+def _safe_seq_end(raw: Any) -> int:
+    """Coerce a checkpoint's ``seq_end`` to int without ever raising.
+
+    Rejects bool (an int subclass) the same way :func:`_walk_chain` rejects
+    a bool ``seq`` — a load-bearing sequence number is never legitimately a
+    boolean. Anything else that isn't already a real int falls back to -1,
+    which never matches a real derived seq and so never spuriously "covers"
+    entries it shouldn't.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return -1
+    return raw
 
 
 _EPOCH_SIGNED_FIELDS = ("epoch_index", "root", "epoch_start", "epoch_end", "tenant_id")
@@ -798,6 +1242,7 @@ def _verify_anchor(
     receipt: dict[str, Any],
     epoch: dict[str, Any],
     rekor_public_key_b64: str | None,
+    tsa_trusted_roots_pem: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
     """Dispatch to the right external anchor verifier (spec §6.2 level 4).
 
@@ -807,13 +1252,18 @@ def _verify_anchor(
     """
     from byoai.recorder import anchor as anchor_module
 
+    if not isinstance(receipt, dict):
+        return False, [f"cannot verify anchor: receipt is not an object ({type(receipt).__name__})"]
+
     try:
         epoch_root = bytes.fromhex(epoch["root"])
     except (KeyError, ValueError) as exc:
         return False, [f"cannot verify anchor: epoch root is missing/malformed ({exc})"]
 
     if anchor_type == "rfc3161_tsa":
-        return anchor_module.verify_rfc3161_receipt(receipt, epoch_root)
+        return anchor_module.verify_rfc3161_receipt(
+            receipt, epoch_root, tsa_trusted_roots_pem=tsa_trusted_roots_pem
+        )
     if anchor_type == "sigstore_rekor":
         inclusion = receipt.get("inclusion_proof") or {}
         flat_receipt = {
@@ -855,10 +1305,25 @@ class BundleVerifyReport:
     key_rotations: list[dict[str, Any]] = field(default_factory=list)
     stale_key_usage: list[int] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # §10.3 key pinning: set when the caller supplied
+    # pinned_device_public_key_b64 and the bundle's own device key differs.
+    device_key_mismatch: bool = False
+    # epoch_index values whose tenant_kms_public_key_b64 was not in the
+    # caller-supplied pinned_tenant_public_keys_b64 set.
+    tenant_key_mismatches: list[int] = field(default_factory=list)
+    # Reasons a malformed bundle item (bad shape/type, not a signature or
+    # hash failure) was skipped rather than raising.
+    malformed_bundle: list[str] = field(default_factory=list)
+    # §14 pinning hardening: when pinned_device_public_key_b64 is supplied,
+    # entries whose seq comes after the last checkpoint's seq_end are never
+    # covered by any signed checkpoint at all. Each tuple is an inclusive
+    # (first_seq, last_seq) range of such entries.
+    unsigned_tail: list[tuple[int, int]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["gaps"] = [list(g) for g in self.gaps]
+        data["unsigned_tail"] = [list(r) for r in self.unsigned_tail]
         return data
 
 
@@ -868,6 +1333,10 @@ def verify_bundle(
     device_public_keys: dict[str, str] | None = None,
     check_anchors: bool = True,
     rekor_public_key_b64: str | None = None,
+    pinned_device_public_key_b64: str | None = None,
+    pinned_tenant_public_keys_b64: Iterable[str] | None = None,
+    require_pinned_anchors: bool = False,
+    tsa_trusted_roots_pem: list[str] | None = None,
 ) -> BundleVerifyReport:
     """Offline verification of an examiner export bundle (spec §10.3).
 
@@ -878,103 +1347,304 @@ def verify_bundle(
     epoch's ``anchor.type`` is not ``"none"`` — that epoch's external anchor
     receipt (RFC 3161 TSA or Sigstore Rekor, via ``anchor.py``). This covers
     all five steps of the verification path in spec §6.3. An epoch with
-    ``anchor.type == "none"`` is legitimately unanchored and is noted as such,
-    never silently treated as passing.
+    ``anchor.type == "none"`` is legitimately unanchored, not a failure, and
+    is noted as such rather than silently treated as passing.
+
+    A bundle carries its own device key and tenant key(s) (spec §10.3): by
+    default this only proves the bundle is internally consistent, not who
+    wrote it. Passing ``pinned_device_public_key_b64`` and/or
+    ``pinned_tenant_public_keys_b64`` (device_key_mismatch /
+    tenant_key_mismatches findings on mismatch) closes that gap for a caller
+    who obtained those keys some other way (§10.3).
+
+    ``require_pinned_anchors=True`` turns an anchor that could only be
+    checked against its own claims — a Rekor receipt with no
+    ``rekor_public_key_b64``, or an RFC 3161 token whose chain wasn't checked
+    against ``tsa_trusted_roots_pem`` — into a finding instead of a note.
+
+    Malformed bundle shapes (missing ``epoch_index``, bad ``steps`` hex, a
+    missing ``checkpoint``, wrong types, ...) are reported in
+    ``malformed_bundle`` and never raise: this function's whole job
+    is validating untrusted input.
     """
-    public_key_b64 = bundle.get("device", {}).get("public_key_b64")
+    if not isinstance(bundle, dict):
+        # The bundle itself has the wrong shape entirely (e.g. a list or a
+        # scalar) — there is nothing to walk at all. Report it as a totally
+        # malformed bundle rather than raising on the first .get() call.
+        return BundleVerifyReport(
+            ok=False,
+            entries_checked=0,
+            broken_links=[],
+            bad_checkpoint_signatures=[],
+            bad_inclusions=[],
+            bad_epoch_signatures=[],
+            gaps=[],
+            unpaired_tool_uses=[],
+            orphan_tool_results=[],
+            malformed_bundle=["malformed_bundle: bundle is not an object"],
+        )
+    device_obj = bundle.get("device")
+    device_obj = device_obj if isinstance(device_obj, dict) else {}
+    public_key_b64 = device_obj.get("public_key_b64")
+
     entries = bundle.get("entries", [])
+    if not isinstance(entries, list):
+        entries = []
 
-    walk = _walk_chain(entries, device_public_keys or {})
+    # The live rotation-timeline walk must never trust a key read out of the
+    # bundle itself (device_obj["public_key_b64"] is exactly the untrusted
+    # claim §10.3 warns about) — only a caller-supplied pinned key counts as
+    # a "starting key" here. Without one, this keeps the original,
+    # note-based "can't verify rotations" behaviour (finding #4's "unpinned
+    # calls keep today's behaviour" applies the same way to #1).
+    walk = _walk_chain(
+        entries,
+        device_public_keys or {},
+        starting_public_key_b64=pinned_device_public_key_b64,
+    )
 
-    bundle_checkpoints = bundle.get("checkpoints", [])
+    malformed_bundle: list[str] = list(walk.malformed)
+
+    device_key_mismatch = False
+    if pinned_device_public_key_b64 is not None and public_key_b64 != pinned_device_public_key_b64:
+        device_key_mismatch = True
+
+    pinned_tenant_keys = (
+        set(pinned_tenant_public_keys_b64) if pinned_tenant_public_keys_b64 is not None else None
+    )
+
+    raw_bundle_checkpoints = bundle.get("checkpoints", [])
+    if not isinstance(raw_bundle_checkpoints, list):
+        raw_bundle_checkpoints = []
+        malformed_bundle.append("malformed_bundle: 'checkpoints' is not a list, treated as empty")
+
+    bundle_checkpoints: list[dict[str, Any]] = []
+    for bc in raw_bundle_checkpoints:
+        if not isinstance(bc, dict) or not isinstance(bc.get("checkpoint"), dict):
+            malformed_bundle.append(
+                "malformed_bundle: a bundle checkpoint entry is missing a valid "
+                "'checkpoint' object, skipped"
+            )
+            continue
+        bundle_checkpoints.append(bc)
+
+    unsigned_tail: list[tuple[int, int]] = []
+    if pinned_device_public_key_b64 is not None:
+        # §14 pinning hardening: a caller who pins the device key is asking
+        # for every entry to actually be covered by a signed checkpoint.
+        # Zero checkpoints means nothing at all is signature-checked; any
+        # entries after the last checkpoint's seq_end are a silent gap in
+        # coverage a bundle could otherwise pad with unsigned tail entries.
+        if not bundle_checkpoints:
+            malformed_bundle.append(
+                "pinned_device_public_key_b64 was supplied but this bundle has "
+                "zero checkpoints — nothing is actually signature-checked"
+            )
+        else:
+            last_seq_end = max(
+                _safe_seq_end(bc["checkpoint"].get("seq_end", -1)) for bc in bundle_checkpoints
+            )
+            tail_seqs = sorted(s for s in walk.derived if s > last_seq_end)
+            if tail_seqs:
+                unsigned_tail = [(tail_seqs[0], tail_seqs[-1])]
+                malformed_bundle.append(
+                    f"pinned_device_public_key_b64 was supplied but entries seq "
+                    f"{tail_seqs[0]}-{tail_seqs[-1]} come after the last "
+                    f"checkpoint (seq_end={last_seq_end}) and are never covered "
+                    "by a signed checkpoint (unsigned_tail)"
+                )
+
     checkpoints = [bc["checkpoint"] for bc in bundle_checkpoints]
     bad_signatures, checkpoints_checked, cp_notes = _verify_checkpoints(
-        checkpoints, walk.derived, public_key_b64
+        checkpoints, walk.derived, public_key_b64, walk.key_rotations
     )
+
+    raw_epochs = bundle.get("epochs", [])
+    if not isinstance(raw_epochs, list):
+        raw_epochs = []
+        malformed_bundle.append("malformed_bundle: 'epochs' is not a list, treated as empty")
 
     epoch_roots: dict[int, bytes] = {}
     epoch_notes: list[str] = []
-    for epoch in bundle.get("epochs", []):
+    for epoch in raw_epochs:
         try:
+            if not isinstance(epoch, dict):
+                raise TypeError("epoch entry is not an object")
             epoch_roots[epoch["epoch_index"]] = bytes.fromhex(epoch["root"])
         except (KeyError, TypeError, ValueError) as exc:
-            epoch_notes.append(f"malformed epoch entry skipped: {exc}")
+            # ``root`` is exactly what checkpoint inclusion proofs are
+            # verified against and what an anchor receipt anchors — a bad
+            # root is not merely "not checked", it's a malformed field that
+            # matters, so it must fail `ok`, not just leave a note. This
+            # holds regardless of the epoch's anchor.type (an unanchored
+            # epoch with a corrupt root is still a corrupt epoch).
+            malformed_bundle.append(
+                f"malformed_bundle: epoch entry skipped ({exc})"
+            )
 
     bad_inclusions: list[int] = []
     inclusions_checked = 0
     notes = [*walk.notes, *cp_notes, *epoch_notes]
 
     for bc in bundle_checkpoints:
-        proof_json = bc.get("inclusion_proof")
-        epoch_index = bc.get("epoch_index")
-        seq_end = int(bc["checkpoint"].get("seq_end", -1))
+        seq_end = -1
+        try:
+            seq_end = int(bc["checkpoint"].get("seq_end", -1))
+            proof_json = bc.get("inclusion_proof")
+            epoch_index = bc.get("epoch_index")
 
-        if proof_json is None or epoch_index is None:
-            notes.append(
-                f"checkpoint ending at seq {seq_end}: not yet anchored to an "
-                "epoch — inclusion not checked"
+            if proof_json is None or epoch_index is None:
+                notes.append(
+                    f"checkpoint ending at seq {seq_end}: not yet anchored to an "
+                    "epoch — inclusion not checked"
+                )
+                if pinned_tenant_keys is not None:
+                    bad_inclusions.append(seq_end)
+                    notes.append(
+                        f"checkpoint ending at seq {seq_end}: "
+                        "pinned_tenant_public_keys_b64 was supplied but this "
+                        "checkpoint has no inclusion proof/epoch_index at all"
+                    )
+                continue
+
+            root = epoch_roots.get(epoch_index)
+            if root is None:
+                bad_inclusions.append(seq_end)
+                notes.append(
+                    f"checkpoint ending at seq {seq_end}: references epoch "
+                    f"{epoch_index}, which is not present in this bundle's epochs"
+                )
+                continue
+
+            inclusions_checked += 1
+            proof = InclusionProof(
+                leaf_index=proof_json["leaf_index"],
+                leaf_hash=checkpoint_leaf_hash(bc["checkpoint"]),
+                steps=tuple(
+                    ProofStep(sibling=bytes.fromhex(step["sibling"]), side=step["side"])
+                    for step in proof_json["steps"]
+                ),
+                root=root,
             )
-            continue
-
-        root = epoch_roots.get(epoch_index)
-        if root is None:
-            bad_inclusions.append(seq_end)
-            notes.append(
-                f"checkpoint ending at seq {seq_end}: references epoch "
-                f"{epoch_index}, which is not present in this bundle's epochs"
+            if not verify_checkpoint_epoch_inclusion(bc["checkpoint"], proof, root):
+                bad_inclusions.append(seq_end)
+                notes.append(
+                    f"checkpoint ending at seq {seq_end}: inclusion proof does not verify"
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            malformed_bundle.append(
+                f"malformed_bundle: bad checkpoint/inclusion-proof entry at seq "
+                f"{seq_end}, skipped ({exc})"
             )
-            continue
-
-        inclusions_checked += 1
-        proof = InclusionProof(
-            leaf_index=proof_json["leaf_index"],
-            leaf_hash=checkpoint_leaf_hash(bc["checkpoint"]),
-            steps=tuple(
-                ProofStep(sibling=bytes.fromhex(step["sibling"]), side=step["side"])
-                for step in proof_json["steps"]
-            ),
-            root=root,
-        )
-        if not verify_checkpoint_epoch_inclusion(bc["checkpoint"], proof, root):
-            bad_inclusions.append(seq_end)
-            notes.append(f"checkpoint ending at seq {seq_end}: inclusion proof does not verify")
+            if seq_end not in bad_inclusions:
+                bad_inclusions.append(seq_end)
 
     bad_epoch_signatures: list[int] = []
     epoch_signatures_checked = 0
     bad_anchors: list[int] = []
     anchors_checked = 0
-    for epoch in bundle.get("epochs", []):
-        epoch_index = epoch["epoch_index"]
-        verified = _verify_epoch_signature(epoch)
-        if verified is None:
-            notes.append(
-                f"epoch {epoch_index}: tenant signature NOT checked — bundle carries "
-                "no tenant_sig/tenant_kms_public_key_b64 for it"
-            )
-        else:
-            epoch_signatures_checked += 1
-            if not verified:
-                bad_epoch_signatures.append(epoch_index)
-                notes.append(f"epoch {epoch_index}: tenant signature does NOT verify")
+    tenant_key_mismatches: list[int] = []
+    for epoch in raw_epochs:
+        epoch_index = "?"
+        try:
+            epoch_index = epoch["epoch_index"]
 
-        anchor = epoch.get("anchor") or {}
-        anchor_type = anchor.get("type", "none")
-        if anchor_type == "none":
-            continue
-        if not check_anchors:
-            notes.append(
-                f"epoch {epoch_index}: anchor receipt ({anchor_type}) NOT verified — "
-                "check_anchors=False"
-            )
-            continue
+            if pinned_tenant_keys is not None:
+                tenant_key = epoch.get("tenant_kms_public_key_b64")
+                if tenant_key not in pinned_tenant_keys:
+                    tenant_key_mismatches.append(epoch_index)
+                    notes.append(
+                        f"epoch {epoch_index}: tenant_kms_public_key_b64 is not one "
+                        "of the pinned tenant keys"
+                    )
 
-        anchor_ok, anchor_notes = _verify_anchor(
-            anchor_type, anchor.get("receipt") or {}, epoch, rekor_public_key_b64
-        )
-        anchors_checked += 1
-        notes.extend(f"epoch {epoch_index}: anchor — {n}" for n in anchor_notes)
-        if not anchor_ok:
-            bad_anchors.append(epoch_index)
+            verified = _verify_epoch_signature(epoch)
+            if verified is None:
+                notes.append(
+                    f"epoch {epoch_index}: tenant signature NOT checked — bundle carries "
+                    "no tenant_sig/tenant_kms_public_key_b64 for it"
+                )
+                if pinned_tenant_keys is not None:
+                    bad_epoch_signatures.append(epoch_index)
+                    notes.append(
+                        f"epoch {epoch_index}: pinned_tenant_public_keys_b64 was "
+                        "supplied but this epoch carries no tenant_sig at all"
+                    )
+            else:
+                epoch_signatures_checked += 1
+                if not verified:
+                    bad_epoch_signatures.append(epoch_index)
+                    notes.append(f"epoch {epoch_index}: tenant signature does NOT verify")
+
+            raw_anchor = epoch.get("anchor")
+            anchor = raw_anchor if isinstance(raw_anchor, dict) else {}
+            if raw_anchor is not None and not isinstance(raw_anchor, dict):
+                # A present-but-wrong-shaped anchor (e.g. a bare string) is
+                # not the same claim as "no anchor at all" — silently
+                # treating it as anchor.type == 'none' would let a corrupted
+                # anchor field pass as legitimately unanchored. Malformed,
+                # not a pass.
+                malformed_bundle.append(
+                    f"malformed_bundle: epoch {epoch_index} anchor is not an "
+                    "object, treated as malformed"
+                )
+                bad_anchors.append(epoch_index)
+                continue
+            anchor_type = anchor.get("type", "none")
+            if anchor_type == "none":
+                notes.append(f"epoch {epoch_index}: no anchor (anchor.type == 'none')")
+                if require_pinned_anchors:
+                    bad_anchors.append(epoch_index)
+                    notes.append(
+                        f"epoch {epoch_index}: anchor.type == 'none' and "
+                        "require_pinned_anchors=True"
+                    )
+                continue
+            if not check_anchors:
+                notes.append(
+                    f"epoch {epoch_index}: anchor receipt ({anchor_type}) NOT verified — "
+                    "check_anchors=False"
+                )
+                if require_pinned_anchors:
+                    bad_anchors.append(epoch_index)
+                    notes.append(
+                        f"epoch {epoch_index}: check_anchors=False and "
+                        "require_pinned_anchors=True"
+                    )
+                continue
+
+            anchor_ok, anchor_notes = _verify_anchor(
+                anchor_type,
+                anchor.get("receipt") or {},
+                epoch,
+                rekor_public_key_b64,
+                tsa_trusted_roots_pem,
+            )
+            anchors_checked += 1
+            notes.extend(f"epoch {epoch_index}: anchor — {n}" for n in anchor_notes)
+
+            # An anchor checked only against its own claims — no rekor key to
+            # verify the SET, or no trusted root to check the RFC 3161 chain
+            # against — normally just gets a note (§14 item 4: "an unpinned
+            # anchor passes"). require_pinned_anchors turns that into a
+            # finding instead, for a caller who wants the anchor to actually
+            # prove something about an external log/authority they trust.
+            unpinned_anchor = (
+                anchor_type == "sigstore_rekor" and rekor_public_key_b64 is None
+            ) or (anchor_type == "rfc3161_tsa" and not tsa_trusted_roots_pem)
+            if not anchor_ok:
+                bad_anchors.append(epoch_index)
+            elif require_pinned_anchors and unpinned_anchor:
+                bad_anchors.append(epoch_index)
+                notes.append(
+                    f"epoch {epoch_index}: anchor was not checked against a pinned "
+                    "key/trusted root and require_pinned_anchors=True"
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            malformed_bundle.append(
+                f"malformed_bundle: bad epoch entry (epoch_index={epoch_index!r}), "
+                f"skipped ({exc})"
+            )
 
     forged_rotations = _forged_rotations(walk.key_rotations)
 
@@ -988,6 +1658,9 @@ def verify_bundle(
         or walk.orphan_tool_results
         or walk.stale_key_usage
         or forged_rotations
+        or device_key_mismatch
+        or tenant_key_mismatches
+        or malformed_bundle
     )
 
     return BundleVerifyReport(
@@ -1010,4 +1683,8 @@ def verify_bundle(
         key_rotations=walk.key_rotations,
         stale_key_usage=walk.stale_key_usage,
         notes=notes,
+        device_key_mismatch=device_key_mismatch,
+        tenant_key_mismatches=tenant_key_mismatches,
+        malformed_bundle=malformed_bundle,
+        unsigned_tail=unsigned_tail,
     )

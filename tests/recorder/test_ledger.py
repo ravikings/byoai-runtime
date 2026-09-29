@@ -362,6 +362,62 @@ def test_strict_mode_raises_on_write_failure(ledger_path):
     assert first_broken_seq(ledger_path) is None
 
 
+class _CommitFailsOnceConn:
+    """Wraps a live connection and fails exactly the first COMMIT — the
+    INSERT itself succeeds, only the commit that makes it durable fails
+    (a transient disk I/O error partway through, not a full disk from the
+    start)."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+        self.fail = True
+
+    def execute(self, sql: str, *args):
+        if self.fail and sql.strip().upper() == "COMMIT":
+            self.fail = False
+            raise sqlite3.OperationalError("disk I/O error (simulated)")
+        return self._real.execute(sql, *args)
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+
+def test_append_recovers_after_a_failed_commit(ledger_path):
+    """Regression for the "failed COMMIT wedges the ledger" finding: before
+    the fix, a COMMIT that raised left the SQLite connection sitting inside
+    an already-BEGUN transaction forever — every subsequent append's own
+    ``BEGIN IMMEDIATE`` would then fail too ("cannot start a transaction
+    within a transaction"), permanently wedging the ledger from one
+    transient write failure. The fix wraps COMMIT in try/except and rolls
+    back on failure, so the very next append succeeds."""
+    led = Ledger(ledger_path, DEVICE, strict_mode=True)
+    try:
+        first = led.append(make_event())
+        assert first.seq == 1
+
+        broken = _CommitFailsOnceConn(led._conn)
+        led._conn = broken
+
+        with pytest.raises(LedgerWriteError):
+            led.append(make_event())
+
+        # Chain state must not have advanced past what was actually
+        # committed.
+        assert led.next_seq == 2
+
+        # The critical assertion: the ledger must not be wedged. The next
+        # append (COMMIT no longer forced to fail) must succeed normally.
+        second = led.append(make_event())
+        assert second.seq == 2
+        led._conn = broken._real
+    finally:
+        led.close()
+
+    # And the on-disk chain must be fully valid — no partially-applied,
+    # dangling transaction left any trace.
+    assert first_broken_seq(ledger_path) is None
+
+
 def test_non_strict_mode_records_a_record_failure_marker(ledger_path):
     led = Ledger(ledger_path, DEVICE, strict_mode=False)
     try:
@@ -718,3 +774,122 @@ def test_seq_is_bound_into_the_digest(ledger_path):
         conn.close()
 
     assert first_broken_seq(ledger_path) == 2
+
+
+def test_append_recovers_after_another_ledger_object_advances_the_same_file(ledger_path):
+    """Regression test: rotating the device key from the CLI (a second
+    ``Ledger`` instance opened against the same file) advances the on-disk
+    chain out from under a recorder process's already-open ``Ledger``. Before
+    this fix, that process's next ``append()`` would hit a stale
+    ``_next_seq``, collide on the ``seq`` primary key, and return ``None``
+    forever — silently dropping every event from then on. ``append()`` must
+    instead resync its in-memory head/seq from disk and succeed."""
+    a = Ledger(ledger_path, DEVICE)
+    entry1 = a.append(make_event())
+    assert entry1 is not None
+
+    # A second Ledger object on the same file, exactly like the CLI's
+    # `rotate_key`/`coriqo-verify` tooling opening it independently while a
+    # recorder process still has it open.
+    b = Ledger(ledger_path, DEVICE)
+    entry2 = b.append(make_event())
+    assert entry2 is not None
+    assert entry2.seq == entry1.seq + 1
+    b.close()
+
+    # `a`'s in-memory (_head, _next_seq) is now stale: it still thinks the
+    # chain ends at entry1. Without the fix this append collides on seq and
+    # is silently dropped (returns None).
+    entry3 = a.append(make_event())
+    assert entry3 is not None
+    assert entry3.seq == entry2.seq + 1
+    assert entry3.prev_hash == entry2.entry_hash
+
+    a.close()
+
+    # The whole chain verifies cleanly end to end.
+    from byoai.recorder.verify import verify_ledger
+
+    report = verify_ledger(ledger_path)
+    assert report.ok, report.notes
+    assert report.broken_links == []
+    assert report.gaps == []
+    assert report.entries_checked == 3
+
+
+def test_ledger_logs_when_reopened_after_a_foreign_rotation(ledger_path, caplog):
+    """Documented footgun (spec §7/§8): if some other process rotates this
+    device's key (writes a ``key_rotated`` event whose ``old_device_id`` is
+    THIS ledger's device_id) while/after this ``Ledger`` object is open,
+    everything it appends from then on is stale-key usage that will fail
+    verification. There is no hot-reload of keys by design — but the ledger
+    should at least log a clear error when it notices, rather than silently
+    keep signing under a retired identity."""
+    import logging
+
+    from byoai.recorder.keys import load_or_create_device_key
+    from byoai.recorder.rotation import rotate_key
+
+    key_dir = ledger_path.parent / "keys"
+    old_key = load_or_create_device_key(key_dir)
+    led = Ledger(ledger_path, old_key.device_id)
+    led.append(_make_event(old_key.device_id))
+
+    # Simulate a sibling process rotating the key out from under `led` —
+    # exactly `rotate_key`'s own writer, via a second Ledger instance on the
+    # same file (the CLI does this for real).
+    other = Ledger(ledger_path, old_key.device_id)
+    try:
+        rotate_key(key_dir, other, reason="rotation")
+    finally:
+        other.close()
+
+    led.close()  # drop in-memory state entirely
+
+    with caplog.at_level(logging.ERROR, logger="byoai.recorder.ledger"):
+        reopened = Ledger(ledger_path, old_key.device_id)
+    try:
+        assert any(
+            "some other process" in r.message and old_key.device_id in r.message
+            for r in caplog.records
+        )
+    finally:
+        reopened.close()
+
+
+def test_append_checkpoint_does_not_overwrite_an_existing_seq_end(ledger_path, caplog):
+    """Regression test: `INSERT OR REPLACE` on `checkpoints.seq_end` let a
+    later checkpoint silently replace an earlier one covering the exact same
+    range. The first checkpoint recorded for a `seq_end` must win; a
+    different later one is dropped with a logged warning, never raised."""
+    led = Ledger(ledger_path, DEVICE)
+    try:
+        led.append(make_event())
+
+        first = {
+            "device_id": DEVICE,
+            "seq_start": 1,
+            "seq_end": 1,
+            "chain_head": led.head,
+            "ts_device": "2026-08-10T12:00:00.000000Z",
+            "sig": "ed25519:" + ("A" * 20),
+        }
+        led.append_checkpoint(first)
+
+        second = {**first, "sig": "ed25519:" + ("B" * 20)}
+        with caplog.at_level("WARNING"):
+            led.append_checkpoint(second)
+
+        stored = led.latest_checkpoint()
+        assert stored["sig"] == first["sig"]
+        assert any("already recorded" in r.message for r in caplog.records)
+
+        # A byte-identical re-append of the same checkpoint is not a
+        # collision and produces no warning.
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            led.append_checkpoint(dict(first))
+        assert led.latest_checkpoint()["sig"] == first["sig"]
+        assert not any("already recorded" in r.message for r in caplog.records)
+    finally:
+        led.close()

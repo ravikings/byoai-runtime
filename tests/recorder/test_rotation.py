@@ -476,3 +476,204 @@ def test_rotate_cli(tmp_path, capsys):
     )
     assert report.key_rotations[0]["reason"] == "compromise"
     assert report.key_rotations[0]["cross_signature_verified"] is True
+
+
+def _emit_checkpoint(ledger, key, seq_start, seq_end, ts="2026-08-10T12:00:00.000000Z"):
+    from byoai.recorder.checkpoint import checkpoint_signing_bytes
+
+    cp = {
+        "device_id": key.device_id,
+        "seq_start": seq_start,
+        "seq_end": seq_end,
+        "chain_head": ledger.head,
+        "ts_device": ts,
+    }
+    cp["sig"] = key.sign(checkpoint_signing_bytes(cp))
+    ledger.append_checkpoint(cp)
+    return cp
+
+
+def test_verify_ledger_checks_checkpoints_across_key_rotation(tmp_path):
+    """Regression test for spec §11.2: level 2 used to check every
+    checkpoint against a single pinned key, which cannot pass once a
+    checkpoint after the rotation is signed with the new key. verify_ledger
+    must build a key timeline from the chain walk instead, so checkpoints on
+    both sides of a (cross-signature-verified) rotation verify in one run."""
+    key_dir, old_key, ledger = _make_ledger(tmp_path)
+    try:
+        _append_event(ledger, old_key.device_id, "message")
+        _append_event(ledger, old_key.device_id, "message")
+        _emit_checkpoint(ledger, old_key, 1, 2)
+
+        new_key = rotate_key(key_dir, ledger, reason="rotation")
+        rotation_seq = ledger.next_seq - 1  # the KEY_ROTATED event just appended
+
+        _append_event(ledger, new_key.device_id, "message")
+        _append_event(ledger, new_key.device_id, "message")
+        last_seq = ledger.next_seq - 1
+        _emit_checkpoint(ledger, new_key, rotation_seq + 1, last_seq)
+
+        report = verify_ledger(
+            ledger.path,
+            public_key_b64=old_key.public_key_b64,
+            device_public_keys={old_key.device_id: old_key.public_key_b64},
+        )
+        assert report.ok, report.notes
+        assert report.checkpoints_checked == 2
+        assert report.bad_signatures == []
+        assert report.key_rotations[0]["cross_signature_verified"] is True
+    finally:
+        ledger.close()
+
+
+def test_verify_ledger_reports_forged_new_device_id_in_rotation(tmp_path):
+    """The live rotation-timeline walk's other check: new_device_id must actually be
+    derive_device_id(new_public_key), not merely whatever string the
+    payload claims. A mismatch is a note, not a hard failure by itself —
+    but it must be visible."""
+    key_dir, old_key, ledger = _make_ledger(tmp_path)
+    try:
+        _append_event(ledger, old_key.device_id, "message")
+        new_key = rotate_key(key_dir, ledger, reason="rotation")
+
+        # Tamper the already-written KEY_ROTATED event's new_device_id
+        # directly in the DB, bypassing the writer entirely (this must never
+        # be reachable via rotate_key() itself — only a hand-edited/forged
+        # ledger row exercises it).
+        import json
+        import sqlite3
+
+        conn = sqlite3.connect(str(ledger.path))
+        row = conn.execute(
+            "SELECT seq, payload FROM agent_events WHERE kind = 'key_rotated'"
+        ).fetchone()
+        seq, payload_text = row
+        payload = json.loads(payload_text)
+        payload["new_device_id"] = "dev_NOT_THE_REAL_ONE"
+        conn.execute(
+            "UPDATE agent_events SET payload = ? WHERE seq = ?",
+            (json.dumps(payload), seq),
+        )
+        conn.commit()
+        conn.close()
+
+        report = verify_ledger(ledger.path)
+        assert report.key_rotations[0]["device_id_matches_public_key"] is False
+        assert any("does not match" in n for n in report.notes)
+    finally:
+        ledger.close()
+
+
+def test_verify_ledger_rejects_re_rotation_forged_by_a_retired_key(tmp_path):
+    """Critical regression: a device that holds a RETIRED key (e.g. an
+    attacker who compromised the pre-rotation key, or a stale sibling
+    process) must not be able to take over the key timeline by forging a
+    second ``key_rotated`` event, cross-signed correctly with that retired
+    key and correctly labeled with its own (now-retired) device_id.
+
+    Before the fix, ``_check_rotation`` looked the cross-signing key up in
+    ``device_public_keys`` by whatever ``old_device_id`` the payload itself
+    claimed — so a rotation "A -> C" signed by the retired key A verified
+    just fine, even though the real timeline had already moved on to B.
+    ``verify_ledger`` reported ``ok=True``. The fix builds the active
+    key/id live during the chain walk (from ``public_key_b64``, the
+    caller's pinned/starting key) and only accepts a rotation whose
+    ``old_device_id`` matches the walk's own current ``active_id`` — a
+    forged rotation from a retired key fails that check and is reported as
+    forged, and does not advance the timeline.
+    """
+    import dataclasses
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from byoai.recorder.canonical import sha256_hex
+    from byoai.recorder.keys import DeviceKey
+
+    key_dir, key_a, ledger = _make_ledger(tmp_path)
+    try:
+        _append_event(ledger, key_a.device_id, "message")
+        _emit_checkpoint(ledger, key_a, 1, 1)
+
+        # Legitimate rotation: A -> B.
+        key_b = rotate_key(key_dir, ledger, reason="rotation")
+        _append_event(ledger, key_b.device_id, "message")
+        _emit_checkpoint(ledger, key_b, 3, 3)
+
+        # Attacker still holds retired key A and forges a second rotation,
+        # A -> C, correctly cross-signed with A and correctly labeled.
+        key_c = DeviceKey(Ed25519PrivateKey.generate())
+        signed_fields = {
+            "old_device_id": key_a.device_id,
+            "new_device_id": key_c.device_id,
+            "new_public_key": key_c.public_key_b64,
+        }
+        payload = {
+            **signed_fields,
+            "cross_signature": key_a.sign(canonicalize(signed_fields)),
+            "reason": "rotation",
+            "effective_epoch": "2026-01-01T00:00:00.000000Z",
+        }
+        forged_event = make_event(
+            key_b.device_id,
+            session_id="ses_1",
+            kind=EventKind.KEY_ROTATED,
+            tool_name=None,
+            payload=payload,
+        )
+        forged_event = dataclasses.replace(
+            forged_event, payload_hash=sha256_hex(canonicalize(payload))
+        )
+        ledger.append(forged_event)
+
+        for _ in range(3):
+            _append_event(ledger, key_c.device_id, "message")
+        _emit_checkpoint(ledger, key_c, 5, ledger.next_seq - 1)
+
+        report = verify_ledger(
+            ledger.path,
+            public_key_b64=key_a.public_key_b64,
+            device_public_keys={key_a.device_id: key_a.public_key_b64},
+        )
+
+        assert report.ok is False
+        # The forged rotation must not verify as a valid takeover of the
+        # timeline: entries the attacker wrote under key_c's device_id are
+        # attributed to a device that was never legitimately made active.
+        assert report.stale_key_usage, report.notes
+        # Two rotations share old_device_id == key_a.device_id (the real one
+        # and the forged one); find the one claiming key_c as new.
+        forged = next(
+            r for r in report.key_rotations if r["new_device_id"] == key_c.device_id
+        )
+        assert forged["valid"] is False
+        assert any("REJECTED" in n or "forged" in n.lower() for n in report.notes)
+    finally:
+        ledger.close()
+
+
+def test_pinned_key_must_be_the_key_active_at_seq_1_not_the_current_key(tmp_path):
+    """spec §13.2 / CLI --pubkey and pinned_device_public_key_b64: the
+    pinned key is the STARTING key the caller trusts — the key active at
+    the very first entry (seq 1) — never the device's current key after a
+    rotation the caller doesn't yet know about. Pinning A (the first key,
+    who legitimately rotates to B) must verify cleanly; pinning B (the
+    current key) must fail with a finding that says why, not silently
+    behave as if the whole chain had always belonged to B."""
+    key_dir, key_a, ledger = _make_ledger(tmp_path)
+    try:
+        key_b = rotate_key(key_dir, ledger, reason="rotation")
+        _append_event(ledger, key_b.device_id, "message")
+        _emit_checkpoint(ledger, key_b, 1, 2)
+    finally:
+        ledger.close()
+
+    report_pin_a = verify_ledger(ledger.path, public_key_b64=key_a.public_key_b64)
+    assert report_pin_a.ok is True
+    assert report_pin_a.key_rotations[0]["valid"] is True
+
+    report_pin_b = verify_ledger(ledger.path, public_key_b64=key_b.public_key_b64)
+    assert report_pin_b.ok is False
+    assert any(
+        "does not match" in n or "REJECTED" in n or "stale" in n.lower()
+        for n in report_pin_b.notes
+    ), report_pin_b.notes

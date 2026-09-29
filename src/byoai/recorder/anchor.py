@@ -8,25 +8,44 @@ bundle sketch in ``internal_doc/recorder_contract_export_bundle.md``:
 
 - ``rfc3161_tsa``: an RFC 3161 timestamp token from a Time Stamping
   Authority, verified via ``rfc3161ng`` against a TSA certificate supplied in
-  the bundle. Only the message imprint and CMS signature are checked — this
-  module does NOT build a certificate chain to a trusted root (there is no
-  root CA store anywhere in this codebase). It only checks that each
-  certificate in the supplied chain was directly issued by the next one, and
-  reports whether the leaf cert is one that actually signed the token.
-  "The chain is internally consistent" is not the same claim as "the TSA is
-  trustworthy" — callers who need the latter must supply their own root
-  validation.
+  the bundle. Only the message imprint and CMS signature are checked, and by
+  default this module does NOT build a certificate chain to a trusted root
+  (there is no root CA store anywhere in this codebase) — it only checks
+  that each certificate in the supplied chain was directly issued by the
+  next one, and reports whether the leaf cert is one that actually signed
+  the token. "The chain is internally consistent" is not the same claim as
+  "the TSA is trustworthy" — callers who need the latter must supply their
+  own trusted roots via ``tsa_trusted_roots_pem`` (a list of PEM-encoded
+  certificates), which makes ``verify_rfc3161_receipt`` additionally check
+  that the supplied chain terminates at one of them. Even with
+  ``tsa_trusted_roots_pem`` supplied, this module does not check the chain's
+  ``pathLen``/``keyUsage`` constraints, nor the trusted root certificate's
+  own validity period (see spec section 14). ``verify_bundle``'s
+  ``require_pinned_anchors=True`` turns an RFC 3161 receipt whose chain was
+  NOT checked against ``tsa_trusted_roots_pem`` into a finding instead of a
+  note (same treatment as a Rekor receipt with no ``rekor_public_key_b64``,
+  below) — a caller asking for pinned anchors is asking for every accepted
+  anchor to actually be checked against a root or key it supplied, not just
+  internally consistent.
 - ``sigstore_rekor``: a Rekor transparency-log inclusion proof plus a signed
-  entry timestamp (SET). The Merkle audit-path check implements RFC 6962
+  entry timestamp (SET). Verifying the SET (and therefore that the receipt
+  actually came from the log, not just that its Merkle path is internally
+  consistent) requires the caller to supply the log's ``rekor_public_key_b64``
+  — without it, `root_hash` and the audit path come entirely from the
+  receipt itself, and any party can build a tree that "includes" the epoch
+  root; the audit-path check alone proves nothing about a real log. The
+  Merkle audit-path check implements RFC 6962
   section 2.1.1's ``PATH``/``MTH`` walk directly (not
   ``merkle.verify_inclusion``, which uses a different, simpler pairwise-node
   -promotion rule for odd leaf counts that is not guaranteed to produce the
   same audit paths Trillian/Rekor emit). It reuses ``merkle``'s domain-
   separated leaf/node hash primitives (``_leaf_hash``/``_node_hash``) so the
   two modules can never silently disagree on the RFC 6962 hash domain, even
-  though the path-reconstruction algorithm around them differs. The SET
-  check verifies an ECDSA
-  signature over this receipt's own canonicalized fields — it does NOT claim
+  though the path-reconstruction algorithm around them differs. Despite the
+  SET name (real Rekor signs its SET with ECDSA), this receipt's SET check
+  verifies an Ed25519
+  signature (``keys.DeviceKey.verify``, section 6.2's encoding) over this
+  receipt's own canonicalized fields — it does NOT claim
   byte-for-byte compatibility with a live Rekor server's actual SET encoding,
   since this codebase never talks to a real Rekor instance. A real adapter
   translating live Rekor API responses into this receipt shape would need to
@@ -165,10 +184,15 @@ def verify_rekor_receipt(
 
     set_ok = True
     signed_entry_timestamp = receipt.get("signed_entry_timestamp")
-    if rekor_public_key_b64 is None or not isinstance(signed_entry_timestamp, str):
+    if rekor_public_key_b64 is None:
         notes.append(
-            "rekor signed entry timestamp NOT checked — no rekor_public_key_b64 supplied "
-            "or receipt carries no signed_entry_timestamp"
+            "rekor signed entry timestamp NOT checked — no rekor_public_key_b64 supplied"
+        )
+    elif not isinstance(signed_entry_timestamp, str):
+        set_ok = False
+        notes.append(
+            "rekor signed entry timestamp is missing or not a string — cannot verify "
+            "against the supplied rekor_public_key_b64"
         )
     else:
         from byoai.recorder.keys import DeviceKey
@@ -192,13 +216,22 @@ def verify_rekor_receipt(
     return inclusion_ok and set_ok, notes
 
 
-def verify_rfc3161_receipt(receipt: dict[str, Any], epoch_root: bytes) -> tuple[bool, list[str]]:
+def verify_rfc3161_receipt(
+    receipt: dict[str, Any],
+    epoch_root: bytes,
+    *,
+    tsa_trusted_roots_pem: list[str] | None = None,
+) -> tuple[bool, list[str]]:
     """Verify an RFC 3161 timestamp receipt anchors ``epoch_root``.
 
     Requires the ``rfc3161ng`` package (the ``recorder`` extra). Checks the
     message imprint matches ``epoch_root`` and the CMS signature verifies
-    against the supplied leaf certificate. Does NOT build a path to a
-    trusted root — see module docstring.
+    against the supplied leaf certificate. By default does NOT build a path
+    to a trusted root — see module docstring. When ``tsa_trusted_roots_pem``
+    is given (a list of PEM-encoded certificates), the top of the supplied
+    chain must either equal one of those roots or be directly issued by one
+    of them; otherwise this fails with a note, closing the "unpinned anchor"
+    gap described in spec §14 for callers who supply a trusted root.
     """
     try:
         import base64
@@ -234,11 +267,46 @@ def verify_rfc3161_receipt(receipt: dict[str, Any], epoch_root: bytes) -> tuple[
         )
     elif not chain_ok:
         notes.append("rfc3161 certificate chain is NOT internally consistent")
-    notes.append(
-        "rfc3161 verification does not build a path to a trusted root — "
-        "no root CA store exists in this codebase"
-    )
 
+    root_ok = True
+    trusted_roots: list[Any] = []
+    if tsa_trusted_roots_pem:
+        try:
+            trusted_roots = [
+                x509.load_pem_x509_certificate(
+                    pem.encode("ascii") if isinstance(pem, str) else pem
+                )
+                for pem in tsa_trusted_roots_pem
+            ]
+        except ValueError as exc:
+            return False, [*notes, f"tsa_trusted_roots_pem malformed: {exc}"]
+
+        from cryptography.hazmat.primitives.serialization import Encoding
+
+        top = certs[-1]
+        root_ok = False
+        for root in trusted_roots:
+            if top.public_bytes(Encoding.DER) == root.public_bytes(Encoding.DER):
+                root_ok = True
+                break
+            try:
+                top.verify_directly_issued_by(root)
+                root_ok = True
+                break
+            except Exception:
+                continue
+        if not root_ok:
+            notes.append(
+                "rfc3161 certificate chain does NOT reach any of the supplied "
+                "tsa_trusted_roots_pem"
+            )
+    else:
+        notes.append(
+            "rfc3161 verification does not build a path to a trusted root — "
+            "no root CA store exists in this codebase"
+        )
+
+    response = None
     try:
         from pyasn1.codec.der import encoder as der_encoder
 
@@ -259,4 +327,102 @@ def verify_rfc3161_receipt(receipt: dict[str, Any], epoch_root: bytes) -> tuple[
         signature_ok = False
         notes.append(f"rfc3161 timestamp signature does NOT verify: {exc}")
 
-    return signature_ok and chain_ok, notes
+    strict_root_ok = True
+    if tsa_trusted_roots_pem:
+        if response is None:
+            strict_root_ok = False
+            notes.append(
+                "rfc3161 could not decode the timestamp response to check trust "
+                "requirements"
+            )
+        else:
+            strict_root_ok, strict_notes = _check_tsa_trust_requirements(
+                certs, trusted_roots, response=response, tsr_der=tsr_der
+            )
+            notes.extend(strict_notes)
+
+    return signature_ok and chain_ok and root_ok and strict_root_ok, notes
+
+
+def _check_tsa_trust_requirements(
+    certs: list[Any],
+    trusted_roots: list[Any],
+    *,
+    response: Any,
+    tsr_der: bytes,
+) -> tuple[bool, list[str]]:
+    """Enforce the hardened TSA trust checks from spec §5 hardening.
+
+    When ``tsa_trusted_roots_pem`` is supplied, callers are asking for real
+    trust validation, not just "the chain links together". This requires:
+
+    - every issuing (non-leaf) certificate in the chain has the CA
+      BasicConstraints (ca=True);
+    - the leaf (TSA signing) certificate carries the id-kp-timeStamping
+      ExtendedKeyUsage, and that extension is marked critical (RFC 3161
+      §2.3 requires this);
+    - every certificate's validity window covers the token's genTime.
+    """
+    import rfc3161ng
+    from cryptography import x509
+
+    notes: list[str] = []
+    ok = True
+
+    try:
+        gen_time = rfc3161ng.get_timestamp(response["timeStampToken"], naive=False)
+    except Exception as exc:
+        return False, [f"rfc3161 could not extract genTime from timestamp token: {exc}"]
+    if gen_time.tzinfo is None:
+        from datetime import timezone
+
+        gen_time = gen_time.replace(tzinfo=timezone.utc)
+
+    leaf = certs[0]
+    issuers = certs[1:]
+
+    for cert in issuers:
+        try:
+            bc = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+            is_ca = bool(bc.ca)
+        except x509.ExtensionNotFound:
+            is_ca = False
+        if not is_ca:
+            ok = False
+            notes.append(
+                f"rfc3161 issuing certificate {cert.subject.rfc4514_string()!r} is "
+                "missing BasicConstraints ca=True"
+            )
+
+    try:
+        eku_ext = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        eku = eku_ext.value
+        eku_critical = eku_ext.critical
+    except x509.ExtensionNotFound:
+        eku = None
+        eku_critical = False
+    if eku is None or x509.oid.ExtendedKeyUsageOID.TIME_STAMPING not in eku:
+        ok = False
+        notes.append(
+            "rfc3161 leaf certificate is missing the id-kp-timeStamping "
+            "ExtendedKeyUsage"
+        )
+    elif not eku_critical:
+        ok = False
+        notes.append(
+            "rfc3161 leaf certificate's ExtendedKeyUsage extension is not marked "
+            "critical (RFC 3161 requires id-kp-timeStamping to be critical)"
+        )
+
+    for cert in certs:
+        not_before = cert.not_valid_before_utc
+        not_after = cert.not_valid_after_utc
+        if not (not_before <= gen_time <= not_after):
+            ok = False
+            notes.append(
+                f"rfc3161 certificate {cert.subject.rfc4514_string()!r} validity "
+                f"window ({not_before}..{not_after}) does not cover the token's "
+                f"genTime ({gen_time})"
+            )
+
+    return ok, notes

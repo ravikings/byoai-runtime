@@ -282,25 +282,83 @@ Events are not signed one by one.
   | `reason` | `"rotation"`, `"revocation"` or `"compromise"` |
   | `effective_epoch` | a `ts_device` string. Untrusted, and not used by the verifier |
 
-The rules the verifier applies (`verify._walk_chain`, `verify._check_rotation`)
-are based on `seq`, not on time:
+The rules the verifier applies (`verify._walk_chain`) are based on `seq`, not
+on time, and split into two modes depending on whether the caller supplied a
+**starting key** — a key the caller itself trusts (`public_key_b64` for
+`verify_ledger`, `pinned_device_public_key_b64` for `verify_bundle`; never a
+key read out of the untrusted chain/bundle data itself):
+
+**With a starting key** (the hardened path — `verify._check_rotation_live`):
+the walk maintains `active_key`/`active_id` live, inline, as it walks,
+starting from the caller's key. This is what closes a critical gap: without
+it, a `key_rotated` event's cross-signature was checked by looking up
+`old_device_id` (a label the payload itself claims) in a caller-supplied
+`device_public_keys` map — so a device that still held a **retired** key
+could forge a second rotation, cross-sign it correctly with that retired
+key, label it with its own (retired) id, and take over the timeline, because
+nothing checked that the retired key was still the one actually active.
+
+1. A `key_rotated` event at seq `r` is **valid** only if ALL of the
+   following hold, checked against the walk's own current `active_key`/
+   `active_id` (not the payload's claims): its `cross_signature` verifies
+   against `active_key`; `payload.old_device_id == active_id`; the event's
+   own `device_id == active_id`; and `new_device_id ==
+   derive_device_id(new_public_key)`.
+2. A valid rotation advances `active_key`/`active_id` to
+   `new_public_key`/`new_device_id` from seq `r` onward. Any other rotation
+   — forged, mislabeled, signed by a retired key, or otherwise failing one
+   of the four conditions — is reported as forged (via `key_rotations[i]
+   ["valid"] is False`, which also makes it appear in the forged-rotations
+   set that fails verification) and does **not** change the active key/id.
+3. Every non-rotation event whose `device_id` no longer matches `active_id`
+   at its seq — because it's still using a key that was legitimately
+   rotated away, or one that was never active in the first place — is
+   reported in `stale_key_usage`, which fails verification.
+4. `device_public_keys` remains accepted for backward compatibility but can
+   never override the live timeline; if it disagrees with what the timeline
+   itself established for a given `new_device_id`, that's a note, not
+   something acted on.
+
+**Without a starting key** (the original, note-based behaviour — no
+rotations can actually be verified, so none of this is enforced):
 
 1. When a `key_rotated` event at seq `r` is seen, `old_device_id` is retired
-   as of `r`.
-2. Any later event (seq > `r`) whose `device_id` is a retired id is reported
-   in `stale_key_usage`, which fails verification. The rotation event itself
-   is not flagged.
-3. Events before `r` under the old id stay valid, whatever `reason` says.
-   `revocation` and `compromise` are recorded but not treated differently
-   from `rotation`: nothing written before the rotation event is invalidated.
-4. The cross-signature is checked only if the caller supplies a public key
-   for `old_device_id` (`device_public_keys`, CLI `--device-pubkey`). If it
-   is supplied and the signature fails, the rotation is counted as forged and
-   verification fails. If no key is supplied, the rotation is reported as
-   unchecked in `notes` and does not fail.
+   as of `r`, and (2) any later event (seq > `r`) whose `device_id` is that
+   retired id is reported in `stale_key_usage`.
+2. The cross-signature is checked only if the caller supplies a public key
+   for `old_device_id` via `device_public_keys` (CLI `--device-pubkey`). If
+   it is supplied and the signature fails, the rotation is counted as forged
+   and verification fails. If no key is supplied, the rotation is reported
+   as unchecked in `notes` and does not fail. Because the lookup is keyed by
+   the payload's own claimed `old_device_id`, this mode cannot detect a
+   retired-key re-rotation — that's exactly why the starting-key path above
+   exists, and why supplying a starting key is what a caller who needs that
+   protection must do.
+3. `new_device_id` must equal `derive_device_id(new_public_key)` (6.1),
+   checked independently of the cross-signature. A mismatch is a note, not a
+   finding on its own in this mode.
 
-`ts_device` and `effective_epoch` play no part. Using them would let someone
-holding a retired key backdate new events to before the rotation.
+In both modes, events before `r` under the old id stay valid, whatever
+`reason` says. `revocation` and `compromise` are recorded but not treated
+differently from `rotation`: nothing written before the rotation event is
+invalidated. `ts_device` and `effective_epoch` play no part in either mode —
+using them would let someone holding a retired key backdate new events to
+before the rotation.
+
+**Out-of-process rotation and stale in-memory keys.** `rotate_key` writes the
+`key_rotated` event and rewrites the on-disk key material, but it does not
+reach into any *other* process's already-open `Ledger`/`Recorder` object. If
+a sibling process (or the CLI, run out-of-process) rotates the key while a
+long-running recorder keeps its old `Ledger` open, that recorder keeps
+signing and appending under its old key/device_id — `_append_locked` has no
+way to know its in-memory identity is now retired. Every entry it writes
+after that point fails verification as stale-key usage (§7 point 3 above),
+exactly as if it were a forged/compromised writer, because from the
+verifier's point of view that's indistinguishable from one. **The recorder
+process must be restarted after any out-of-process key rotation.** There is
+no hot-reload of keys by design — silently swapping the active key under a
+running writer without re-deriving everything downstream of it (session
+state, in-flight signatures) is a bigger footgun than requiring a restart.
 
 ## 8. Checkpoints (level 2)
 
@@ -431,10 +489,32 @@ Verification (`anchor.verify_rfc3161_receipt`):
    their `messageDigest` equals the digest of the encapsulated content and
    the signature covers the DER `SET OF` those attributes; the signature
    verifies under certificate 0's public key with RSA PKCS#1 v1.5.
-5. Pass if steps 2 and 4 pass.
+5. Pass if steps 2 and 4 pass — and, when `tsa_trusted_roots_pem` is
+   supplied (a list of PEM-encoded trusted root certificates), step 6 below.
+
+6. **With `tsa_trusted_roots_pem`** (`anchor._check_tsa_trust_requirements`):
+   the chain must actually reach a trusted root, not merely be internally
+   consistent — chain-linking alone (step 2) means any self-signed "TSA"
+   certificate passes. This requires ALL of:
+   - the top of the supplied chain equals, or is directly issued by, one of
+     the supplied roots;
+   - every issuing (non-leaf) certificate in the chain carries
+     `BasicConstraints` with `ca=True` — an ordinary end-entity certificate
+     must not be usable as an issuer;
+   - the leaf (TSA signing) certificate carries the `id-kp-timeStamping`
+     `ExtendedKeyUsage`, and that extension is marked **critical** (RFC 3161
+     §2.3 requires this — a non-critical EKU is rejected too, not just a
+     missing one);
+   - every certificate in the chain has a validity window (`not_before`..
+     `not_after`) that covers the token's own `genTime` (extracted via
+     `rfc3161ng.get_timestamp`), not just the current wall-clock time.
+
+   Without `tsa_trusted_roots_pem`, none of step 6 runs — the anchor passes
+   on steps 2 and 4 alone, same as before, with a note that no trusted-root
+   check was made.
 
 Not checked: that certificate 0 is actually named in the token's signer
-info, the nonce, and `genTime` against the epoch's own times.
+info, and the nonce.
 
 ### 10.2 Rekor-style transparency log (`sigstore_rekor`)
 
@@ -466,11 +546,15 @@ Receipt, as stored in a bundle:
    the right part. The path must be used up exactly when the subtree size
    reaches 1. Then fold back up with `node_hash`.
 5. The recomputed root must equal `root_hash`.
-6. If the caller supplied a log public key and the receipt has a
-   `signed_entry_timestamp`, verify it as Ed25519 (section 6.2) over
-   `C({"log_index": int, "tree_size": int, "root_hash": <the hex string as
-   given>})`. If no key was supplied, the SET is noted as not checked and the
-   anchor passes on step 5 alone.
+6. If the caller supplied a log public key: the receipt's
+   `signed_entry_timestamp` must be a string, and must verify as Ed25519
+   (section 6.2) over `C({"log_index": int, "tree_size": int, "root_hash":
+   <the hex string as given>})`. A missing or non-string SET is a failure
+   here, same as one that fails to verify — supplying a log key means the
+   caller is asking for the SET to actually be checked, so there being none
+   to check must not silently pass. If no log public key was supplied at
+   all, the SET is noted as not checked and the anchor passes on step 5
+   alone.
 
 This is the bundle format's own receipt shape. It is **not** the byte format
 a live Rekor server returns: real Rekor signs SETs with ECDSA over a
@@ -487,12 +571,26 @@ same `0x00`/`0x01` hashing.
 `anchor.py` has no certificate store and no pinned keys. The following are
 the verifier's job:
 
-- **TSA:** check that the chain ends at a TSA root you trust. `anchor.py`
-  checks only that the supplied chain is internally consistent. Anyone can
-  make a self-signed "TSA" certificate that passes every check in 10.1.
-- **Rekor:** supply the log's public key. Without it, `root_hash` comes from
-  the receipt itself, and any party can build a tree that contains the epoch
-  root. Step 5 then proves nothing about a real log.
+- **TSA:** check that the chain ends at a TSA root you trust. By default
+  `anchor.py` checks only that the supplied chain is internally consistent;
+  anyone can make a self-signed "TSA" certificate that passes every check
+  in 10.1. Passing `tsa_trusted_roots_pem` (a list of PEM certificates) to
+  `verify_rfc3161_receipt`/`verify_bundle` makes it additionally check that
+  the chain terminates at one of them — but even then, `pathLen`/`keyUsage`
+  constraints and the trusted root's own validity period are not checked
+  (§14).
+- **Rekor:** supply the log's public key via `rekor_public_key_b64`.
+  Without it, `root_hash` comes from the receipt itself, and any party can
+  build a tree that contains the epoch root. Step 5 then proves nothing
+  about a real log.
+- **`require_pinned_anchors=True`** (`verify_bundle`): turns an anchor that
+  could only be checked against its own claims — a Rekor receipt with no
+  `rekor_public_key_b64`, or an RFC 3161 token whose chain wasn't checked
+  against `tsa_trusted_roots_pem` — into a finding instead of a note (11.4).
+  It also turns an unanchored epoch (`anchor.type == "none"`) and an
+  anchored epoch the caller opted out of checking (`check_anchors=False`)
+  into findings, since asking for pinned anchors while accepting "nothing
+  to check" or "not checking it" defeats the point.
 - **Tenant key:** `tenant_kms_public_key_b64` comes from the bundle. Compare
   it with a key you got from the tenant some other way.
 - **Device key:** in a bundle, `device.public_key_b64` comes from the bundle.
@@ -528,10 +626,17 @@ To rebuild each event dict from a ledger row, take every column of
 `agent_events` except `prev_hash`, `entry_hash` and `event_digest`, parse
 `payload` from JSON, and for a row with `schema_version == "1"` drop
 `trace_id`, `span_id`, `parent_span_id` and `continues_from`
-(`verify._row_to_event_dict`). In a bundle the event dict is used as given.
+(`verify._row_to_event_dict`). In a bundle the event dict is used as given. A
+row whose `payload` is not valid JSON is a finding, not a raise — the row is
+skipped and reported the same way a malformed bundle entry is.
 
-Let `expected_prev = GENESIS`, `prev_seq = none`, `retired = {}`. For each
-entry:
+`seq` must be a genuine `int`. Since `bool` is an `int` subclass in Python,
+`True`/`False` are rejected rather than silently treated as `1`/`0`; a
+string or float standing in for a sequence number is rejected the same way.
+An entry that fails this check is skipped and reported, exactly like any
+other malformed entry (step 4 below), not raised.
+
+Let `expected_prev = GENESIS`, `prev_seq = none`. For each entry:
 
 1. **Gaps.** If this is the first entry and `seq > 1`, record gap
    `(1, seq - 1)`. Otherwise, if `seq != prev_seq + 1`, record gap
@@ -543,25 +648,56 @@ entry:
 3. Set `expected_prev = stored_entry_hash` and `prev_seq = seq`. Using the
    stored value, not the derived one, means one altered row is reported once,
    at its own seq, instead of at every row after it.
-4. **Stale key.** If `event.device_id` is in `retired` and
-   `seq > retired[device_id]`, record `seq` in `stale_key_usage` (finding).
+4. **Stale/wrong key, and rotation.** Whether this step can actually verify
+   anything depends on whether a **starting key** was supplied
+   (`public_key_b64` for `verify_ledger`, `pinned_device_public_key_b64` for
+   `verify_bundle` — never a key read out of the entries/bundle themselves):
+
+   - **With a starting key:** the walk maintains `active_key`/`active_id`
+     live, starting from that key. A `key_rotated` event is valid only if
+     its cross-signature verifies against the CURRENT `active_key`,
+     `payload.old_device_id == active_id`, `event.device_id == active_id`,
+     and `new_device_id == derive_device_id(new_public_key)` — all four,
+     checked against the walk's own state, never against a label the
+     payload merely claims. A valid rotation advances `active_key`/
+     `active_id` from that `seq` onward; any other rotation is a finding
+     (forged) and does not change them. Every non-rotation event whose
+     `device_id != active_id` at its seq is also a finding
+     (`stale_key_usage`) — this is what catches a device still signing
+     with a key that was legitimately rotated away, or a key that was
+     never active to begin with (this is what defends against the
+     retired-key re-rotation attack: a device holding a key that was
+     legitimately rotated away cannot take over the timeline by forging a
+     further rotation, since its claimed `old_device_id` will not match
+     `active_id`).
+   - **Without a starting key** (original behaviour): a lookup-table
+     `retired = {}` is used instead. A `key_rotated` event's cross-signature
+     is checked, if the caller separately supplied `device_public_keys`, by
+     looking up the key for the payload's own claimed `old_device_id` — a
+     failed check is a finding, an unchecked one is a note — and
+     `retired[old_device_id] = seq` is recorded regardless. A later
+     non-rotation event whose `device_id` is in `retired` and whose `seq`
+     is past the retiring event's own `seq` is `stale_key_usage` (finding).
+     This mode cannot detect a rotation forged by a retired key;
+     supplying a starting key is what closes that gap.
+
+   In both modes, `new_device_id == derive_device_id(new_public_key)` is
+   also checked independently — with a starting key this is one of the
+   four conditions checked above, so a mismatch there is already a
+   **finding** (the rotation is rejected as forged); without a starting key,
+   a mismatch is a note only.
 5. **Tool pairing.** If `tool_use_id` is set, remember the seq of the first
    `tool_use` and the first `tool_result` with that id.
-6. **Rotation.** If `kind == "key_rotated"`, check the cross-signature as in
-   section 7, and set `retired[old_device_id] = seq`. A cross-signature that
-   was checked and failed is a finding. One that was not checked is a note.
 
 After the walk:
 
-7. `unpaired_tool_uses`: ids with a `tool_use` but no `tool_result`. Reported,
+6. `unpaired_tool_uses`: ids with a `tool_use` but no `tool_result`. Reported,
    **not** a finding (the call may still be running, or the process may have
    stopped).
-8. `orphan_tool_results`: ids with a `tool_result` and either no `tool_use`
+7. `orphan_tool_results`: ids with a `tool_result` and either no `tool_use`
    or a `tool_use` at a later seq. Finding.
 
-The walk does not check `payload_hash` (4.3), does not check that
-`new_device_id` is the id derived from `new_public_key`, and does not check
-that event `device_id`s match any key.
+The walk does not check `payload_hash` (4.3).
 
 ### 11.2 Level 2: checkpoints
 
@@ -572,46 +708,150 @@ and an optional device public key. For `verify_ledger` the key is the
 
 1. No checkpoints: note, nothing else to do.
 2. No key: note that signatures were not checked.
-3. For each checkpoint:
-   - With a key: verify `sig` over `C(checkpoint without "sig")`. A missing
-     or invalid signature is a finding.
+3. **Key timeline** (`verify._build_key_timeline`). With a key, a checkpoint
+   is no longer checked against one single pinned key for the whole run.
+   Instead the verifier builds a timeline from the same chain walk that
+   already ran in 11.1: it starts with the given key, and at each
+   `key_rotated` entry whose cross-signature VERIFIED (11.1 step 4), the
+   active key becomes that event's `new_public_key` from its own `seq`
+   onward. A rotation whose cross-signature was NOT verified (no old key
+   supplied, or forged) does not extend the timeline — checkpoints after it
+   keep being checked against whatever key was last known good, plus a note
+   explaining why. Each `key_rotated` event also gets one more check
+   independent of the cross-signature: `new_device_id` must equal
+   `derive_device_id(new_public_key)` (6.1); a mismatch is a note, not a
+   finding on its own. This checkpoint-signature timeline is built the same
+   way regardless of whether `public_key_b64`/`pinned_device_public_key_b64`
+   is also used as the *live* rotation-validity starting key described in
+   11.1 step 4 — the two use the same key but are otherwise separate
+   mechanisms (one gates checkpoint signatures, the other gates which
+   rotations are accepted into the device-id timeline at all).
+4. For each checkpoint:
+   - With a key: verify `sig` over `C(checkpoint without "sig")`, using the
+     key active (per the timeline) at that checkpoint's own `seq_end`. A
+     missing or invalid signature is a finding.
    - Without a key: a missing (non-string) `sig` is a finding.
    - If there is no `derived` value for `seq_end`, finding.
    - If `chain_head != derived[seq_end]`, finding.
 
-Every checkpoint is checked against the same single key.
 `device_id`, `seq_start` and `ts_device` are not checked.
+
+**Pinning hardening (`verify_bundle` only).** A caller who supplies
+`pinned_device_public_key_b64` is asking for every entry to actually be
+covered by a signed checkpoint, not merely for the ones that exist to check
+out:
+
+- Zero checkpoints in the bundle: finding (nothing is signature-checked at
+  all).
+- Entries whose `seq` comes after the last checkpoint's `seq_end`: finding,
+  reported in `unsigned_tail` as an inclusive `(first_seq, last_seq)` range —
+  a bundle could otherwise pad itself with unsigned "tail" entries after the
+  last real checkpoint and have them pass silently.
+
+**Pinning hardening (`verify_ledger` only).** A caller who supplies
+`public_key_b64` (`--pubkey`) similarly gets the checkpoint table itself
+covered, not just whatever checkpoints happen to parse:
+
+- Zero checkpoint rows in the ledger: finding (`no_signed_checkpoints`).
+- The `checkpoints` table itself cannot be read at all (as opposed to one
+  row's body being bad JSON, handled per-row below): finding
+  (`unreadable_checkpoints`).
+- Each checkpoint row is parsed independently — a corrupted row (bad JSON
+  body, a non-object body, an unusable `seq_end`) is its own failed
+  checkpoint (added to `bad_signatures`) and does not stop the rest of the
+  table from being checked.
+- Entries whose `seq` comes after the last checkpoint's `seq_end`: reported
+  in `unsigned_tail` as an inclusive `(first_seq, last_seq)` range, but this
+  is **informational only** on the ledger path (unlike the bundle path
+  above, it does not affect `ok`) — a live, still-recording ledger always
+  has such a tail, since the newest events haven't been checkpointed yet.
+  The `coriqo-verify` CLI still prints it, so a caller pinning a key knows
+  exactly how far signed coverage reaches.
 
 ### 11.3 Level 3: epoch inclusion and tenant signature (bundle only)
 
 1. Read every epoch's `root` from hex into a map by `epoch_index`. A malformed
-   epoch is skipped with a note.
+   epoch (not an object, missing/non-int `epoch_index`, `root` not valid hex,
+   ...) is skipped and reported in `malformed_bundle` — a **finding**, not a
+   note: a corrupt root is exactly what checkpoint inclusion proofs are
+   verified against and what an anchor receipt anchors, regardless of that
+   epoch's `anchor.type`.
 2. For each bundle checkpoint:
    - If `inclusion_proof` or `epoch_index` is null: note ("not yet anchored").
+     If the caller supplied `pinned_tenant_public_keys_b64`, this is instead
+     a finding — pinning a tenant key is asking for inclusion to actually be
+     provable, and a checkpoint with no proof at all can't be.
    - If `epoch_index` is not in the map: finding.
    - Otherwise recompute `leaf_hash` from the checkpoint and fold the proof
      (9.3). If the result is not the epoch root: finding.
 3. For each epoch: if `tenant_sig` or `tenant_kms_public_key_b64` is missing,
-   note. Otherwise verify it (9.4). Failure is a finding.
+   note (or, if `pinned_tenant_public_keys_b64` was supplied, finding — same
+   reasoning as the inclusion-proof case above). Otherwise verify it (9.4).
+   Failure is a finding.
 
 ### 11.4 Level 4: anchors (bundle only)
 
+`require_pinned_anchors=True` turns two cases that would otherwise only be
+notes into findings: an epoch whose `anchor.type == "none"` (nothing to
+anchor to at all), and any anchored epoch when the caller passed
+`check_anchors=False` (the caller explicitly opted out of checking, but is
+also asking every anchor to be provably pinned — those two options
+together mean "there had better be a pinned anchor, and I'm not even going
+to check it" is not a state this run should silently accept).
+
 For each epoch, read `anchor.type` (default `"none"`):
 
-1. `"none"`: skipped. No finding and no note.
-2. `check_anchors=False`: note, not verified.
-3. `"rfc3161_tsa"`: 10.1. `"sigstore_rekor"`: 10.2, with the caller's
+1. `"none"`: legitimately unanchored. A note says so (`"no anchor
+   (anchor.type == 'none')"`); it is a finding only when
+   `require_pinned_anchors=True` (item 5 below) — otherwise never a finding.
+2. `check_anchors=False`: note, not verified — unless `require_pinned_anchors=True`
+   (item 5 below), in which case it is a finding.
+3. `"rfc3161_tsa"`: 10.1, with the caller's `tsa_trusted_roots_pem` if
+   given. `"sigstore_rekor"`: 10.2, with the caller's
    `rekor_public_key_b64`. Failure is a finding. The verifier's notes are
    copied into the report.
 4. Any other type: finding.
+5. **Key/root pinning** (`require_pinned_anchors=True`). By
+   default an anchor checked only against its own claims — a Rekor receipt
+   with no `rekor_public_key_b64`, or an RFC 3161 token whose chain wasn't
+   checked against `tsa_trusted_roots_pem` — still counts as passing (this
+   is §14 item 2, kept for callers who don't have an external key
+   to pin). `require_pinned_anchors=True` turns that specific case into a
+   finding instead, on top of whatever 10.1/10.2 already found.
+
+**Bundle key pinning** (§10.3). `verify_bundle` also accepts
+`pinned_device_public_key_b64` and `pinned_tenant_public_keys_b64` (an
+iterable of base64 keys). When given: the bundle's own
+`device.public_key_b64` must equal the pinned device key, or
+`device_key_mismatch` is set (finding). Each epoch's
+`tenant_kms_public_key_b64` must be one of the pinned tenant keys, or its
+`epoch_index` is added to `tenant_key_mismatches` (finding). Without these
+arguments, verification still only proves the bundle is internally
+consistent, not who wrote it (§10.3).
+
+**Malformed bundles.** A bundle entry, checkpoint or epoch of the wrong
+shape — missing `epoch_index`, bad `steps` hex, a missing `checkpoint`
+object, wrong types, an unparseable `seq` — is reported in
+`malformed_bundle` (finding) and the item is skipped, never raised — this
+verifier must not raise on any field of untrusted input it reads, not just
+the ones already wrapped in `try`/`except`.
 
 ### 11.5 Verdict
 
 `verify_ledger` sets `ok` to true only if there are no broken links, bad
-checkpoints, gaps, orphan tool results, stale-key entries or forged
-rotations. If a receipt store was passed, its own verdict must also be true.
-`verify_bundle` adds bad inclusions, bad epoch signatures and bad anchors to
-that list.
+checkpoints (`bad_signatures`, which also covers unparseable checkpoint
+rows), gaps, orphan tool results, stale-key entries, forged rotations,
+malformed ledger rows (`notes`, prefixed `malformed_bundle:` for
+consistency with the bundle path), or — when `public_key_b64` was supplied
+— `no_signed_checkpoints`/`unreadable_checkpoints`. `unsigned_tail` is
+informational on the ledger path and does not affect `ok` (11.2). If a
+receipt store was passed, its own verdict must also be true.
+
+`verify_bundle` adds bad inclusions, bad epoch signatures, bad anchors,
+`malformed_bundle` (covers malformed entries, checkpoints, epochs, and the
+bundle itself), `device_key_mismatch`, `tenant_key_mismatches`, and — when
+`pinned_device_public_key_b64` was supplied — the "zero checkpoints" and
+`unsigned_tail` findings from 11.2 to that list.
 
 `coriqo-verify` exits 0 when `ok`, 1 when not, and 2 when the ledger or a
 key file cannot be read. `--json` prints the full report.
@@ -684,44 +924,105 @@ no producer ships in this package. Fields the verifier reads:
 }
 ```
 
-Key rotation cross-signatures are checked with the separate
-`device_public_keys` argument, not from the bundle.
+Key rotation cross-signatures are checked with a separate, caller-supplied
+argument, never from a key read out of the bundle itself (§10.3). The
+preferred one is `pinned_device_public_key_b64` — the key active at the
+bundle's first entry (seq 1), not necessarily the device's current key —
+which drives the same live rotation-timeline walk described in §11.1 step
+4. `device_public_keys` (a `{device_id: key}` map) is the fallback used
+only when no `pinned_device_public_key_b64` is supplied; once one is
+supplied, `device_public_keys` no longer decides rotation validity and can
+only produce an informational note if it disagrees with the timeline
+already established.
 
 ## 14. Known limitations
 
 These describe how the current code behaves. A verifier written from this page
 should reproduce them, or report them as a deliberate difference.
 
-1. **One device key per verification run.** Level 2 checks every checkpoint
-   against a single public key. After a rotation, checkpoints signed with the
-   old key and with the new key cannot both pass in one run.
-2. **Bundles must start at seq 1.** The chain walk expects the first entry's
+Fixed since the previous revision of this page (kept here as history, not as
+a current gap): checking every checkpoint against a single pinned key across
+a rotation is now §11.2's key timeline; bundle keys being impossible to pin
+is now `pinned_device_public_key_b64`/`pinned_tenant_public_keys_b64`
+(§10.3/§11.4); malformed bundle fields raising instead of producing a
+finding is now `malformed_bundle` (§11.4); an unpinned anchor always passing
+with no way to make that strict is now optional via
+`require_pinned_anchors=True` (kept as item 2 below for a caller who doesn't
+opt into it, which is still the default). Also fixed: a `key_rotated` event
+forged by a device still holding a **retired** key could previously take
+over the device-id timeline outright when a starting key was supplied — the
+cross-signature was checked by looking the signing key up under whatever
+`old_device_id` the payload itself claimed, never confirmed against what was
+actually active — this is now §7/§11.1 step 4's live `active_key`/
+`active_id` walk, and a device-id mismatch anywhere in that walk is a
+finding (`stale_key_usage`), not merely a note; pinning
+(`pinned_device_public_key_b64`/`pinned_tenant_public_keys_b64`) no longer
+just *changes what key is compared* — with no signed checkpoint/inclusion
+proof/tenant signature at all, or entries past the last signed checkpoint, it
+is now a finding rather than silently unchecked (§11.2/§11.3); a Rekor SET
+that was missing or non-string used to pass anyway whenever a
+`rekor_public_key_b64` was supplied — it is now a finding, not a silent pass
+(§10.2); an RFC 3161 chain checked against `tsa_trusted_roots_pem` used to
+stop at "links together and reaches a listed root" — it now also requires
+each issuing cert's BasicConstraints `ca=True`, the leaf's
+ExtendedKeyUsage id-kp-timeStamping to be present and critical, and every
+cert's validity window to cover the token's `genTime` (§10.1); and a
+`COMMIT` failure inside `Ledger._append_locked` used to leave the SQLite
+connection wedged inside an open transaction forever — it is now rolled
+back, so the very next append can still succeed (§7 out-of-process note
+below, unrelated mechanism but the same "must not wedge the ledger" theme).
+
+Also fixed, a further round of malformed-input hardening: a `key_rotated`
+event's `payload` being a non-object used to raise `AttributeError` out of
+the rotation checkers — it is now treated as an empty (unsubstantiated)
+claim plus a `malformed_bundle` finding; an epoch's `anchor` being a
+non-object used to be silently coerced to `{"type": "none"}`, passing as
+legitimately unanchored — it is now a `malformed_bundle` finding; an epoch's
+`root` being invalid hex used to only produce a note that was never folded
+into `malformed_bundle`, so a bad root passed whenever the epoch's own
+anchor was `"none"` — it is now always a finding; a checkpoint's `seq_end`
+being a non-int (a numeric string, or `None`) used to raise `ValueError`/
+`TypeError` out of `_verify_checkpoints` — it is now a failed checkpoint; a
+`sigstore_rekor` anchor's `receipt` being a non-object used to raise
+`AttributeError` out of `verify_rekor_receipt` — it is now a failed anchor;
+and the bundle argument to `verify_bundle` itself being the wrong shape
+entirely (e.g. a list) used to raise on the first `.get()` call — it now
+returns a report with `ok=False` and a `malformed_bundle` finding, same as
+any other malformed input.
+
+1. **Bundles must start at seq 1.** The chain walk expects the first entry's
    `prev_hash` to be genesis and treats a first `seq` above 1 as a gap, so an
-   export of a middle range always fails.
-3. **Keys inside the bundle are not pinned.** `verify_bundle` takes the
-   device key and tenant key from the bundle and has no argument for pinning
-   them (10.3).
-4. **An unpinned anchor passes.** A Rekor receipt checked without a log key,
-   or an RFC 3161 token whose chain does not reach a trusted root, still
-   counts as a passing anchor. The gap is reported in a note.
-5. **The Rekor receipt is this format's own**, with an Ed25519 SET (10.2).
-6. **RFC 3161 tokens must be RSA-signed.** The check uses PKCS#1 v1.5, so a
+   export of a middle range always fails. Accepting a stated starting
+   `prev_hash` without a note would let a bundle producer silently splice in
+   a fabricated earlier history — strictly worse than failing loudly on a
+   partial range — so this is left as a real limitation rather than patched
+   around.
+2. **An unpinned anchor passes by default.** A Rekor receipt checked without
+   a log key, or an RFC 3161 token whose chain does not reach a trusted
+   root, still counts as a passing anchor unless the caller passes
+   `require_pinned_anchors=True` (§11.4), in which case it is a finding
+   instead. Either way the gap is reported in a note.
+3. **The Rekor receipt is this format's own**, with an Ed25519 SET (10.2).
+4. **RFC 3161 tokens must be RSA-signed.** The check uses PKCS#1 v1.5, so a
    TSA that signs with ECDSA fails verification.
-7. **`payload_hash` is not verified** (4.3).
-8. **Revocation does not reach back.** `compromise` and `revocation` retire
+5. **Even with `tsa_trusted_roots_pem`, the TSA chain check is not a full PKIX
+   validation.** It confirms each certificate was directly issued by the
+   next one and that the chain terminates at a supplied root, but does not
+   check `pathLen`/`keyUsage` constraints along the chain, and does not
+   check that the trusted root certificate itself is within its own
+   validity period (§10.3).
+6. **`payload_hash` is not verified** (4.3).
+7. **Revocation does not reach back.** `compromise` and `revocation` retire
    the old id from the rotation's seq onward, like `rotation` does. Entries
    before that seq stay valid, including any a thief wrote with a stolen key
    before the rotation.
-9. **Events are unsigned between checkpoints.** Events after the last
+8. **Events are unsigned between checkpoints.** Events after the last
    checkpoint are protected only by the chain until the next checkpoint.
-10. **Deletion from the end.** Removing the newest entries leaves a shorter
-    chain that still verifies, unless a checkpoint, epoch or anchor
-    references a later `seq_end`. The checkpoint row can be deleted along
-    with the entries, so only a copy held elsewhere (shipped to a server, or
-    included in an epoch) shows the truncation.
-11. **Malformed bundles can raise.** Some malformed bundle fields (a missing
-    `epoch_index` in the epoch loop, bad `steps` hex, a missing `checkpoint`)
-    raise a Python exception instead of producing a finding.
+9. **Deletion from the end.** Removing the newest entries leaves a shorter
+   chain that still verifies, unless a checkpoint, epoch or anchor
+   references a later `seq_end`. The checkpoint row can be deleted along
+   with the entries, so only a copy held elsewhere (shipped to a server, or
+   included in an epoch) shows the truncation.
 
 ## 15. Relation to the Coriqo attestation format
 
