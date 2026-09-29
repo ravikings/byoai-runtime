@@ -235,3 +235,234 @@ def test_verify_rekor_receipt_reconstruction_never_raises_recursion_error():
         raise AssertionError("audit path reconstruction must not recurse")
     except ValueError:
         pass  # fine — shape mismatch is an expected, clean failure
+
+
+def test_verify_rekor_receipt_rejects_missing_set_when_pubkey_is_pinned():
+    """Regression for the finding where an omitted/non-string
+    ``signed_entry_timestamp`` silently passed (``set_ok`` stayed True) once a
+    ``rekor_public_key_b64`` was supplied. Callers who pin a Rekor key are
+    asking for the SET to actually be checked — a receipt with no SET at all
+    must fail, not be treated as "unchecked and fine".
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from byoai.recorder.keys import DeviceKey
+
+    key = DeviceKey(Ed25519PrivateKey.generate())
+    epoch_root = hashlib.sha256(b"set omitted root").digest()
+    leaf = _leaf_hash(epoch_root)
+    receipt = {
+        "log_index": 0,
+        "tree_size": 1,
+        "root_hash": leaf.hex(),
+        "hashes": [],
+        # no signed_entry_timestamp at all
+    }
+    ok, notes = verify_rekor_receipt(
+        receipt, epoch_root, rekor_public_key_b64=key.public_key_b64
+    )
+    assert not ok
+    assert any("missing or not a string" in n for n in notes)
+
+
+def test_verify_rekor_receipt_still_notes_unchecked_set_when_no_pubkey_given():
+    """Unpinned callers (no rekor_public_key_b64) keep the existing
+    note-only behaviour — this codepath isn't asking for SET verification."""
+    epoch_root = hashlib.sha256(b"unpinned root").digest()
+    leaf = _leaf_hash(epoch_root)
+    receipt = {
+        "log_index": 0,
+        "tree_size": 1,
+        "root_hash": leaf.hex(),
+        "hashes": [],
+    }
+    ok, notes = verify_rekor_receipt(receipt, epoch_root, rekor_public_key_b64=None)
+    assert ok
+    assert any("NOT checked" in n for n in notes)
+
+
+# --- TSA trusted-root hardening -----------------------------------------
+
+
+def _make_key():
+    return generate_private_key(SECP256R1())
+
+
+def _make_cert(
+    subject_name,
+    issuer_name,
+    signing_key,
+    subject_key,
+    *,
+    is_ca=False,
+    eku=None,
+    eku_critical=True,
+    not_before=None,
+    not_after=None,
+):
+    import datetime
+
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(
+            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject_name)])
+        )
+        .issuer_name(
+            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer_name)])
+        )
+        .public_key(subject_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(not_before or now - datetime.timedelta(days=1))
+        .not_valid_after(not_after or now + datetime.timedelta(days=365))
+        .add_extension(
+            x509.BasicConstraints(ca=is_ca, path_length=None if not is_ca else 0),
+            critical=True,
+        )
+    )
+    if eku is not None:
+        builder = builder.add_extension(eku, critical=eku_critical)
+    return builder.sign(signing_key, SHA256())
+
+
+def _fixed_gen_time_patch(monkeypatch, gen_time):
+    import rfc3161ng
+
+    monkeypatch.setattr(
+        rfc3161ng, "get_timestamp", lambda token, naive=True: gen_time
+    )
+
+
+def _run_trust_check(monkeypatch, certs, roots, gen_time):
+    import datetime
+
+    from byoai.recorder.anchor import _check_tsa_trust_requirements
+
+    _fixed_gen_time_patch(monkeypatch, gen_time or datetime.datetime.now(datetime.timezone.utc))
+    return _check_tsa_trust_requirements(
+        certs, roots, response={"timeStampToken": object()}, tsr_der=b""
+    )
+
+
+def test_tsa_trust_check_accepts_a_proper_chain(monkeypatch):
+    root_key = _make_key()
+    root_cert = _make_cert("root", "root", root_key, root_key, is_ca=True)
+
+    leaf_key = _make_key()
+    leaf_cert = _make_cert(
+        "tsa",
+        "root",
+        root_key,
+        leaf_key,
+        is_ca=False,
+        eku=x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.TIME_STAMPING]),
+        eku_critical=True,
+    )
+
+    ok, notes = _run_trust_check(monkeypatch, [leaf_cert, root_cert], [root_cert], None)
+    assert ok, notes
+
+
+def test_tsa_trust_check_rejects_end_entity_as_issuer():
+    """An issuing cert without BasicConstraints ca=True must be rejected —
+    otherwise any ordinary end-entity cert could masquerade as an issuer."""
+    root_key = _make_key()
+    root_cert = _make_cert("root", "root", root_key, root_key, is_ca=True)
+
+    fake_issuer_key = _make_key()
+    fake_issuer_cert = _make_cert(
+        "not-a-ca", "root", root_key, fake_issuer_key, is_ca=False
+    )
+
+    leaf_key = _make_key()
+    leaf_cert = _make_cert(
+        "tsa",
+        "not-a-ca",
+        fake_issuer_key,
+        leaf_key,
+        is_ca=False,
+        eku=x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.TIME_STAMPING]),
+        eku_critical=True,
+    )
+
+    import datetime
+
+    from byoai.recorder.anchor import _check_tsa_trust_requirements
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    import unittest.mock
+
+    import rfc3161ng
+
+    with unittest.mock.patch.object(
+        rfc3161ng, "get_timestamp", lambda token, naive=True: now
+    ):
+        ok, notes = _check_tsa_trust_requirements(
+            [leaf_cert, fake_issuer_cert, root_cert],
+            [root_cert],
+            response={"timeStampToken": object()},
+            tsr_der=b"",
+        )
+    assert not ok
+    assert any("ca=True" in n for n in notes)
+
+
+def test_tsa_trust_check_rejects_missing_eku(monkeypatch):
+    root_key = _make_key()
+    root_cert = _make_cert("root", "root", root_key, root_key, is_ca=True)
+
+    leaf_key = _make_key()
+    leaf_cert = _make_cert("tsa", "root", root_key, leaf_key, is_ca=False, eku=None)
+
+    ok, notes = _run_trust_check(monkeypatch, [leaf_cert, root_cert], [root_cert], None)
+    assert not ok
+    assert any("timeStamping" in n for n in notes)
+
+
+def test_tsa_trust_check_rejects_non_critical_eku(monkeypatch):
+    root_key = _make_key()
+    root_cert = _make_cert("root", "root", root_key, root_key, is_ca=True)
+
+    leaf_key = _make_key()
+    leaf_cert = _make_cert(
+        "tsa",
+        "root",
+        root_key,
+        leaf_key,
+        is_ca=False,
+        eku=x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.TIME_STAMPING]),
+        eku_critical=False,
+    )
+
+    ok, notes = _run_trust_check(monkeypatch, [leaf_cert, root_cert], [root_cert], None)
+    assert not ok
+    assert any("critical" in n for n in notes)
+
+
+def test_tsa_trust_check_rejects_expired_certificate(monkeypatch):
+    import datetime
+
+    root_key = _make_key()
+    root_cert = _make_cert("root", "root", root_key, root_key, is_ca=True)
+
+    leaf_key = _make_key()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    leaf_cert = _make_cert(
+        "tsa",
+        "root",
+        root_key,
+        leaf_key,
+        is_ca=False,
+        eku=x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.TIME_STAMPING]),
+        eku_critical=True,
+        not_before=now - datetime.timedelta(days=400),
+        not_after=now - datetime.timedelta(days=30),
+    )
+
+    ok, notes = _run_trust_check(
+        monkeypatch, [leaf_cert, root_cert], [root_cert], now
+    )
+    assert not ok
+    assert any("validity" in n for n in notes)

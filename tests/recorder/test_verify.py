@@ -18,9 +18,24 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from byoai.recorder.canonical import canonicalize, sha256_hex
 from byoai.recorder.cli import format_report, main
+from byoai.recorder.keys import derive_device_id
 from byoai.recorder.verify import GENESIS_PREV_HASH, VerifyError, verify_ledger
 
-DEVICE_ID = "dev_TESTDEVICE"
+# Fixed (not per-test-random) so DEVICE_ID below can be a module-level
+# constant that actually matches what verify_ledger's live rotation-timeline
+# walk derives from the `keypair` fixture's public key (see the live rotation-timeline hardening in verify.py (§11.1 step 4):
+# once a starting/pinned key is supplied, every event's device_id is checked
+# against derive_device_id(active_key) — a fixture using an arbitrary
+# device_id string unrelated to its signing key would trip that check as a
+# false "wrong device" finding, same as a real, unrelated key would).
+_FIXED_TEST_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+_FIXED_TEST_PUBLIC_KEY_B64 = base64.b64encode(
+    _FIXED_TEST_PRIVATE_KEY.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+).decode()
+DEVICE_ID = derive_device_id(_FIXED_TEST_PUBLIC_KEY_B64)
 SESSION_ID = "ses_01TEST"
 
 EVENT_COLUMNS = [
@@ -194,7 +209,7 @@ def build_ledger(
 
 @pytest.fixture()
 def keypair() -> tuple[Ed25519PrivateKey, str]:
-    return _make_key()
+    return _FIXED_TEST_PRIVATE_KEY, _FIXED_TEST_PUBLIC_KEY_B64
 
 
 # --------------------------------------------------------------------------
@@ -220,7 +235,7 @@ def test_clean_ledger_verifies(tmp_path, keypair):
     assert report.device_ids == [DEVICE_ID]
 
     text = format_report(report)
-    assert "record complete and unaltered" in text
+    assert "VERDICT: chain intact; 1 checkpoint(s) signed" in text
     assert DEVICE_ID in text and SESSION_ID in text
     assert "seq 1–6" in text
     assert "6 events" in text
@@ -456,7 +471,7 @@ def test_cli_exit_codes_and_json(tmp_path, keypair, capsys):
     build_ledger(clean, priv=priv)
 
     assert main([str(clean), "--pubkey", pub]) == 0
-    assert "record complete and unaltered" in capsys.readouterr().out
+    assert "VERDICT: chain intact; 1 checkpoint(s) signed" in capsys.readouterr().out
 
     assert main([str(clean), "--pubkey", pub, "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -550,3 +565,181 @@ def test_verifier_makes_no_network_calls(tmp_path, keypair, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", _boom)
 
     assert verify_ledger(db, public_key_b64=pub).ok is True
+
+
+def test_verify_ledger_corrupted_payload_row_is_a_finding_not_a_crash(tmp_path, keypair):
+    """A row whose payload column is not valid JSON (e.g. hand-edited or a
+    partial write) used to raise json.JSONDecodeError straight out of
+    verify_ledger, via _row_to_event_dict's bare json.loads. verify_ledger
+    must be as total over a corrupted ledger row as verify_bundle is over a
+    corrupted bundle entry: never raise, and treat the row as malformed."""
+    priv, pub = keypair
+    db = tmp_path / "corrupt_payload.db"
+    build_ledger(db, priv=priv)
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE agent_events SET payload = ? WHERE seq = 4",
+        ("{not valid json",),
+    )
+    conn.commit()
+    conn.close()
+
+    report = verify_ledger(db, public_key_b64=pub)
+    assert report.ok is False
+    assert any("seq 4" in n for n in report.notes)
+
+
+def test_pinned_verify_with_zero_checkpoints_is_a_finding(tmp_path, keypair):
+    """A wholesale-rewritten ledger can re-chain every entry consistently
+    and simply delete the checkpoints table's rows so there is nothing left
+    to signature-check. Passing --pubkey/public_key_b64 is a request to
+    verify authenticity; silently reporting ok=True (as if the caller had
+    never supplied a key at all) would let exactly that rewrite through."""
+    priv, pub = keypair
+    db = tmp_path / "no_checkpoints.db"
+    build_ledger(db, priv=priv, checkpoint=False)
+
+    report = verify_ledger(db, public_key_b64=pub)
+    assert report.ok is False
+    assert report.no_signed_checkpoints is True
+    assert report.unreadable_checkpoints is False
+    assert any("no checkpoints" in n for n in report.notes)
+
+
+def test_pinned_verify_with_unreadable_checkpoint_table_is_a_finding(tmp_path, keypair, monkeypatch):
+    """The checkpoints TABLE itself being unreadable (a read failure, not
+    just one row's body being bad JSON) must not silently downgrade to
+    ok=True when a pubkey was pinned. Simulated by making the row-parsing
+    helper raise sqlite3.DatabaseError, exactly the exception type a
+    genuinely corrupted table read would surface — reliably forcing that
+    exact I/O failure via SQL alone (vs. a per-row bad body, already
+    covered separately) isn't practical in-process."""
+    import byoai.recorder.verify as verify_mod
+
+    priv, pub = keypair
+    db = tmp_path / "unreadable_checkpoints.db"
+    build_ledger(db, priv=priv)
+
+    def _boom(conn):
+        raise sqlite3.DatabaseError("disk I/O error")
+
+    monkeypatch.setattr(verify_mod, "_checkpoint_rows", _boom)
+
+    report = verify_ledger(db, public_key_b64=pub)
+    assert report.ok is False
+    assert report.unreadable_checkpoints is True
+    assert any("checkpoint table unreadable" in n for n in report.notes)
+
+
+def test_one_bad_checkpoint_row_does_not_disable_checking_the_others(tmp_path, keypair):
+    """A single corrupted checkpoint row (bad JSON in the real writer's
+    `body` blob column — see ledger.py's _SCHEMA) used to make
+    _checkpoint_rows raise, which _verify caught by treating EVERY
+    checkpoint as unchecked, not just the bad one. Each row must be parsed
+    independently: the bad row is its own failed checkpoint, and the rest
+    are still checked. Uses the real Ledger writer (via test_rotation's
+    helpers) since this module's own fixture schema predates the `body`
+    column."""
+    from tests.recorder.test_rotation import _append_event, _emit_checkpoint, _make_ledger
+
+    _, key, ledger = _make_ledger(tmp_path)
+    for _ in range(4):
+        _append_event(ledger, key.device_id, "message")
+    _emit_checkpoint(ledger, key, 1, 2, ts="2026-08-10T12:00:00.000000Z")
+    _emit_checkpoint(ledger, key, 3, 4, ts="2026-08-10T12:00:01.000000Z")
+    path = ledger.path
+    ledger.close()
+
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE checkpoints SET body = ? WHERE seq_end = 2", ("{not json",))
+    conn.commit()
+    conn.close()
+
+    report = verify_ledger(path, public_key_b64=key.public_key_b64)
+    assert report.ok is False
+    assert 2 in report.bad_signatures  # the corrupted row, reported as failed
+    assert 4 not in report.bad_signatures  # the other checkpoint still verified fine
+    assert report.checkpoints_checked == 1  # only the readable one was actually checked
+    assert any("could not be parsed" in n for n in report.notes)
+
+
+def test_verify_ledger_never_raises_on_any_checkpoint_row_content(tmp_path, keypair):
+    """verify_ledger must be total over untrusted checkpoint row content:
+    a non-object body ([] or null) or a non-integer seq_end must be
+    reported as findings, never raise out of verify_ledger."""
+    from tests.recorder.test_rotation import _append_event, _emit_checkpoint, _make_ledger
+
+    for i, bad_body in enumerate(("[]", "null", '{"seq_end": "abc"}')):
+        _, key, ledger = _make_ledger(tmp_path, name=f"bad_{i}.db")
+        for _ in range(3):
+            _append_event(ledger, key.device_id, "message")
+        _emit_checkpoint(ledger, key, 1, 3)
+        path = ledger.path
+        ledger.close()
+
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE checkpoints SET body = ?", (bad_body,))
+        conn.commit()
+        conn.close()
+
+        report = verify_ledger(path, public_key_b64=key.public_key_b64)  # must not raise
+        assert report.ok is False
+
+
+def test_cli_verdict_never_suggests_rerunning_with_pubkey_when_one_was_given(
+    tmp_path, keypair, capsys
+):
+    """Regardless of outcome, a caller who already passed --pubkey must
+    never be told to rerun with --pubkey — the CLI used to print that
+    generic "not cryptographically verified" text whenever
+    signatures_verified was False, which (before the zero/unreadable
+    checkpoint findings above existed) could happen even with --pubkey
+    supplied."""
+    priv, pub = keypair
+    db = tmp_path / "no_checkpoints_cli.db"
+    build_ledger(db, priv=priv, checkpoint=False)
+
+    assert main([str(db), "--pubkey", pub]) == 1
+    out = capsys.readouterr().out
+    assert "rerun with --pubkey" not in out
+
+
+def test_cli_verdict_reports_unsigned_tail_when_pinned(tmp_path, keypair, capsys):
+    """When --pubkey is given and the chain/checkpoints are all otherwise
+    good, entries newer than the last checkpoint (an unsigned tail — normal
+    for a live, still-recording ledger) must be reported explicitly rather
+    than folded silently into a blanket "complete and unaltered"."""
+    priv, pub = keypair
+    events = [
+        _event(1, "session_start"),
+        _event(2, "message"),
+        _event(3, "message"),
+    ]
+    db = tmp_path / "tail.db"
+    # Checkpoint only covers seq 1-2; seq 3 is an unsigned tail entry.
+    build_ledger(db, events=events[:2], priv=priv, checkpoint=True)
+    conn = sqlite3.connect(db)
+    prev = conn.execute("SELECT entry_hash FROM agent_events WHERE seq = 2").fetchone()[0]
+    event = events[2]
+    entry_hash = _entry_hash(prev, event["seq"], _event_digest(event))
+    row = dict(event)
+    row["payload"] = json.dumps(event["payload"])
+    row["prev_hash"] = prev
+    row["entry_hash"] = entry_hash
+    cols = [*EVENT_COLUMNS, "prev_hash", "entry_hash"]
+    conn.execute(
+        f"INSERT INTO agent_events ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+        tuple(row[c] for c in cols),
+    )
+    conn.commit()
+    conn.close()
+
+    report = verify_ledger(db, public_key_b64=pub)
+    assert report.ok is True
+    assert report.unsigned_tail == (3, 3)
+
+    assert main([str(db), "--pubkey", pub]) == 0
+    out = capsys.readouterr().out
+    assert "chain intact" in out
+    assert "covered only by the hash chain" in out

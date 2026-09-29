@@ -1775,9 +1775,20 @@ and only then does the on-disk key get replaced. `--reason` accepts
 way, the value just records why for anyone reading the ledger later.
 `coriqo-verify` follows a rotation across the key boundary instead of
 reporting the device_id change as tampering, and still catches a forged
-cross-signature — pass `--device-pubkey old_device_id=base64key` (repeatable)
-so it has the retiring device's public key to check the cross-signature
-against; without it, a rotation is reported as unchecked rather than failed.
+cross-signature. The preferred way to check it is `--pubkey`: pass the
+key that was active at the ledger's very first entry (seq 1) — not
+necessarily the device's current key — and `coriqo-verify` walks the whole
+rotation timeline live from that starting key, validating every
+cross-signature and rejecting a forged or re-rotated (retired-key) handoff
+as it goes, without needing every intermediate key spelled out separately.
+`--device-pubkey old_device_id=base64key` (repeatable) still exists for the
+case where no starting key is supplied at all: without `--pubkey`, a
+rotation's cross-signature is checked (if at all) only against whatever key
+`--device-pubkey` gives for that rotation's own claimed old device_id, and
+is otherwise reported as unchecked rather than failed. Once `--pubkey` is
+given, `--device-pubkey` no longer decides anything about rotation
+validity — it can only add an informational note if it disagrees with the
+key the live timeline walk already established.
 
 ---
 

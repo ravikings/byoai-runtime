@@ -843,6 +843,10 @@ forged checkpoint signature. It also flags a `tool_use` the agent sent that
 never got a matching `tool_result` — and, the sharper case, a `tool_result`
 with no `tool_use` behind it.
 
+The record formats (hash chain, checkpoints, epoch Merkle trees, anchor
+receipts) are specified in [docs/seal-format.md](docs/seal-format.md), with
+test vectors, so anyone can write their own verifier.
+
 Capture so far assumes the proxy is in the path. A managed agent — an AWS
 Bedrock Agent, say — offers no path to sit in: the caller invokes it and
 AWS runs the entire orchestration loop inside the service, so no model request

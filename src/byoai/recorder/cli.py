@@ -45,7 +45,18 @@ def _window(report: VerifyReport) -> str:
     return "time window unknown"
 
 
-def format_report(report: VerifyReport) -> str:
+def _key_id(pubkey_b64: str | None) -> str | None:
+    if not pubkey_b64:
+        return None
+    try:
+        from byoai.recorder.keys import derive_device_id
+
+        return derive_device_id(pubkey_b64)
+    except Exception:
+        return None
+
+
+def format_report(report: VerifyReport, pubkey_b64: str | None = None) -> str:
     lines: list[str] = []
     lines.append(_subject(report))
     lines.append(
@@ -61,14 +72,39 @@ def format_report(report: VerifyReport) -> str:
 
     if report.ok and not report.unpaired_tool_uses:
         if report.signatures_verified:
-            lines.append("VERDICT: record complete and unaltered.")
+            # A --pubkey was given and every checkpoint that exists verified
+            # against it: say exactly what was and wasn't verified, rather
+            # than a blanket "complete and unaltered" that would obscure an
+            # unsigned tail (entries newer than the last checkpoint, which
+            # a live, still-recording ledger always has).
+            key_id = _key_id(pubkey_b64)
+            verdict = (
+                f"VERDICT: chain intact; {report.checkpoints_checked} "
+                f"checkpoint(s) signed"
+                + (f" by key `{key_id}`" if key_id else "")
+                + "."
+            )
+            if report.unsigned_tail:
+                first, last = report.unsigned_tail
+                count = last - first + 1
+                verdict += (
+                    f" {count} entr{'y' if count == 1 else 'ies'} after the last "
+                    f"checkpoint (seq {first}–{last}) are covered only by the "
+                    "hash chain, not a signature."
+                )
+            lines.append(verdict)
         else:
             # Without a public key, a chain that is internally consistent
             # end-to-end is not distinguishable from one that was fully
             # rewritten and re-hashed by whoever controls the file — only a
             # verified checkpoint signature can rule that out. Say so
             # instead of claiming an integrity guarantee this pass can't
-            # back up.
+            # back up. This branch only runs when no --pubkey was supplied
+            # at all: once one is given, a chain that's otherwise `ok` has
+            # signatures_verified True (see verify_ledger — zero or
+            # unreadable checkpoints fail `ok` instead of falling through
+            # here), so "rerun with --pubkey" is never suggested to someone
+            # who already passed one.
             lines.append(
                 "VERDICT: record internally consistent, but NOT cryptographically "
                 "verified — rerun with --pubkey to rule out a wholesale rewrite."
@@ -76,6 +112,16 @@ def format_report(report: VerifyReport) -> str:
         return "\n".join(lines)
 
     lines.append("FINDINGS")
+
+    if report.no_signed_checkpoints:
+        lines.append(
+            "  - no signed checkpoints: with --pubkey given, nothing in this ledger "
+            "is signed, so a wholesale rewrite cannot be ruled out."
+        )
+    if report.unreadable_checkpoints:
+        lines.append(
+            "  - the checkpoint table could not be read, so no signature could be checked."
+        )
 
     for start, end in report.gaps:
         count = end - start + 1
@@ -129,7 +175,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pubkey",
         dest="pubkey",
         default=None,
-        help="base64 Ed25519 device public key used to check checkpoint signatures",
+        help=(
+            "base64 Ed25519 device public key used to check checkpoint "
+            "signatures AND to pin the start of the key-rotation timeline. "
+            "This must be the key active at the FIRST entry (seq 1) — not "
+            "necessarily the device's current key. Rotations after that "
+            "point are validated by walking the chain live from this "
+            "starting key (see --device-pubkey below); a caller who pins "
+            "the CURRENT key instead of the starting one gets a clear "
+            "finding explaining the mismatch, not a silent pass"
+        ),
     )
     parser.add_argument(
         "--device-pubkey",
@@ -138,10 +193,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="DEVICE_ID=B64",
         help=(
-            "base64 Ed25519 public key for a specific device_id, used to check "
-            "KEY_ROTATED cross-signatures for that device (repeatable). Without "
-            "an entry for a rotation's old device_id, that rotation is reported "
-            "as unchecked rather than verified or failed"
+            "base64 Ed25519 public key for a specific device_id (repeatable). "
+            "Informational only: it no longer decides whether a KEY_ROTATED "
+            "cross-signature is valid — that is always determined by the "
+            "live timeline walk from --pubkey. If an entry here disagrees "
+            "with the key the live walk establishes for that device_id, a "
+            "note is added, but nothing is overridden. Only meaningful when "
+            "--pubkey is NOT given: without a starting key, rotations fall "
+            "back to being checked against whatever key is supplied here "
+            "for each rotation's old device_id, exactly as before"
         ),
     )
     parser.add_argument(
@@ -252,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.as_json:
         print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
-        print(format_report(report))
+        print(format_report(report, pubkey_b64=args.pubkey))
         if report.receipts is not None:
             r = report.receipts
             print(
