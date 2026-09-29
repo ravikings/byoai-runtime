@@ -1,12 +1,12 @@
 {
-  "_about": "Shared by tests/integrations/test_shield.py (the Python rules) and web/tests/extension/redaction.test.mjs (the extension's page capture). Both must produce exactly these results, so the desktop proxy and the browser extension agree on what a personal detail is. `body` is a JSON value sent as the request body, or `raw` a literal body string. `expect.body` is the rewritten body, or null when the body must go out byte-for-byte unchanged.",
+  "_about": "Cases may carry `actions` (policy tier actions) and expect `action` (the strictest action for the send: log|redact|warn|block; default redact/log by what fired). A `warn` case gives `warn_redacts`: what the proxy sends, since it treats warn as redact; the extension shows its bar instead. Shared by tests/integrations/test_shield.py (the Python rules) and web/tests/extension/redaction.test.mjs (the extension's page capture). Both must produce exactly these results, so the desktop proxy and the browser extension agree on what a personal detail is. `body` is a JSON value sent as the request body, or `raw` a literal body string. `expect.body` is the rewritten body, or null when the body must go out byte-for-byte unchanged.",
   "cases": [
     {
       "name": "claude.ai prompt with an email",
       "mode": "redact",
       "body": {"prompt": "tell me an email to this person abdul@coriqo.io", "timezone": "UTC"},
       "expect": {
-        "body": {"prompt": "tell me an email to this person [redacted-email]", "timezone": "UTC"},
+        "body": {"prompt": "tell me an email to this person [EMAIL_1]", "timezone": "UTC"},
         "redactions": ["emails"], "flags": ["pii:emails"], "verdict": "redacted(1)", "chars": 47
       }
     },
@@ -19,7 +19,7 @@
       "expect": {
         "body": {"action": "next", "conversation_id": "415-555-0199",
                  "messages": [{"id": "m1", "author": {"role": "user"},
-                               "content": {"content_type": "text", "parts": ["call [redacted-number] or mail [redacted-email]"]}}]},
+                               "content": {"content_type": "text", "parts": ["call [PHONE_1] or mail [EMAIL_1]"]}}]},
         "redactions": ["emails", "phone_numbers"], "flags": ["pii:emails", "pii:phone_numbers"],
         "verdict": "redacted(2)", "chars": 34
       }
@@ -27,16 +27,17 @@
     {
       "name": "text blocks with an API key, every turn rewritten",
       "mode": "redact",
+      "actions": {"secret": "redact"},
       "body": {"messages": [
         {"role": "user", "content": "earlier: 4111111111111111"},
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": [{"type": "text", "text": "use sk-abcdefghijklmnopqrstu please"}]}]},
       "expect": {
         "body": {"messages": [
-          {"role": "user", "content": "earlier: [redacted-card]"},
+          {"role": "user", "content": "earlier: [CARD_1]"},
           {"role": "assistant", "content": "ok"},
-          {"role": "user", "content": [{"type": "text", "text": "use [redacted-token] please"}]}]},
-        "redactions": ["api_keys", "cards"], "flags": ["pii:api_keys"], "verdict": "redacted(2)", "chars": 35
+          {"role": "user", "content": [{"type": "text", "text": "use [SECRET_1] please"}]}]},
+        "redactions": ["cards", "openai_key"], "flags": ["secret:openai_key"], "verdict": "redacted(2)", "chars": 35
       }
     },
     {
@@ -52,20 +53,54 @@
       "expect": {"body": null, "redactions": [], "flags": ["pii:emails"], "verdict": "observe", "chars": 20}
     },
     {
-      "name": "block stops credential text and executables",
+      "name": "a real key is stopped by default, whatever the file name",
+      "mode": "redact",
+      "body": {"prompt": "use AKIAIOSFODNN7EXAMPLE and run setup.sh"},
+      "expect": {"action": "block", "blocked": ["aws_access_key"],
+                 "flags": ["secret:aws_access_key", "flag:executable_masquerade"],
+                 "verdict": "blocked", "chars": 41}
+    },
+    {
+      "name": "a file name and the word password are signals, never a stop",
       "mode": "block",
-      "body": {"prompt": "password: hunter2, then run setup.exe"},
-      "expect": {"blocked": ["executable_masquerade", "credential_block"],
-                 "flags": ["high:executable_masquerade", "high:credential_block", "pii:password_said"],
-                 "verdict": "blocked", "chars": 37}
+      "body": {"prompt": "why does deploy.sh fail? I forgot my password"},
+      "expect": {"action": "log", "body": null, "redactions": [],
+                 "flags": ["flag:executable_masquerade", "flag:tool_intent", "flag:password_said"],
+                 "verdict": "block", "chars": 45}
+    },
+    {
+      "name": "credential text warns; the proxy redacts it, the extension asks",
+      "mode": "redact",
+      "body": {"prompt": "the db password: hunter42x for staging"},
+      "expect": {"action": "warn", "warn_redacts": {"prompt": "the db [SECRET_1] for staging"},
+                 "flags": ["secret:credential_assign", "flag:password_said"],
+                 "verdict": "redacted(1)", "chars": 38}
+    },
+    {
+      "name": "the same value keeps its number, a new one gets the next",
+      "mode": "redact",
+      "body": {"prompt": "a@x.co then b@x.co then a@x.co again"},
+      "expect": {
+        "body": {"prompt": "[EMAIL_1] then [EMAIL_2] then [EMAIL_1] again"},
+        "redactions": ["emails"], "flags": ["pii:emails"], "verdict": "redacted(1)", "chars": 36
+      }
+    },
+    {
+      "name": "a card number must pass the Luhn check",
+      "mode": "redact",
+      "body": {"prompt": "order 4111 1111 1111 1112 and card 4111 1111 1111 1111"},
+      "expect": {
+        "body": {"prompt": "order 4111 1111 1111 1112 and card [CARD_1]"},
+        "redactions": ["cards"], "flags": ["pii:cards"], "verdict": "redacted(1)", "chars": 54
+      }
     },
     {
       "name": "block mode still redacts a message it lets through",
       "mode": "block",
       "body": {"prompt": "please deploy and mail ops@coriqo.io"},
       "expect": {
-        "body": {"prompt": "please deploy and mail [redacted-email]"},
-        "redactions": ["emails"], "flags": ["pii:emails", "agent:tool_intent"], "verdict": "redacted(1)", "chars": 36
+        "body": {"prompt": "please deploy and mail [EMAIL_1]"},
+        "redactions": ["emails"], "flags": ["pii:emails", "flag:tool_intent"], "verdict": "redacted(1)", "chars": 36
       }
     },
     {

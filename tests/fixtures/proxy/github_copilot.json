@@ -1,0 +1,19 @@
+{
+  "host": "api.githubcopilot.com",
+  "path": "/chat/completions",
+  "_note": "fixture from public API docs, not a live capture",
+  "body": {
+    "model": "gpt-4o",
+    "stream": true,
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant."
+      },
+      {
+        "role": "user",
+        "content": "Summarise this for me. Contact: jane.doe@example.com"
+      }
+    ]
+  }
+}

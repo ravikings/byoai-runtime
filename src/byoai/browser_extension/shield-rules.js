@@ -7,15 +7,77 @@
   'use strict'
   if (window.__shieldRules) return
   const rules = {
+    "secret": [
+      [
+        "anthropic_key",
+        "\\bsk-ant-[A-Za-z0-9_-]{20,}",
+        ""
+      ],
+      [
+        "openai_key",
+        "\\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}",
+        ""
+      ],
+      [
+        "aws_access_key",
+        "\\b(?:AKIA|ASIA)[0-9A-Z]{16}\\b",
+        ""
+      ],
+      [
+        "github_token",
+        "\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{60,}",
+        ""
+      ],
+      [
+        "slack_token",
+        "\\bxox[abprs]-[A-Za-z0-9-]{10,}",
+        ""
+      ],
+      [
+        "google_api_key",
+        "\\bAIza[0-9A-Za-z_-]{35}",
+        ""
+      ],
+      [
+        "stripe_key",
+        "\\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}",
+        ""
+      ],
+      [
+        "private_key_block",
+        "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:[\\s\\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)?",
+        ""
+      ],
+      [
+        "jwt",
+        "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}",
+        ""
+      ],
+      [
+        "conn_string",
+        "\\b(?:postgres(?:ql)?|mysql|mongodb(?:\\+srv)?|redis|amqp)://[^\\s:@/]*:[^\\s@/]+@",
+        ""
+      ],
+      [
+        "bearer",
+        "\\bBearer\\s+[A-Za-z0-9._-]{20,}",
+        ""
+      ],
+      [
+        "credential_assign",
+        "\\b(?:password|passwd|secret|api[_ ]?key)\\s*[:=]\\s*[\\\"']?(?=[^\\s\\\"']{0,128}\\d)[^\\s\\\"'<>{}\\[\\]()]{6,}",
+        "i"
+      ]
+    ],
     "pii": [
       [
         "emails",
-        "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}",
+        "(?<![a-z0-9._%+-])[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,255}\\.[a-z]{2,}",
         "i"
       ],
       [
         "cards",
-        "\\b4[0-9]{12}(?:[0-9]{3})?\\b|\\b(5[1-5][0-9]{14})\\b",
+        "\\b[2-6](?:[ -]?[0-9]){12,18}\\b",
         ""
       ],
       [
@@ -25,7 +87,7 @@
       ],
       [
         "phone_numbers",
-        "\\b(?:\\+?1[-. ]?)?\\(?\\d{3}\\)?[-. ]\\d{3}[-. ]\\d{4}\\b",
+        "\\b(?:\\+?1[-. ]?)?\\(?\\d{3}\\)?[-. ]\\d{3}[-. ]\\d{4}\\b|(?<![\\w+])\\+[0-9]{8,15}\\b",
         ""
       ],
       [
@@ -34,9 +96,21 @@
         ""
       ],
       [
-        "api_keys",
-        "\\bsk-[a-zA-Z0-9]{16,}\\b|\\bBearer\\s+[A-Za-z0-9._-]{20,}\\b",
+        "iban",
+        "\\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\\b",
         ""
+      ]
+    ],
+    "flag": [
+      [
+        "executable_masquerade",
+        "(?<![\\w.-])[\\w.-]{1,128}\\.(exe|scr|bat|cmd|dmg|msi|sh)\\b",
+        "i"
+      ],
+      [
+        "tool_intent",
+        "\\b(execute|execute_stream|tool_use|deploy|refund|wire ?transfer|send (the |my )?money|draft_email)\\b",
+        "i"
       ],
       [
         "password_said",
@@ -44,36 +118,48 @@
         "i"
       ]
     ],
-    "high": [
-      [
-        "executable_masquerade",
-        "\\b[\\w.-]+\\.(exe|scr|bat|cmd|dmg|msi|sh)\\b",
-        "i"
-      ],
-      [
-        "credential_block",
-        "\\b(password|secret|api[_ ]?key)\\s*[:=]",
-        "i"
-      ]
-    ],
-    "agent": [
-      [
-        "tool_intent",
-        "\\b(execute|execute_stream|tool_use|deploy|refund|wire ?transfer|send (the |my )?money|draft_email)\\b",
-        "i"
-      ]
-    ],
-    "redact": {
-      "emails": "[redacted-email]",
-      "cards": "[redacted-card]",
-      "wallets": "[redacted-wallet]",
-      "phone_numbers": "[redacted-number]",
-      "ssn_like": "[redacted-ssn]",
-      "api_keys": "[redacted-token]"
+    "validators": {
+      "cards": "luhn",
+      "iban": "iban"
+    },
+    "placeholder": {
+      "emails": "EMAIL",
+      "cards": "CARD",
+      "wallets": "WALLET",
+      "phone_numbers": "PHONE",
+      "ssn_like": "SSN",
+      "iban": "IBAN",
+      "anthropic_key": "SECRET",
+      "openai_key": "SECRET",
+      "aws_access_key": "SECRET",
+      "github_token": "SECRET",
+      "slack_token": "SECRET",
+      "google_api_key": "SECRET",
+      "stripe_key": "SECRET",
+      "private_key_block": "SECRET",
+      "jwt": "SECRET",
+      "conn_string": "SECRET",
+      "bearer": "SECRET",
+      "credential_assign": "SECRET"
+    },
+    "rule_actions": {
+      "credential_assign": "warn"
+    },
+    "default_actions": {
+      "secret": "block",
+      "pii": "redact",
+      "flag": "log"
     },
     "covered_apps": [
       "claude",
-      "chatgpt"
+      "chatgpt",
+      "github_copilot",
+      "mistral",
+      "deepseek",
+      "groq",
+      "openrouter",
+      "together",
+      "gemini_api"
     ]
   }
   Object.defineProperty(window, '__shieldRules', { value: Object.freeze(rules) })

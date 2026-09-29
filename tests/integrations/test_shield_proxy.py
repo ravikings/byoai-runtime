@@ -66,7 +66,7 @@ def test_default_redacts_before_send_and_logs_no_text(proxy):
     flow = _chat({"prompt": SECRET, "timezone": "America/Chicago"})
     proxy.request(flow)
     sent = json.loads(flow.request.get_text())
-    assert sent["prompt"] == "email [redacted-email] card [redacted-card]"
+    assert sent["prompt"] == "email [EMAIL_1] card [CARD_1]"
     (row,) = _rows(proxy)
     assert row["kind"] == "desktop.chat.request"
     assert row["verdict"] == "redacted(2)"
@@ -85,12 +85,12 @@ def test_observe_sends_unchanged_but_still_logs_no_text(proxy):
 
 def test_block_stops_credentials_locally(proxy):
     proxy.policy_path.write_text(json.dumps({"mode": "block"}))
-    flow = _chat({"prompt": "password: hunter2"})
+    flow = _chat({"prompt": "use AKIAIOSFODNN7EXAMPLE now"})
     proxy.request(flow)
     assert flow.response is not None and flow.response.status_code == 403
     (row,) = _rows(proxy)
     assert row["kind"] == "desktop.verdict.denied"
-    assert "hunter2" not in json.dumps(row)
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(row)
 
 
 def test_app_turned_off_is_pure_pass_through(proxy):

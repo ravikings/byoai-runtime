@@ -1,0 +1,19 @@
+{
+  "host": "api.together.xyz",
+  "path": "/v1/chat/completions",
+  "_note": "fixture from public API docs, not a live capture",
+  "body": {
+    "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "stream": true,
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant."
+      },
+      {
+        "role": "user",
+        "content": "Summarise this for me. Contact: jane.doe@example.com"
+      }
+    ]
+  }
+}

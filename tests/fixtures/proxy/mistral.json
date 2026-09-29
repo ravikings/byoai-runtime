@@ -1,0 +1,19 @@
+{
+  "host": "api.mistral.ai",
+  "path": "/v1/chat/completions",
+  "_note": "fixture from public API docs, not a live capture",
+  "body": {
+    "model": "mistral-large-latest",
+    "stream": true,
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant."
+      },
+      {
+        "role": "user",
+        "content": "Summarise this for me. Contact: jane.doe@example.com"
+      }
+    ]
+  }
+}

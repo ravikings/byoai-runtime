@@ -1,0 +1,19 @@
+{
+  "host": "openrouter.ai",
+  "path": "/api/v1/chat/completions",
+  "_note": "fixture from public API docs, not a live capture",
+  "body": {
+    "model": "anthropic/claude-sonnet-4",
+    "stream": true,
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant."
+      },
+      {
+        "role": "user",
+        "content": "Summarise this for me. Contact: jane.doe@example.com"
+      }
+    ]
+  }
+}

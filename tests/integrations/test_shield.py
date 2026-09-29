@@ -31,11 +31,14 @@ def test_pii_rules_and_redaction():
     assert {"emails", "cards", "tool_intent"} <= rules
     out = redact(text)
     assert "j.rivers@" not in out and "4242424242424242" not in out
-    assert "[redacted-email]" in out and "[redacted-card]" in out
+    assert "[EMAIL_1]" in out and "[CARD_1]" in out
 
 
-def test_executable_masquerade_is_high_tier():
-    assert any(tier == "high" for tier, _, _ in flags_for("please open invoice_2026.pdf.exe"))
+def test_executable_masquerade_is_a_signal_that_never_stops_a_send():
+    from byoai.integrations.shield import evaluate
+    text = "please open invoice_2026.pdf.exe"
+    assert any(tier == "flag" for tier, _, _ in flags_for(text))
+    assert evaluate(text, default_policy())[0] == "log"
 
 
 def test_reply_pii_echo_flagged():
@@ -178,7 +181,7 @@ def test_inspect_text_keeps_no_text_by_default(key_path):
 def test_inspect_text_preview_is_redacted_when_opted_in(key_path):
     facts = inspect_text(SECRET, {**default_policy(), "keep_text": True},
                          key_path=key_path)
-    assert "[redacted-email]" in facts["preview"]
+    assert "[EMAIL_1]" in facts["preview"]
     assert "j.rivers" not in facts["preview"]
 
 
@@ -195,7 +198,7 @@ def test_redact_json_body_only_touches_message_fields():
     out, rules = redact_json_body(json.dumps(body))
     parsed = json.loads(out)
     assert parsed["conversation_uuid"] == "555-123-4567-ab"
-    assert parsed["prompt"] == "call me on [redacted-number] or mail [redacted-email]"
+    assert parsed["prompt"] == "call me on [PHONE_1] or mail [EMAIL_1]"
     assert rules == ["emails", "phone_numbers"]
 
     api = {"model": "claude-x", "messages": [
@@ -363,11 +366,11 @@ def test_chatgpt_and_openai_bodies_are_redacted():
     web = {"action": "next", "messages": [{"id": "m1", "author": {"role": "user"},
             "content": {"content_type": "text", "parts": ["mail a@b.co"]}}]}
     out, rules = redact_json_body(json.dumps(web))
-    assert json.loads(out)["messages"][0]["content"]["parts"] == ["mail [redacted-email]"]
+    assert json.loads(out)["messages"][0]["content"]["parts"] == ["mail [EMAIL_1]"]
     assert rules == ["emails"]
     responses = {"model": "gpt-x", "input": "ssn 123-45-6789"}
     out, _ = redact_json_body(json.dumps(responses))
-    assert json.loads(out)["input"] == "ssn [redacted-ssn]"
+    assert json.loads(out)["input"] == "ssn [SSN_1]"
 
 
 # ------------------------------------------------------ one UI, served here
@@ -1224,10 +1227,19 @@ def test_the_shared_redaction_cases_hold_for_the_python_rules():
     """The extension's page capture is checked against the same file
     (web/tests/extension/redaction.test.mjs); both passing is what keeps the
     desktop proxy and the browser from disagreeing about a personal detail."""
-    from byoai.integrations.shield import HIGH_RULES, flags_for, message_text, redact_json_body
+    from byoai.integrations.shield import (
+        action_for,
+        evaluate,
+        flags_for,
+        message_text,
+        redact_json_body,
+    )
     for case in json.loads(_CASES.read_text())["cases"]:
         raw = case.get("raw") or json.dumps(case["body"])
         want, mode = case["expect"], case["mode"]
+        policy = {**default_policy(), "mode": mode}
+        if case.get("actions"):
+            policy["actions"] = {**policy["actions"], **case["actions"]}
         try:
             body = json.loads(raw)
         except ValueError:
@@ -1236,17 +1248,23 @@ def test_the_shared_redaction_cases_hold_for_the_python_rules():
         assert (len(text) if text else len(raw)) == want["chars"], case["name"]
         assert [f"{t}:{r}" for t, r, _ in flags_for(text)
                 if not r.startswith("reply_")] == want["flags"], case["name"]
-        high = [r for r, p in HIGH_RULES if p.search(text)]
-        if mode == "block" and high:
-            assert high == want["blocked"] and want["verdict"] == "blocked", case["name"]
+        action, rules = evaluate(text, policy)
+        if "action" in want:
+            assert action == want["action"], case["name"]
+        if action == "block":
+            assert [r for r in rules if action_for(r, policy) == "block"] == want["blocked"], case["name"]
+            assert want["verdict"] == "blocked", case["name"]
             continue
         if mode == "observe":
             assert want["body"] is None and want["verdict"] == "observe", case["name"]
             continue
-        out, rules = redact_json_body(raw)
-        assert rules == want["redactions"], case["name"]
-        assert (json.loads(out) if rules else None) == want["body"], case["name"]
-        assert want["verdict"] == (f"redacted({len(rules)})" if rules else mode), case["name"]
+        out, hit = redact_json_body(raw, policy)
+        if action == "warn":  # the proxy has no prompt, so it redacts
+            assert json.loads(out) == {**(body or {}), **want["warn_redacts"]}, case["name"]
+            continue
+        assert hit == want["redactions"], case["name"]
+        assert (json.loads(out) if hit else None) == want["body"], case["name"]
+        assert want["verdict"] == (f"redacted({len(hit)})" if hit else mode), case["name"]
 
 
 def test_the_extension_rules_file_is_generated_from_the_python_rules():
@@ -1263,11 +1281,12 @@ def test_the_extension_rules_file_is_generated_from_the_python_rules():
 def test_browser_rows_keep_rule_names_but_nothing_else():
     row = clean_browser_row({
         "kind": "browser.chat.request", "app": "chatgpt", "chars": 47,
-        "flags": ["pii:emails", "pii:emails", "pii:abdul@coriqo.io", 7, "high:credential_block"],
-        "redactions": ["emails", "abdul@coriqo.io", "password_said"],
+        "flags": ["pii:emails", "pii:emails", "pii:abdul@coriqo.io", 7, "secret:credential_assign",
+                  "flag:tool_intent", "high:credential_block"],
+        "redactions": ["emails", "abdul@coriqo.io", "password_said", "openai_key"],
         "verdict": "redacted(1)"})
-    assert row["flags"] == ["pii:emails", "high:credential_block"]
-    assert row["redactions"] == ["emails"]      # password_said is a flag, never replaced
+    assert row["flags"] == ["pii:emails", "secret:credential_assign", "flag:tool_intent"]
+    assert row["redactions"] == ["emails", "openai_key"]  # password_said is a flag, never replaced
     assert row["verdict"] == "redacted(1)"
     assert "verdict" not in clean_browser_row({"kind": "browser.chat.request",
                                                "verdict": "sent abdul@coriqo.io"})
@@ -1281,7 +1300,7 @@ def test_a_redacted_or_stopped_browser_send_shows_what_shield_did(tmp_path):
         {"kind": "browser.chat.request", "app": "claude", "chars": 47, "row_id": "r-redacted",
          "flags": ["pii:emails"], "redactions": ["emails"], "verdict": "redacted(1)"},
         {"kind": "browser.chat.request", "app": "claude", "chars": 37, "row_id": "r-blocked",
-         "flags": ["high:credential_block"], "verdict": "blocked"},
+         "flags": ["secret:aws_access_key"], "verdict": "blocked"},
         {"kind": "browser.chat.request", "app": "claude", "chars": 5, "row_id": "r-old-extension"},
     ]}, ext)
     assert code == 200

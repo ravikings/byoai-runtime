@@ -15,11 +15,14 @@ import re
 from pathlib import Path
 
 from byoai.integrations.shield import (
-    AGENT_RULES,
     COVERED_APPS,
-    HIGH_RULES,
+    DEFAULT_ACTIONS,
+    FLAG_RULES,
     PII_RULES,
-    RULE_REDACT,
+    PLACEHOLDER,
+    RULE_ACTIONS,
+    SECRET_RULES,
+    VALIDATOR_NAMES,
 )
 
 TARGET = (Path(__file__).resolve().parent.parent / "src" / "byoai"
@@ -44,10 +47,15 @@ def _js_rule(name: str, pattern: re.Pattern) -> list[str]:
 
 def render() -> str:
     rules = {
+        "secret": [_js_rule(n, p) for n, p in SECRET_RULES],
         "pii": [_js_rule(n, p) for n, p in PII_RULES],
-        "high": [_js_rule(n, p) for n, p in HIGH_RULES],
-        "agent": [_js_rule(n, p) for n, p in AGENT_RULES],
-        "redact": RULE_REDACT,
+        "flag": [_js_rule(n, p) for n, p in FLAG_RULES],
+        # A match only counts if its named validator passes.
+        "validators": VALIDATOR_NAMES,
+        # Redacted as [EMAIL_1], [SECRET_2], ... (numbered per distinct value).
+        "placeholder": PLACEHOLDER,
+        "rule_actions": RULE_ACTIONS,
+        "default_actions": DEFAULT_ACTIONS,
         "covered_apps": list(COVERED_APPS),
     }
     body = json.dumps(rules, indent=2)

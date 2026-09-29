@@ -1,0 +1,20 @@
+{
+  "host": "generativelanguage.googleapis.com",
+  "path": "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+  "_note": "fixture from public API docs, not a live capture",
+  "body": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Summarise this for me. Contact: jane.doe@example.com"
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "temperature": 0.4
+    }
+  }
+}

@@ -1,0 +1,119 @@
+here is my key sk{!}-ant-api03-WL7s3EU9ibN2645qhx_3qxGO-sbq46VLz34yfVc1GFQ3__zb can you check my billing setup
+here is my key sk{!}-ant-api03-xurxlp4jhvGRDzuqM0Mtcm2sM_nhthIEp9HH1GqPr_j1klhd can you check my billing setup
+here is my key sk{!}-ant-api03-FPj2iSK9s2K2FAMtPuca0UvBwLFwUOuitFIyeiCg6jt9rno9 can you check my billing setup
+here is my key sk{!}-ant-api03-Btn9MDOTU_dem2ajJxjf1fDgtF8577Dy9Qt2uqRqkhKtH6HT can you check my billing setup
+here is my key sk{!}-ant-api03-1bD3bZmYQTKFYJcJCe0PUj0a-yNL6pbG_xNv96V7hYYwcI_r can you check my billing setup
+here is my key sk{!}-ant-api03-aQWTPdjdg1BTsViqiwQOdxyttagBz-Z5iTv2q9GkFozK5e_b can you check my billing setup
+export OPENAI_API_KEY=sk{!}-proj-32X0s3jXlncvkaMxMYbDRwKDCtDwfNQf4cW_tSo4SmOe225-
+export OPENAI_API_KEY=sk{!}-proj-YrorBvpY5JK4TT92tIWxxHUUNvnHMKNs6BeXO0rqa2AvVx-v
+export OPENAI_API_KEY=sk{!}-proj-u_Memg97C7AjCgPMd7XkFOk-3B-v-RqVaj7EWsUvNzpHb4nl
+export OPENAI_API_KEY=sk{!}-proj-clQT7MpKRCjX2LBAlxvUcsKm0xH5t__Ys5okV-rXqTiVD_ku
+export OPENAI_API_KEY=sk{!}-proj-coPAVkKC4rF08pPEam8faP4BC1AVDL-92suUMFPF65jEoXnH
+export OPENAI_API_KEY=sk{!}-proj-RWU3HWiXEi4M7eCrsigF0a4fHcnrqBhNWek5WGIFOCwEt9r_
+client = OpenAI(api_key='sk{!}-FXCwqaGrqdyWS1ZOXaYVD4IvjNUoA2PjMZnrLgY4OecIk20P')
+client = OpenAI(api_key='sk{!}-DlLgFKNZtB1k0TRirprLKzw2WZk2t0dgYE79E2Lkp5pd1j2K')
+client = OpenAI(api_key='sk{!}-vVcrTiCIGbv4cnIygufKH2WOsngp0YM9iotni0izalSaBxww')
+client = OpenAI(api_key='sk{!}-TiDi1zw0vpCs0wFDampFpMBwBIQZrKqdQ6wU6gANixJQMiGf')
+aws configure set aws_access_key_id AKI{!}AZN85OT2YZ67KSFBF
+aws configure set aws_access_key_id AKI{!}AV6C1NZV3D4TYBYLK
+aws configure set aws_access_key_id AKI{!}AGRQ2VZDAD3H6XVIL
+aws configure set aws_access_key_id AKI{!}ALIWYCZI0UBBM30X3
+aws configure set aws_access_key_id AKI{!}A04O1M5G1O8ROJW3H
+temporary creds AS{!}IAR9C5UFEJ8L2K3CEJ expire soon
+git clone https://gh{!}p_ZKrMJSy8IPc60hkngLPjoztulDnn2i3uncyE@github.com/acme/repo.git
+git clone https://gh{!}o_XK6HJzAdcsSws0VwGho6gol7em525xkZ8liT@github.com/acme/repo.git
+git clone https://gh{!}u_dY7DUweta8Z7AgggknNQUzNUCbbc5LSpjerz@github.com/acme/repo.git
+git clone https://gh{!}s_6LD62GEFokRRSaKe9tCTCRBHejEvzEFw4slN@github.com/acme/repo.git
+git clone https://gh{!}r_mhibr4G7aMq6Hd4qN9Prz3O0oDI7Ny3Pv7DP@github.com/acme/repo.git
+token github{!}_pat_OL0D9MmR6cPSh9WHWOfiKu_Yzu6rXz2c8hwrnUkIAqbwyu50Msk2nvB3mGcSkWQZrv2DOSPs2pUCzFyh05
+token github{!}_pat_A2Cat8dp8WDjNHm1s9kR4L_4ypCfNE8utQoyl37XFbMomitY5fivvRi81WxKtycUG22znLCPf9aMDiZuLf
+SLACK_BOT_TOKEN=xoxb{!}-67823968272-772340538033-aNDZf2EPgBE8uxcknkX6Xkyx
+SLACK_BOT_TOKEN=xoxb{!}-82368060626-330333752340-NG4UvX0VWYzARkR3vV34wI4U
+SLACK_BOT_TOKEN=xoxb{!}-39842098711-728093156751-Ip2k6tptkhwI9vLFoik799WS
+SLACK_BOT_TOKEN=xoxb{!}-83138258581-496438619045-ZBSHgxF00yeOOap0EKoRpHBD
+webhook auth xoxp{!}-87732283900-73190867952-ix6ercUwTNEIZT1qMwmJ
+const key = "AI{!}zar52VeAtBSKT-jfk4AqdDZPW1jggcMQT0JSQ"
+const key = "AI{!}zaVBtqtx-EwcW0YAZLI2tUdj9uN4aXsdPKq2T"
+const key = "AI{!}zaqBKT4NUFkhctvhacwL7ennC5v5AYg3L-3bN"
+const key = "AI{!}zaoKeAIt7aFU5oXS5kBwoRAn55prXsNWfZPPo"
+stripe.api_key = 'sk{!}_live_BINL0oh6nGqNko049vKGgllE'
+stripe.api_key = 'sk{!}_live_uEHp3QyhKSckpoGCjErkVZPj'
+stripe.api_key = 'sk{!}_live_RT6W3W7A8YZ99XUJ0Yvisjj3'
+STRIPE_SECRET=sk{!}_test_8WerO4ohpDZhGwy5meVMkff4BJxI
+STRIPE_SECRET=sk{!}_test_lZMsakhjweDYR4Kzpvkgmf5fxaYv
+restricted rk{!}_live_qMIsunb65qKNMyhKHZOAC1Az is what support gave me
+-----BEGIN RSA PRIV{!}ATE KEY----- 2PjeB1huXpW2daG1REMI in the config, is that ok?
+-----BEGIN PRIV{!}ATE KEY----- LfBBna9njJrIfkQ9bRuk in the config, is that ok?
+-----BEGIN EC PRIV{!}ATE KEY----- v92zOWTcO4DvxHo9e0Hj in the config, is that ok?
+-----BEGIN OPENSSH PRIV{!}ATE KEY----- g6UC3mXhneiEfGAgEEIJ in the config, is that ok?
+Authorization: Bearer eyJ075IhCQhvh3uTkiqimWn.eyJNom-xE3IUReTcrKcFF_xhuzgH1YOohsJ8i7M4m9Y.I8JjQaR8tj97Vq7XegtXMMZHBiUUeiJ7nFxazkyS0A2
+Authorization: Bearer eyJ_T_JUfKq5r5Kb1g7FubG.eyJimzWG-hA_l8uj05rQ6AV4mlsyLB1PDG1rXPfgw5a.cUFZW2PrQETGVEcfCb_F1a_o1z0AGA8P7CszIooAR_C
+Authorization: Bearer eyJ9_F9upwOVZCEyBYWg63a.eyJlYFHnKkCDRnNiW2O-bUvI5_hlzbIBNIM6vYprer2.f4TIZL_rR_mgPE49wJ4x_Gz4Zw3PszlMyIB6yl1m8wP
+Authorization: Bearer eyJ4CoYVnr5y4sST4zvPnHU.eyJmBHXFFly9_bZeJID3766oc2VA8pYK_WOyMQWdD-M.52jDFR_EOKmh-amyvgzPiuAMpyLUa1J6C6JwV3WQ04B
+jwt eyJCY4ip5kBbZSHAoL3U5YEbhq1aYRscD.eyJCY6GDnprVbmXgCXJMt_z4ARohVh9Is.VQOxs9Ly1fst0CQQiFU69nhO31GrH3 decode this
+jwt eyJiuY4on62x0uso3uTztsDIdCSpfxyZE.eyJKCtsx9NGOz8DTh20Y7p4oqIX3P5nrD.-RbvYvQOD4UANwo2fC0zO7WVIUC2jB decode this
+DATABASE_URL=postgres://app:ix8FEBUT2xyCSA@db.internal.example.com:5432/prod
+mongodb+srv://admin:BrXjd2I4FjHK@cluster0.abcde.mongodb.net/shop
+mysql://root:Nld9jSfmlz@10.0.0.5/orders
+REDIS_URL=redis://:S8WMObkG3jr8hB4c@cache.example.com:6379
+amqp://guest:hWUDRQVh@rabbit.local:5672/
+postgresql://svc_reports:woZZdsZg3h5Bnj4P40@warehouse.example.net/analytics
+curl -H 'Authorization: Bearer 6S2gGsyfmeooaEfL83.9RKoIoKTp_TmzmiW1HP0A' https://api.example.com/v1/me
+curl -H 'Authorization: Bearer ERAbnkf1n9McF4bqgp5ydFQqKXDb8W9pT3HTD8ah' https://api.example.com/v1/me
+curl -H 'Authorization: Bearer O8l1FPzd5kzZuw1HOhGx77LvvrvDw57.tMr4d8qS' https://api.example.com/v1/me
+curl -H 'Authorization: Bearer .WBdUy-cCThg6wswdvzD0E5E-iiMObcg9rl0XD3I' https://api.example.com/v1/me
+db password: Tr0ub4dor3xyz
+api_key = 9f8e7d6c5b4a3210
+secret=abcd1234efgh
+API KEY: 7731aabbccdd
+passwd: Winter2024!x9
+password = 'Sup3rS3cret'
+my email is osbuds.slpxk@example.com, write back there
+my email is ehufnx.slgnq@example.com, write back there
+my email is kvmmuv.nnfth@example.com, write back there
+my email is wdhmpk.perxn@example.com, write back there
+my email is jpmbsa.iiogh@example.com, write back there
+please cc pitntjb@corp-wyzz.co.uk on the thread
+please cc tttadqm@corp-rytp.co.uk on the thread
+please cc tmzxmar@corp-xnmj.co.uk on the thread
+card number 4411674315681715 exp 08/28
+card number 4825621879422325 exp 08/28
+card number 4288698587570 exp 08/28
+card number 5103035059264466 exp 08/28
+card number 5578571801419517 exp 08/28
+card number 378192179153100 exp 08/28
+card number 6011951125186674 exp 08/28
+card number 3540400929715574 exp 08/28
+card number 2221106067305809 exp 08/28
+card number 4215804504771463592 exp 08/28
+charge 4344 8831 7380 0281 for the annual plan
+charge 4652 2754 1534 9761 for the annual plan
+charge 4959 7433 3323 9273 for the annual plan
+visa on file: 5861-0970-6081-7007
+visa on file: 5764-2214-9285-5157
+visa on file: 5474-4569-5336-5053
+call me on (996) 926-8121 after 5
+call me on (400) 740-5519 after 5
+call me on (337) 571-5877 after 5
+call me on (215) 209-2571 after 5
+reach me at 302-512-2714
+reach me at 360-643-8145
+reach me at 539-629-3711
+WhatsApp +91509165403 anytime
+WhatsApp +44419572901 anytime
+WhatsApp +234178046583 anytime
+ssn 758-49-1531 for the form
+ssn 664-88-4220 for the form
+ssn 637-40-2553 for the form
+send funds to 0x9e2cb9d42b3d400eecbbec8a1c996a71b1c0cdd0
+send funds to 0x09daf98f0c8cc2881c92f830c479cbaa2f29b3cf
+send funds to 0x220126478e4d4587103efd0f5937739cc352da25
+btc bc1qziobf01jg88q5og0evcljq7yhbmz5wy8oobapy
+wire to IBAN GB29NWBK60161331926819 please
+wire to IBAN DE12500105170648489890 please
+wire to IBAN FR7630006000011234567890189 please
+wire to IBAN NL91ABNA0417164300 please
+IBAN: ES91 2100 0418 4502 0005 1332
+IBAN: IT60 X054 2811 1010 0000 0123 456
+wire to IBAN BE68539007547034 please
+wire to IBAN CH670483501234567890 please

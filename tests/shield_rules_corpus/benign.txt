@@ -1,0 +1,213 @@
+How do I reset my password on my Mac?
+I forgot my password for the Wi-Fi router, what are my options?
+Explain the difference between a password manager and a passkey.
+Why does deploy.sh fail with exit code 127 on the CI runner?
+Please review this setup.sh script for portability issues
+Can you make install.sh idempotent?
+What does the secret sauce in this recipe actually do?
+Rotate the API key next quarter, add it to the runbook
+The user requested a password reset email; how should the template read?
+Write a unit test for the password validation function
+Is it safe to store an api key in an environment variable?
+how does OAuth token refresh work in general
+Our deploy pipeline uses blue green, draft a checklist
+Draft an email to the team about the refund policy changes
+What is the best way to execute a long running task in Celery?
+Summarise the tool_use block format in the Messages API
+Traceback (most recent call last):
+  File "app/main.py", line 42, in handler
+    raise ValueError('bad input')
+ValueError: invalid literal for int() with base 10: 'abc'
+KeyError: 'user_id' in serializers.py line 118
+TypeError: Cannot read properties of undefined (reading 'map') at Object.render (App.jsx:57:19)
+java.lang.NullPointerException at com.acme.orders.OrderService.place(OrderService.java:214)
+Error: connect ECONNREFUSED 127.0.0.1:5432
+panic: runtime error: index out of range [3] with length 3
+FAILED tests/test_orders.py::test_refund_total - AssertionError: assert 41 == 42
+npm ERR! code ERESOLVE while resolving react@18.2.0
+error[E0382]: borrow of moved value: `config`
+Segmentation fault (core dumped) after loading libfoo.so.2
+HTTP 429 Too Many Requests, retry-after: 30
+Why is my Postgres query doing a seq scan on orders?
+SELECT id, total FROM orders WHERE created_at > now() - interval '7 days';
+docker run -p 8080:80 nginx:1.25-alpine
+kubectl rollout status deployment/web -n staging
+git rebase -i HEAD~5 dropped my commit, how do I recover it?
+Convert this regex ^\d{3}-\d{4}$ to a lookahead version
+How many days between 2026-03-14 and 2026-09-29?
+Translate 'good morning' into Spanish and French
+Give me three name ideas for a coffee shop
+What's a good 3 day itinerary for Lisbon?
+Summarise the meeting notes below into five bullet points
+Rewrite this paragraph to sound friendlier
+Explain Big-O notation with a simple example
+What is the capital of Australia?
+Help me write a cover letter for a product manager role
+Proofread: We was going to launch on friday but the team weren't ready.
+Compare Redis and Memcached for session storage
+What does HTTP status 418 mean?
+Write a haiku about Monday mornings
+Explain how a Merkle tree proves inclusion
+Suggest a weekly meal prep plan under 2000 calories
+What are the tax implications of selling stock held for 8 months?
+Generate a SQL migration adding a nullable column to invoices
+How do I center a div with flexbox?
+Write a bash one liner to count lines in all .py files
+Explain the CAP theorem in plain English
+Why does my React component re-render on every keystroke?
+What is the difference between TCP and UDP?
+Write a polite reminder about the unpaid invoice
+Summarise the attached quarterly report in one paragraph
+Suggest interview questions for a senior backend engineer
+Draft release notes for version 2.4.1
+How do I structure a monorepo with pnpm workspaces?
+What is dependency injection?
+Why is the sky blue?
+List pros and cons of remote work
+Write a limerick about a cat who codes
+How do I cook risotto without it going gluey?
+Explain what a JWT is and when not to use one
+What does the Authorization header do in HTTP?
+Describe how bearer authentication works at a high level
+How should I name my feature branches?
+Create a README outline for an open source CLI tool
+How do I read a CSV with pandas and skip the first two rows?
+What is the difference between let and const in JavaScript?
+Write a python function that validates an email format without regex
+Give me a study plan for the AWS Solutions Architect exam
+Explain IAM roles vs IAM users in AWS
+What is an S3 bucket policy?
+How do I rotate credentials safely in a team of ten?
+Refund request template for a delayed shipment
+Wire transfer versus ACH: when does each make sense?
+Customer asked to send the money back, how do I phrase the reply?
+Draft an agenda for tomorrow's 30 minute sync
+Is 'affect' or 'effect' right here?
+Name three risks of skipping code review
+trace id 5fa35d52-dac5-4084-abe8-86d8326273fa shows a slow span in checkout
+trace id fbf9dbfd-3687-3692-3632-bbc245ee7f01 shows a slow span in checkout
+trace id 5f4263fe-1349-d65a-434a-2ed84a634784 shows a slow span in checkout
+trace id 5cbb8100-d887-edb3-842c-07edd3cd439f shows a slow span in checkout
+trace id 2c039889-b335-ce29-a97b-c8b6933e9115 shows a slow span in checkout
+trace id 91c56861-d5cc-7807-84c1-6703892bbc9f shows a slow span in checkout
+trace id 4d75d29b-7f6f-a66d-7e7f-07dbcafe4a53 shows a slow span in checkout
+trace id 5adc5deb-ce23-5908-195c-e110c2996741 shows a slow span in checkout
+trace id 55bcde6b-ac90-153a-ce13-e18a2a7fb63e shows a slow span in checkout
+trace id 48518479-dcfb-89b0-8acd-c7f37038c41a shows a slow span in checkout
+trace id 014980c8-c678-9dbf-15cb-89141bd59bbc shows a slow span in checkout
+trace id 0bc86edb-2dd0-8276-cfbf-11efecb41376 shows a slow span in checkout
+trace id 0f9b53f4-5071-fd77-aafa-f79c702fedf0 shows a slow span in checkout
+trace id 96a656c7-3fc1-f6d6-1835-47c1535b9a56 shows a slow span in checkout
+trace id 0d697d04-6f48-db3b-8396-64c3b973a4c5 shows a slow span in checkout
+trace id 81c4290e-38e2-0024-3a4b-7ac63fe3d8f5 shows a slow span in checkout
+trace id 674c5563-d1c4-ea0b-9542-1b634620d0aa shows a slow span in checkout
+trace id 126bcd0e-3820-64ac-fb77-9e806b9f49e7 shows a slow span in checkout
+trace id d58df881-7af2-230f-0f99-d6fea2347e8c shows a slow span in checkout
+trace id c7173dda-bc30-d4b4-20d7-d10244db0919 shows a slow span in checkout
+git bisect says the regression is in commit b6589fc6ab0dc82cf12099d1c2d40ab994e8410c (short b6589fc)
+git bisect says the regression is in commit 356a192b7913b04c54574d18c28d46e6395428ab (short 356a192)
+git bisect says the regression is in commit da4b9237bacccdf19c0760cab7aec4a8359010b0 (short da4b923)
+git bisect says the regression is in commit 77de68daecd823babbb58edb1c8e14d7106e83bb (short 77de68d)
+git bisect says the regression is in commit 1b6453892473a467d07372d45eb05abc2031647a (short 1b64538)
+git bisect says the regression is in commit ac3478d69a3c81fa62e60f5c3696165a4e5e6ac4 (short ac3478d)
+git bisect says the regression is in commit c1dfd96eea8cc2b62785275bca38ac261256e278 (short c1dfd96)
+git bisect says the regression is in commit 902ba3cda1883801594b6e1b452790cc53948fda (short 902ba3c)
+git bisect says the regression is in commit fe5dbbcea5ce7e2988b8c69bcfdfde8904aabc1f (short fe5dbbc)
+git bisect says the regression is in commit 0ade7c2cf97f75d009975f4d720d1fa6c19f4897 (short 0ade7c2)
+git bisect says the regression is in commit b1d5781111d84f7b3fe45a0852e59758cd7a87e5 (short b1d5781)
+git bisect says the regression is in commit 17ba0791499db908433b80f37c5fbc89b870084b (short 17ba079)
+git bisect says the regression is in commit 7b52009b64fd0a2a49e6d8a939753077792b0554 (short 7b52009)
+git bisect says the regression is in commit bd307a3ec329e10a2cff8fb87480823da114f8f4 (short bd307a3)
+git bisect says the regression is in commit fa35e192121eabf3dabf9f5ea6abdbcbc107ac3b (short fa35e19)
+[2026-09-14T23:48:46.241Z] INFO worker-2 processed batch 1962
+[2026-01-23T22:36:23.185Z] INFO worker-9 processed batch 1511
+[2026-01-19T22:41:12.179Z] INFO worker-4 processed batch 4239
+[2026-01-13T17:40:45.674Z] INFO worker-6 processed batch 5319
+[2026-04-21T21:21:55.325Z] INFO worker-9 processed batch 1784
+[2026-01-20T16:21:57.499Z] INFO worker-1 processed batch 8311
+[2026-06-13T13:29:39.148Z] INFO worker-1 processed batch 4471
+[2026-05-14T20:22:53.592Z] INFO worker-2 processed batch 6252
+[2026-03-27T11:10:35.323Z] INFO worker-1 processed batch 8202
+[2026-02-10T11:32:50.916Z] INFO worker-8 processed batch 1240
+[2026-03-23T21:19:13.750Z] INFO worker-1 processed batch 4284
+[2026-06-14T14:23:46.450Z] INFO worker-4 processed batch 6837
+Order #2499953 shipped on 2026-09-13, tracking pending
+Order #8537203 shipped on 2026-06-15, tracking pending
+Order #4536333 shipped on 2026-03-10, tracking pending
+Order #4183281 shipped on 2026-07-15, tracking pending
+Order #3676830 shipped on 2026-03-19, tracking pending
+Order #2408092 shipped on 2026-02-13, tracking pending
+Order #7520625 shipped on 2026-01-19, tracking pending
+Order #6332527 shipped on 2026-02-14, tracking pending
+Order #7874242 shipped on 2026-06-17, tracking pending
+Order #9036061 shipped on 2026-09-13, tracking pending
+Invoice INV-2026-7704 for 7168.49 USD is overdue by 30 days
+Invoice INV-2026-7638 for 5896.30 USD is overdue by 5 days
+Invoice INV-2026-6211 for 3166.73 USD is overdue by 24 days
+Invoice INV-2026-6512 for 6396.57 USD is overdue by 14 days
+Invoice INV-2026-5434 for 1728.48 USD is overdue by 3 days
+Invoice INV-2026-6975 for 4086.71 USD is overdue by 38 days
+Invoice INV-2026-7863 for 9326.17 USD is overdue by 56 days
+Invoice INV-2026-3277 for 7345.56 USD is overdue by 27 days
+unix time 1739275119 vs ms 1780504402654
+unix time 1768755896 vs ms 1724427945521
+unix time 1705946822 vs ms 1787857758993
+unix time 1715165740 vs ms 1734491763898
+unix time 1722861330 vs ms 1785905712645
+unix time 1768026565 vs ms 1710759296529
+sha256 of the build artifact: 5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9
+sha256 of the build artifact: 6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
+sha256 of the build artifact: d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35
+sha256 of the build artifact: 4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce
+sha256 of the build artifact: 4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a
+sha256 of the build artifact: ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d
+Docker image digest sha256:0ad52e338662c923b15fd45a73c6e973 pulled OK
+Docker image digest sha256:8b53639f152c8fc6ef30802fde462ba0 pulled OK
+Docker image digest sha256:e788103ee15318fcd2af9b73b4ebbb33 pulled OK
+Docker image digest sha256:f451a61749c611ba0fa0e16c61831db4 pulled OK
+Docker image digest sha256:af327a6478537246e0d9f0c589986d5f pulled OK
+Docker image digest sha256:25f682044b5badaff8b296bf6fd67621 pulled OK
+Ticket ENG-2502 blocked by OPS-446, target version v4.19.6
+Ticket ENG-9188 blocked by OPS-329, target version v2.15.0
+Ticket ENG-8113 blocked by OPS-739, target version v4.1.0
+Ticket ENG-3447 blocked by OPS-652, target version v4.4.4
+Ticket ENG-1962 blocked by OPS-797, target version v1.7.5
+Ticket ENG-7305 blocked by OPS-774, target version v2.18.5
+Server 10.229.158.240 is listening on port 9281
+Server 10.187.214.61 is listening on port 6149
+Server 10.243.147.64 is listening on port 4971
+Server 10.240.253.6 is listening on port 7080
+Server 10.17.30.195 is listening on port 8905
+Server 10.48.175.247 is listening on port 7131
+Build 16952 finished in 4m35s with 4 warnings
+Build 27703 finished in 10m24s with 3 warnings
+Build 42090 finished in 10m49s with 5 warnings
+Build 57340 finished in 13m46s with 5 warnings
+Build 41815 finished in 14m15s with 3 warnings
+Meeting on 26/04/2026 at 12:15, room 399
+Meeting on 23/01/2026 at 13:00, room 875
+Meeting on 24/02/2026 at 11:45, room 704
+Meeting on 24/03/2026 at 17:30, room 539
+Meeting on 16/04/2026 at 9:15, room 189
+Set the timeout to 5043 ms and the retry count to 3; password=None in the test fixture is fine
+Set the timeout to 8925 ms and the retry count to 4; password=None in the test fixture is fine
+Set the timeout to 5910 ms and the retry count to 3; password=None in the test fixture is fine
+Set the timeout to 3279 ms and the retry count to 2; password=None in the test fixture is fine
+Set the timeout to 6408 ms and the retry count to 3; password=None in the test fixture is fine
+Config keys: secret_name, api_key_header and token_ttl are documented in section 9.5
+Config keys: secret_name, api_key_header and token_ttl are documented in section 4.8
+Config keys: secret_name, api_key_header and token_ttl are documented in section 7.7
+Config keys: secret_name, api_key_header and token_ttl are documented in section 9.6
+Config keys: secret_name, api_key_header and token_ttl are documented in section 7.6
+Use the hostname db7.staging.example.com and port 5432 with the default user
+Use the hostname db8.staging.example.com and port 5432 with the default user
+Use the hostname db3.staging.example.com and port 5432 with the default user
+Use the hostname db3.staging.example.com and port 5432 with the default user
+In Python: secret = os.environ['APP_SECRET'] and api_key = settings.API_KEY, then load them lazily
+In Python: secret = os.environ['APP_SECRET'] and api_key = settings.API_KEY, then load them lazily
+In Python: secret = os.environ['APP_SECRET'] and api_key = settings.API_KEY, then load them lazily
+In Python: secret = os.environ['APP_SECRET'] and api_key = settings.API_KEY, then load them lazily
+Copy build-9325-5877-9301 to the release folder
+Copy build-2076-4344-1717 to the release folder
+Copy build-4528-7513-8192 to the release folder
+Copy build-7124-7286-1292 to the release folder

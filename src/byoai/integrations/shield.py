@@ -153,49 +153,194 @@ def file_lock(fh):
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
 
+# ---- rule table v2 -----------------------------------------------------
+# One table for the desktop proxy and the browser extension: scripts/
+# gen_extension_rules.py writes it into shield-rules.js. Patterns must stay
+# valid JavaScript too (no inline flags except a leading (?i), no named groups).
+#
+# Tiers: ``secret`` (credentials, default action block), ``pii`` (personal
+# details, default redact) and ``flag`` (signals only, default log: they are
+# recorded but never stop a send).
+def _rx(pattern: str, flags: int = 0) -> re.Pattern:
+    """ASCII-only \\b, \\w and \\d, as in JavaScript, so a CJK character next
+    to a key can't hide it from one engine and not the other."""
+    return re.compile(pattern, flags | re.ASCII)
+
+
+SECRET_RULES = [
+    ("anthropic_key", _rx(r"\bsk-ant-[A-Za-z0-9_-]{20,}")),
+    ("openai_key",    _rx(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}")),
+    ("aws_access_key", _rx(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("github_token",  _rx(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{60,}")),
+    ("slack_token",   _rx(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
+    ("google_api_key", _rx(r"\bAIza[0-9A-Za-z_-]{35}")),
+    ("stripe_key",    _rx(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}")),
+    ("private_key_block", _rx(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+                                 r"(?:[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)?")),
+    ("jwt",           _rx(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
+    ("conn_string",   _rx(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:@/]*:[^\s@/]+@")),
+    ("bearer",        _rx(r"\bBearer\s+[A-Za-z0-9._-]{20,}")),
+    # "password: hunter42" with a value that has a digit in it. The bare word,
+    # or "secret = os.environ[...]", is not a credential.
+    ("credential_assign", _rx(
+        r"(?i)\b(?:password|passwd|secret|api[_ ]?key)\s*[:=]\s*[\"']?(?=[^\s\"']{0,128}\d)[^\s\"'<>{}\[\]()]{6,}")),
+]
 PII_RULES = [
-    ("emails",        re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.I)),
-    ("cards",         re.compile(r"\b4[0-9]{12}(?:[0-9]{3})?\b|\b(5[1-5][0-9]{14})\b")),
-    ("wallets",       re.compile(r"\b0x[a-fA-F0-9]{40}\b|\bbc1[a-z0-9]{25,}\b")),
-    ("phone_numbers", re.compile(r"\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}\b")),
-    ("ssn_like",      re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-    ("api_keys",      re.compile(r"\bsk-[a-zA-Z0-9]{16,}\b|\bBearer\s+[A-Za-z0-9._-]{20,}\b")),
-    ("password_said", re.compile(r"\b(password|passphrase|credential)\b", re.I)),
+    ("emails",        _rx(r"(?<![a-z0-9._%+-])[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,255}\.[a-z]{2,}", re.I)),
+    # 13-19 digits (spaces or dashes between) that pass Luhn; see VALIDATORS.
+    ("cards",         _rx(r"\b[2-6](?:[ -]?[0-9]){12,18}\b")),
+    ("wallets",       _rx(r"\b0x[a-fA-F0-9]{40}\b|\bbc1[a-z0-9]{25,}\b")),
+    ("phone_numbers", _rx(r"\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}\b|(?<![\w+])\+[0-9]{8,15}\b")),
+    ("ssn_like",      _rx(r"\b\d{3}-\d{2}-\d{4}\b")),
+    ("iban",          _rx(r"\b[A-Z]{2}[0-9]{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b")),
 ]
-HIGH_RULES = [
-    ("executable_masquerade", re.compile(r"\b[\w.-]+\.(exe|scr|bat|cmd|dmg|msi|sh)\b", re.I)),
-    ("credential_block", re.compile(r"(?i)\b(password|secret|api[_ ]?key)\s*[:=]")),
-]
-AGENT_RULES = [
-    ("tool_intent", re.compile(r"\b(execute|execute_stream|tool_use|deploy|refund|wire ?transfer|send (the |my )?money|draft_email)\b", re.I)),
+FLAG_RULES = [
+    ("executable_masquerade", _rx(r"(?<![\w.-])[\w.-]{1,128}\.(exe|scr|bat|cmd|dmg|msi|sh)\b", re.I)),
+    ("tool_intent", _rx(r"\b(execute|execute_stream|tool_use|deploy|refund|wire ?transfer|send (the |my )?money|draft_email)\b", re.I)),
+    ("password_said", _rx(r"\b(password|passphrase|credential)\b", re.I)),
 ]
 REPLY_RULES = [
-    ("reply_pii_echo", re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|\b4[0-9]{12}(?:[0-9]{3})?\b")),
+    ("reply_pii_echo", re.compile(r"(?<![a-z0-9._%+-])[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,255}\.[a-z]{2,}|\b4[0-9]{12}(?:[0-9]{3})?\b", re.I)),
     ("reply_leak", re.compile(r"(?i)(your api key|secret[^\n]{0,24}=|\bsk-[a-zA-Z0-9]{16,})")),
     ("reply_toxic", re.compile(r"(?i)\b(stupid|idiot|hate|hope you die)\b")),
 ]
+RULE_TIER = {**{r: "secret" for r, _ in SECRET_RULES},
+             **{r: "pii" for r, _ in PII_RULES},
+             **{r: "flag" for r, _ in FLAG_RULES},
+             "oversize": "flag"}  # no pattern: the body was too big to scan whole
+
+
+def _luhn(text: str) -> bool:
+    digits = [int(c) for c in text if c.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _iban_ok(text: str) -> bool:
+    s = text.replace(" ", "")
+    if not 15 <= len(s) <= 34:
+        return False
+    n = int("".join(str(int(c, 36)) for c in s[4:] + s[:4]))
+    return n % 97 == 1
+
+
+#: A match only counts when its validator passes (same names in shield-rules.js).
+VALIDATOR_NAMES = {"cards": "luhn", "iban": "iban"}
+_VALIDATORS = {"luhn": _luhn, "iban": _iban_ok}
+
+
+def _valid(rule: str, value: str) -> bool:
+    name = VALIDATOR_NAMES.get(rule)
+    return name is None or _VALIDATORS[name](value)
+
+
+MAX_SCAN = 2_000_000
+HALF_SCAN = 1_000_000
+
+
+def _cap(text: str) -> tuple[str, bool]:
+    """Above MAX_SCAN chars only the first and last HALF_SCAN are scanned."""
+    if len(text) <= MAX_SCAN:
+        return text, False
+    return text[:HALF_SCAN] + "\n" + text[-HALF_SCAN:], True
+
+
+def _matches(rule: str, pattern: re.Pattern, text: str):
+    return [m for m in pattern.finditer(text) if _valid(rule, m.group(0))]
+
 
 RULE_LABEL = {
     "emails": "email address", "cards": "card number", "wallets": "wallet address",
-    "phone_numbers": "phone number", "ssn_like": "SSN-like number",
-    "api_keys": "API key", "password_said": "credential mention",
-    "executable_masquerade": "dangerous file", "credential_block": "credential text",
+    "phone_numbers": "phone number", "ssn_like": "SSN-like number", "iban": "IBAN",
+    "anthropic_key": "Anthropic API key", "openai_key": "OpenAI API key",
+    "aws_access_key": "AWS access key", "github_token": "GitHub token",
+    "slack_token": "Slack token", "google_api_key": "Google API key",
+    "stripe_key": "Stripe key", "private_key_block": "private key",
+    "jwt": "JWT", "conn_string": "database URL with a password",
+    "bearer": "bearer token", "credential_assign": "credential text",
+    "password_said": "credential mention", "oversize": "very large message",
+    "executable_masquerade": "dangerous file",
     "tool_intent": "agent action intent", "connector_tool_call": "agent tool call",
     "reply_pii_echo": "PII echoed in reply", "reply_leak": "secret echoed in reply",
     "reply_toxic": "harsh language in reply",
 }
-RULE_REDACT = {"emails": "[redacted-email]", "cards": "[redacted-card]",
-               "wallets": "[redacted-wallet]", "phone_numbers": "[redacted-number]",
-               "ssn_like": "[redacted-ssn]", "api_keys": "[redacted-token]"}
-# password_said is a flag, not a secret: rewriting the word "password" out of
+#: Placeholder word per rule: text is rewritten to [EMAIL_1], [SECRET_2], ...
+PLACEHOLDER = {"emails": "EMAIL", "cards": "CARD", "wallets": "WALLET",
+               "phone_numbers": "PHONE", "ssn_like": "SSN", "iban": "IBAN",
+               **{r: "SECRET" for r, _ in SECRET_RULES}}
+RULE_REDACT = PLACEHOLDER  # rules that can rewrite text (kept for older callers)
+# The flag rules are signals, not secrets: rewriting the word "password" out of
 # "how do I reset my password" would break the question and protect nothing.
 
+# ---- actions -----------------------------------------------------------
+ACTIONS = ("log", "redact", "warn", "block")  # weakest to strictest
+DEFAULT_ACTIONS = {"secret": "block", "pii": "redact", "flag": "log"}
+#: Per-rule action that replaces the tier default for that rule.
+RULE_ACTIONS = {"credential_assign": "warn"}
+
+
+def stricter(a: str, b: str) -> str:
+    return a if ACTIONS.index(a) >= ACTIONS.index(b) else b
+
+
+def clean_actions(raw: object) -> dict:
+    """Tier -> action, each one of ACTIONS; missing or invalid falls back to
+    the default for that tier."""
+    raw = raw if isinstance(raw, dict) else {}
+    return {t: (raw[t] if raw.get(t) in ACTIONS else d)
+            for t, d in DEFAULT_ACTIONS.items()}
+
+
+def action_for(rule: str, policy: dict | None) -> str:
+    """What one rule hit does under ``policy``. ``observe`` mode logs all."""
+    policy = policy or {}
+    if policy.get("mode") == "observe":
+        return "log"
+    tier = RULE_TIER.get(rule, "flag")
+    act = clean_actions(policy.get("actions"))[tier]
+    override = RULE_ACTIONS.get(rule)
+    if not override:
+        return act
+    # The rule's own action stands in for the tier default (credential_assign
+    # warns even though secrets block). A policy that sets the tier stricter
+    # than that default wins.
+    if ACTIONS.index(act) > ACTIONS.index(DEFAULT_ACTIONS[tier]):
+        return stricter(act, override)
+    return override
+
+
+def evaluate(text: str, policy: dict | None,
+             flags: list | None = None) -> tuple[str, list[str]]:
+    """(strictest action, rules that hit) for a message under ``policy``.
+    ``flags`` is a precomputed ``flags_for(text)``, to avoid scanning twice."""
+    rules = [r for _, r, _ in (flags if flags is not None else flags_for(text, replies=False))
+             if r in RULE_TIER]
+    action = "log"
+    for r in rules:
+        action = stricter(action, action_for(r, policy))
+    return action, rules
+
+
 APP_LABEL = {"claude": "Claude", "chatgpt": "ChatGPT", "gemini": "Gemini",
-             "copilot": "Copilot"}
+             "copilot": "Copilot",
+             # Desktop-proxy apps that speak a public API (see the host table
+             # in shield_proxy.py). All off until an admin turns them on.
+             "github_copilot": "GitHub Copilot", "mistral": "Mistral",
+             "deepseek": "DeepSeek", "groq": "Groq", "openrouter": "OpenRouter",
+             "together": "Together", "gemini_api": "Gemini API"}
 # Apps whose chat traffic the capture proxy can read and redact. Gemini's web
 # client sends form-encoded batch RPC and Copilot talks over a websocket, so
 # neither can be governed yet; their toggles stay off and say why.
-COVERED_APPS = ("claude", "chatgpt")
+COVERED_APPS = ("claude", "chatgpt", "github_copilot", "mistral", "deepseek",
+                "groq", "openrouter", "together", "gemini_api")
 
 DATA_DIR = Path.home() / ".byoai" / "shield"
 FINGERPRINT_KEY = DATA_DIR / "fingerprint.key"
@@ -224,15 +369,23 @@ class ShieldConfig:
     max_interactions: int = 400
 
 
-def flags_for(text: str) -> list[tuple[str, str, str]]:
+def flags_for(text: str, *, replies: bool = True) -> list[tuple[str, str, str]]:
     flags: list[tuple[str, str, str]] = []
-    for tier, rules in (("high", HIGH_RULES), ("pii", PII_RULES),
-                        ("agent", AGENT_RULES), ("reply", REPLY_RULES)):
+    scanned, capped = _cap(text)
+    for tier, rules in (("secret", SECRET_RULES), ("pii", PII_RULES),
+                        ("flag", FLAG_RULES), ("reply", REPLY_RULES)):
+        if tier == "reply" and not replies:
+            continue
+        # Secrets are scanned in full (their rules are linear and prefix-led);
+        # only the softer tiers give up the middle of a huge body.
+        subject = text if tier == "secret" else scanned
         for rule, pattern in rules:
-            m = pattern.search(text)
-            if m:
+            found = _matches(rule, pattern, subject)
+            if found:
                 flags.append((reply_tier(rule) if tier == "reply" else tier,
-                              rule, m.group(0)[:60]))
+                              rule, found[0].group(0)[:60]))
+    if capped:
+        flags.append(("flag", "oversize", ""))
     return flags
 
 
@@ -242,23 +395,40 @@ def reply_tier(rule: str) -> str:
     return "conduct" if rule == "reply_toxic" else "pii"
 
 
-def redact(text: str) -> str:
-    for tier, p in PII_RULES:
-        token = RULE_REDACT.get(tier)
-        if token:
-            text = p.sub(token, text)
-    return text
+def redact_with_rules(text: str, policy: dict | None = None,
+                      state: dict | None = None) -> tuple[str, list[str]]:
+    """Replace secrets and personal details with numbered placeholders
+    (``[EMAIL_1]``, ``[SECRET_2]``), also naming which rules rewrote something.
 
-
-def redact_with_rules(text: str) -> tuple[str, list[str]]:
-    """Like :func:`redact`, also naming which rules rewrote something."""
+    The same value gets the same number. Pass one ``state`` dict across the
+    fields of a body to keep numbers consistent there; it lives only as long
+    as the caller keeps it. With a ``policy``, rules whose action is ``log``
+    are left alone."""
+    state = state if state is not None else {}
     hit: list[str] = []
-    for rule, p in PII_RULES:
-        token = RULE_REDACT.get(rule)
-        if token and p.search(text):
-            text = p.sub(token, text)
+    for rule, p in (*SECRET_RULES, *PII_RULES):
+        label = PLACEHOLDER.get(rule)
+        if not label or (policy is not None and action_for(rule, policy) == "log"):
+            continue
+        changed = False
+
+        def sub(m, rule=rule, label=label):
+            nonlocal changed
+            value = m.group(0)
+            if not _valid(rule, value):
+                return value
+            changed = True
+            seen = state.setdefault(label, {})
+            return f"[{label}_{seen.setdefault(value, len(seen) + 1)}]"
+
+        text = p.sub(sub, text)
+        if changed:
             hit.append(rule)
     return text, hit
+
+
+def redact(text: str) -> str:
+    return redact_with_rules(text)[0]
 
 
 # ------------------------------------------------------------ privacy-first
@@ -292,13 +462,13 @@ def fingerprint(text: str, key_path: Path = FINGERPRINT_KEY) -> str:
 
 
 def inspect_text(text: str, policy: dict, *, rules: str = "request",
-                 key_path: Path = FINGERPRINT_KEY) -> dict:
+                 key_path: Path = FINGERPRINT_KEY, flags: list | None = None) -> dict:
     """What a ledger row may hold about a message: rule hits, length and a
     keyed fingerprint. The redacted preview only when the admin opted in."""
     if rules == "reply":
         found = [(reply_tier(r), r) for r, p in REPLY_RULES if p.search(text)]
     else:
-        found = [(t, r) for t, r, _ in flags_for(text)
+        found = [(t, r) for t, r, _ in (flags if flags is not None else flags_for(text, replies=False))
                  if not r.startswith("reply_")]
     out = {
         "flags": [f"{t}:{r}" for t, r in found],
@@ -324,10 +494,21 @@ def _content_text(content) -> str:
     return ""
 
 
+def _gemini_text(body: dict) -> str | None:
+    """Text of the last ``contents[]`` turn of a Gemini generateContent body."""
+    contents = body.get("contents")
+    if isinstance(contents, list) and contents and isinstance(contents[-1], dict):
+        parts = contents[-1].get("parts")
+        if isinstance(parts, list):
+            return "\n".join(x["text"] for x in parts
+                             if isinstance(x, dict) and isinstance(x.get("text"), str))
+    return None
+
+
 def message_text(body: dict) -> str:
     """The human-typed part of a chat request body: claude.ai web ``prompt``,
     the last turn of a Messages / Chat Completions / ChatGPT web ``messages``
-    list, or a Responses API ``input``."""
+    list, a Responses API ``input``, or the last Gemini ``contents`` turn."""
     prompt = body.get("prompt")
     if isinstance(prompt, str):
         return prompt
@@ -339,18 +520,64 @@ def message_text(body: dict) -> str:
         return inp
     if isinstance(inp, list) and inp and isinstance(inp[-1], dict):
         return _content_text(inp[-1].get("content"))
-    return ""
+    return _gemini_text(body) or ""
 
 
-def redact_json_body(raw: str) -> tuple[str, list[str]]:
-    """Redact personal details inside the message fields of a JSON chat body.
+# Keys whose string values are identifiers or labels, never message text:
+# scanning or rewriting them would only create false hits.
+_ID_KEYS = frozenset({"id", "uuid", "model", "signature", "media_type", "mimetype",
+                      "mime_type"})
+_ID_SUFFIXES = ("_id", "_uuid")
 
-    Only message text is rewritten: ``prompt``, ``input`` and the content of
-    each ``messages[]`` / ``input[]`` turn (strings, text blocks, ChatGPT web
-    ``parts``). Running the
-    rules over the raw wire body would also hit conversation ids, timestamps
-    and model names that happen to look like phone numbers. A body that isn't
-    JSON is returned unchanged with no rules."""
+
+def _idish(key: object) -> bool:
+    k = str(key).lower()
+    return k in _ID_KEYS or k.endswith(_ID_SUFFIXES)
+
+
+def _walk(node, fix):
+    """Apply ``fix(str) -> str`` to every string leaf of a JSON value, in
+    place, at any depth, except under id-like keys and base64 payloads. This
+    covers system prompts, tool results, tool inputs and document text as well
+    as the typed message, wherever a provider puts them."""
+    if isinstance(node, str):
+        return fix(node)
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            node[i] = _walk(item, fix)
+    elif isinstance(node, dict):
+        binary = node.get("type") == "base64" or "mimeType" in node or "mime_type" in node
+        for k, v in list(node.items()):
+            if _idish(k) or (binary and str(k).lower() == "data"):
+                continue
+            node[k] = _walk(v, fix)
+    return node
+
+
+def _map_texts(body: dict, fix) -> None:
+    _walk(body, fix)
+
+
+def all_message_text(body: dict) -> str:
+    """Every string in the body that could carry text, joined: what a block or
+    redact decision must look at, so a secret in a system prompt, a tool
+    result or earlier history can't ride along."""
+    out: list[str] = []
+    _walk(body, lambda s: (out.append(s), s)[1])
+    return "\n".join(out)
+
+
+def redact_json_body(raw: str, policy: dict | None = None) -> tuple[str, list[str]]:
+    """Redact secrets and personal details inside the message fields of a JSON
+    chat body.
+
+    Only message text is rewritten: ``prompt``, ``input``, the content of each
+    ``messages[]`` / ``input[]`` turn (strings, text blocks, ChatGPT web
+    ``parts``) and Gemini ``contents[].parts[].text``. Running the rules over
+    the raw wire body would also hit conversation ids, timestamps and model
+    names that happen to look like phone numbers. A body that isn't JSON is
+    returned unchanged with no rules. Placeholders are numbered across the
+    whole body, and the mapping is dropped when this returns."""
     try:
         body = json.loads(raw)
     except (ValueError, TypeError):
@@ -358,32 +585,14 @@ def redact_json_body(raw: str) -> tuple[str, list[str]]:
     if not isinstance(body, dict):
         return raw, []
     hit: set[str] = set()
+    state: dict = {}
 
     def fix(s: str) -> str:
-        out, rules = redact_with_rules(s)
+        out, rules = redact_with_rules(s, policy, state)
         hit.update(rules)
         return out
 
-    def fix_content(content):
-        if isinstance(content, str):
-            return fix(content)
-        if isinstance(content, dict) and isinstance(content.get("parts"), list):
-            content["parts"] = [fix(x) if isinstance(x, str) else x
-                                for x in content["parts"]]
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and isinstance(block.get("text"), str):
-                    block["text"] = fix(block["text"])
-        return content
-
-    for key in ("prompt", "input"):
-        if isinstance(body.get(key), str):
-            body[key] = fix(body[key])
-    turns = [*(body.get("messages") or []),
-             *(body["input"] if isinstance(body.get("input"), list) else [])]
-    for msg in turns:
-        if isinstance(msg, dict) and "content" in msg:
-            msg["content"] = fix_content(msg["content"])
+    _map_texts(body, fix)
     if not hit:
         return raw, []
     return json.dumps(body, ensure_ascii=False), sorted(hit)
@@ -839,10 +1048,15 @@ def default_policy() -> dict:
         "policy_version": POLICY_VERSION,
         "mode": "redact",
         "apps": {"claude": True, "chatgpt": False, "gemini": False,
-                 "copilot": False},
+                 "copilot": False, "github_copilot": False, "mistral": False,
+                 "deepseek": False, "groq": False, "openrouter": False,
+                 "together": False, "gemini_api": False},
         "keep_text": False,
         "retention_days": 30,
         "notice": True,
+        # What each tier does on a hit: block | warn | redact | log. The mode
+        # above is the master switch ("observe" logs everything).
+        "actions": dict(DEFAULT_ACTIONS),
         # What Coriqo may receive about activity: "seal" (integrity only),
         # "daily" totals, or per-message "events". Only a signed managed
         # policy moves it; see byoai.integrations.shield_sync.
@@ -853,6 +1067,7 @@ def default_policy() -> dict:
 def merge_policy(disc: dict) -> dict:
     p = {**default_policy(), **disc}
     p["apps"] = {**default_policy()["apps"], **(disc.get("apps") or {})}
+    p["actions"] = clean_actions(disc.get("actions"))
     return p
 
 
@@ -1178,6 +1393,13 @@ def apply_policy_update(policy: dict, payload: dict) -> dict:
                 raise ValueError(f"Shield can't read {APP_LABEL.get(app, app)} "
                                  "messages yet, so it can't be turned on")
         out["apps"] = {**out["apps"], **payload["apps"]}
+    if "actions" in payload:
+        acts = payload["actions"]
+        if not isinstance(acts, dict) or not all(
+                t in DEFAULT_ACTIONS and a in ACTIONS for t, a in acts.items()):
+            raise ValueError("actions must map secret, pii or flag to "
+                             + ", ".join(ACTIONS))
+        out["actions"] = {**clean_actions(out.get("actions")), **acts}
     for key in ("keep_text", "notice"):
         if key in payload:
             if not isinstance(payload[key], bool):
@@ -1189,7 +1411,10 @@ def apply_policy_update(policy: dict, payload: dict) -> dict:
                              + ", ".join(map(str, RETENTION_CHOICES)))
         out["retention_days"] = payload["retention_days"]
     weakened = ((out["mode"] == "observe" and policy.get("mode") != "observe")
-                or (out["keep_text"] and not policy.get("keep_text")))
+                or (out["keep_text"] and not policy.get("keep_text"))
+                or any(ACTIONS.index(a) < ACTIONS.index(
+                    clean_actions(policy.get("actions"))[t])
+                    for t, a in out["actions"].items()))
     if weakened and payload.get("acknowledge") != "less_private":
         raise ValueError("This makes Shield less private than it is now; "
                          "confirm it to save (acknowledge: less_private)")
@@ -1302,6 +1527,9 @@ def _flags_from_row(r: dict) -> list[tuple[str, str, str]]:
     out = []
     for f in r.get("flags") or []:
         tier, _, rule = str(f).partition(":")
+        # The console's tag colours know agent|high|pii|conduct; the rule
+        # table's secret and flag tiers map onto high and agent.
+        tier = {"secret": "high", "flag": "agent"}.get(tier, tier)
         if rule:
             out.append((tier if tier in ("high", "pii", "agent", "conduct")
                         else "pii", rule, ""))
@@ -1472,6 +1700,8 @@ class Feed:
             if kind == "browser.chat.reply":
                 self._attach_tools(r, label)
                 return
+            if kind in ("browser.chat.attachment", "browser.health.unmatched"):
+                return  # facts for the ledger and seal, not a message row
             wire = r.get("wire") if isinstance(r.get("wire"), str) else None
             ts_raw = r.get("sent_at") or ""
             # Extension rows carry their own ISO timestamp; fall back to now.
@@ -1687,7 +1917,8 @@ class Feed:
 
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 EXTENSION_SCHEMES = ("chrome-extension://", "moz-extension://")
-BROWSER_KINDS = ("browser.chat.request", "browser.chat.status", "browser.chat.reply")
+BROWSER_KINDS = ("browser.chat.request", "browser.chat.status", "browser.chat.reply",
+                 "browser.chat.attachment", "browser.health.unmatched")
 
 # Hosts the browser extension watches. The relay covers the whole page even
 # when the send itself bypassed fetch, so a bare host must classify like the
@@ -1745,13 +1976,16 @@ def request_problem(method: str, path: str, headers) -> str | None:
 # What a browser row may say about which rules fired: known rule names only,
 # so the field can never carry text. Request rules, as the proxy records them.
 _BROWSER_FLAGS = frozenset(
-    f"{tier}:{rule}" for tier, rules in (("high", HIGH_RULES), ("pii", PII_RULES),
-                                         ("agent", AGENT_RULES))
-    for rule, _ in rules)
-_BROWSER_VERDICT = re.compile(r"observe|redact|block|blocked|redacted\(\d{1,2}\)")
+    [f"{tier}:{rule}" for tier, rules in (("secret", SECRET_RULES), ("pii", PII_RULES),
+                                          ("flag", FLAG_RULES))
+     for rule, _ in rules] + ["flag:oversize"])
+_BROWSER_VERDICT = re.compile(
+    r"observe|redact|block|blocked|redacted\(\d{1,2}\)"
+    r"|warned(?:\u2192|->)(?:sent|redacted|cancelled)")
 # Names of tools an AI app ran for a reply ("web.run", "python"), as the
 # extension reads them from the reply stream. A name, never text.
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,48}")
+_MIME = re.compile(r"[A-Za-z0-9!#$&^_.+-]{1,60}/[A-Za-z0-9!#$&^_.+-]{1,80}")
 _SEND_ID = re.compile(r"[A-Za-z0-9-]{8,64}")
 
 
@@ -1799,6 +2033,15 @@ def clean_browser_row(row: object) -> dict | None:
     sources = row.get("sources")
     if isinstance(sources, int) and not isinstance(sources, bool) and 0 <= sources <= 1000:
         out["sources"] = sources
+    # browser.chat.attachment: that a file was attached, never what it holds.
+    if isinstance(row.get("mime"), str) and _MIME.fullmatch(row["mime"]):
+        out["mime"] = row["mime"].lower()
+    nbytes = row.get("bytes")
+    if isinstance(nbytes, int) and not isinstance(nbytes, bool) and 0 <= nbytes < 2**40:
+        out["bytes"] = nbytes
+    # browser.health.unmatched: a path prefix, trimmed, no query and no body.
+    if isinstance(row.get("path"), str):
+        out["path"] = re.sub(r"[^A-Za-z0-9/_.:-]", "?", row["path"].split("?", 1)[0])[:60]
     if isinstance(row.get("ok"), bool):
         out["ok"] = row["ok"]
     if isinstance(row.get("status"), int) and not isinstance(row.get("status"), bool):
