@@ -897,6 +897,27 @@ def test_the_store_package_omits_the_dev_key_and_ships_what_the_manifest_names(t
     assert "tabs" not in m["permissions"]
 
 
+def test_the_minified_store_package_keeps_every_file_and_shared_names(tmp_path):
+    import importlib.util, zipfile
+    spec = importlib.util.spec_from_file_location(
+        "package_extension", Path(__file__).resolve().parents[2] / "scripts" / "package_extension.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if not mod.ESBUILD.exists():
+        pytest.skip("esbuild not installed (npm ci in web/)")
+    plain = zipfile.ZipFile(mod.build(tmp_path / "p"))
+    small = zipfile.ZipFile(mod.build(tmp_path / "m", minify=True))
+    assert set(small.namelist()) == set(plain.namelist())
+    for name in (n for n in small.namelist() if n.endswith(".js")):
+        code = small.read(name).decode()
+        assert "sourceMappingURL" not in code
+        assert len(code) <= len(plain.read(name))
+    # The scripts talk to each other through these names; minifying must keep them.
+    assert "__shieldRules" in small.read("shield-rules.js").decode()
+    assert "SHIELD_CONSENT_VERSION" in small.read("consent.js").decode()
+    assert "key" not in json.loads(small.read("manifest.json"))
+
+
 def _run_launcher(block):
     import subprocess, sys
     code = (f"import sys; sys.modules[{block!r}] = None; "
