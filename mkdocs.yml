@@ -66,6 +66,7 @@ nav:
       - Mandate enforcement: guides/mandate-enforcement.md
       - Testing: guides/testing.md
   - Shield Sync protocol: shield-sync-protocol.md
+  - Recorder seal format: seal-format.md
   - API Reference: reference/api.md
   - Configuration Reference: https://github.com/ravikings/byoai-runtime/blob/main/CONFIGURATION.md
   - Changelog: https://github.com/ravikings/byoai-runtime/blob/main/CHANGELOG.md
