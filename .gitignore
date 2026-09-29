@@ -207,3 +207,5 @@ examples/mcp_capture/sealchain.json
 examples/mcp_capture/policy.json
 examples/mcp_capture/shield_proxy.alive
 examples/mcp_capture/corioqo.json
+.DS_Store
+agent_showcase.zip

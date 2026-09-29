@@ -561,13 +561,15 @@ sends it as `Authorization: Bearer`.
 free — enrol devices, see the fleet, author and sign policy, all self-hosted
 with no account; Coriqo adds everything past a single org — many client
 tenants under one MSP login, roles and SSO, cross-client dashboards, signed
-installers and MDM profiles, and hosted infrastructure. A device moves
-between them by re-enrolling; nothing on the Mac itself ever changes. The
-console is single-org to match: it never lists or switches between tenants,
-enrolment always binds to this server's one configured org, and
-`/v1/console/*` answers 404 for any other tenant slug rather than an empty
-(or wrong) fleet. Managing several clients' orgs from one place is Coriqo's
-MSP console, not this free server.
+installers and MDM profiles, and hosted infrastructure (installers, MDM
+profiles and customer-cloud deploy are planned, not built yet). Coriqo's MSP
+tier is priced per managed device; see https://coriqo.io/pricing.html#shield.
+A device moves between them by re-enrolling; nothing on the Mac itself ever
+changes. The console is single-org to match: it never lists or switches
+between tenants, enrolment always binds to this server's one configured org,
+and `/v1/console/*` answers 404 for any other tenant slug rather than an
+empty (or wrong) fleet. Managing several clients' orgs from one place is
+Coriqo's MSP console, not this free server.
 
 **Run it behind TLS.** It binds `127.0.0.1` by default. The moment a Mac
 outside this machine needs to reach it, put it behind a reverse proxy that
