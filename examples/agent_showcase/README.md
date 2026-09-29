@@ -6,8 +6,7 @@ by the Coriqo agent recorder, verifiable after the fact. Full spec:
 
 **Status: M5 — feature-complete, plus B6.** All milestones (M1-M5) landed: 10
 agents (8 real, 1 deliberate misfire demo, 1 managed AWS Bedrock Agent), sub-agent spans, the UI, verify,
-sealed replay, the tamper demo, and a Coriqo shipping smoke test. See
-[`DEMO.md`](./DEMO.md) for the sales walkthrough script.
+sealed replay, the tamper demo, and a Coriqo shipping smoke test.
 
 **Status detail — M2, all 8 agents.** All four banking agents (B1 Fraud Triage, B2
 KYC Onboarding, B3 Dispute Resolution, B4 Loan Prequalification) and all four

@@ -186,6 +186,8 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 internal_doc/
+# internal_doc may be a symlink into the private repo; a trailing slash won't match it
+/internal_doc
 .claude/*
 !.claude/skills
 .claude/skills/*
