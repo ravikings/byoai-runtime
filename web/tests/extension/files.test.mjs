@@ -686,3 +686,26 @@ describe('a file that cannot be read still leaves a row', () => {
     expect(w.rows()[0]).toMatchObject({ flags: ['flag:unreadable'], verdict: 'warned→uploaded' })
   })
 })
+
+describe('the "not uploaded" notice', () => {
+  const notice = () => cur.w.shadow?.querySelector('[role=status]')?.textContent ?? ''
+  it('a blocked file says it was stopped and is not attached, without the matched text', async () => {
+    make({ relay: true })
+    await cur.post(uploadForm(`key ${AWS}\n`, 'notes.txt'))
+    await vi.waitFor(() => expect(notice()).toContain('Shield stopped notes.txt'))
+    expect(notice()).toContain('an AWS access key')
+    expect(notice()).toContain("It wasn't uploaded")
+    expect(notice()).not.toContain(AWS)
+  })
+  it('a cancelled file gets the notice; an allowed one does not', async () => {
+    make({ relay: true, config: { files: { claude: 'warn' } } })
+    const p = cur.post(uploadForm('hello\n', 'a.txt'))
+    await barUp()
+    buttons().Cancel.click()
+    await p
+    await vi.waitFor(() => expect(notice()).toContain('Shield cancelled a.txt'))
+    make({ relay: true })
+    await cur.post(uploadForm('hello\n', 'b.txt'))
+    expect(notice()).toBe('')
+  })
+})

@@ -76,7 +76,10 @@
   try {
     const channel = new MessageChannel()
     toPage = channel.port1
-    toPage.onmessage = (ev) => { if (ev.data && ev.data.t === 'warn') onWarn(ev.data) }
+    toPage.onmessage = (ev) => {
+      if (ev.data && ev.data.t === 'warn') onWarn(ev.data)
+      else if (ev.data && ev.data.t === 'notice') onNotice(ev.data)
+    }
     window.postMessage('shield-agent-port', '*', [channel.port2])
   } catch { toPage = null }
 
@@ -156,6 +159,20 @@
     try { toPage && toPage.postMessage({ t: 'warn-result', send_id: sendId, choice }) } catch { /* page gone */ }
   }
 
+  function onWarnHost() {
+    barHost = document.createElement('div')
+    barHost.style.cssText = 'all:initial;position:fixed;top:0;left:0;right:0;z-index:2147483647'
+    const root = barHost.attachShadow({ mode: 'closed' })
+    const style = document.createElement('style')
+    style.textContent = '.bar{font:14px system-ui,sans-serif;background:#1f2937;color:#fff;padding:10px 16px;' +
+      'display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #4b5563}' +
+      '.msg{flex:1 1 240px}button{font:inherit;border:1px solid #6b7280;border-radius:6px;padding:5px 12px;' +
+      'background:#374151;color:#fff;cursor:pointer}button.main{background:#2563eb;border-color:#2563eb}'
+    barBox = document.createElement('div')
+    root.append(style, barBox)
+    ;(document.documentElement || document.body).append(barHost)
+  }
+
   function onWarn(req) {
     if (!req || typeof req.send_id !== 'string' || req.send_id.length > 64 || bars.has(req.send_id)) return
     const sendId = req.send_id
@@ -176,19 +193,7 @@
       answer(sendId, choice)
     }
     try {
-      if (!barHost) {
-        barHost = document.createElement('div')
-        barHost.style.cssText = 'all:initial;position:fixed;top:0;left:0;right:0;z-index:2147483647'
-        const root = barHost.attachShadow({ mode: 'closed' })
-        const style = document.createElement('style')
-        style.textContent = '.bar{font:14px system-ui,sans-serif;background:#1f2937;color:#fff;padding:10px 16px;' +
-          'display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #4b5563}' +
-          '.msg{flex:1 1 240px}button{font:inherit;border:1px solid #6b7280;border-radius:6px;padding:5px 12px;' +
-          'background:#374151;color:#fff;cursor:pointer}button.main{background:#2563eb;border-color:#2563eb}'
-        barBox = document.createElement('div')
-        root.append(style, barBox)
-        ;(document.documentElement || document.body).append(barHost)
-      }
+      if (!barHost) onWarnHost()
       row = document.createElement('div')
       row.className = 'bar'
       row.setAttribute('role', 'alertdialog')
@@ -214,6 +219,45 @@
     } catch { answer(sendId, 'cancelled'); return }
     timer = setTimeout(() => finish('cancelled'), WARN_MS)
     bars.set(sendId, { finish })
+  }
+
+  /*
+   * After Shield stops or removes a file, the app may still show it as
+   * attached (its upload just failed). A short notice says it isn't. Same
+   * bar area and the same forgery rule: labels outside RULE_LABEL read as
+   * "sensitive data", names are shown as text and cut short.
+   */
+  const NOTICE_MS = 20_000
+  function onNotice(req) {
+    if (!req || !Array.isArray(req.names)) return
+    const names = req.names.filter((n) => typeof n === 'string').map((n) => n.slice(0, 80)).slice(0, 5)
+    if (!names.length) return
+    const why = [...new Set((Array.isArray(req.labels) ? req.labels : [])
+      .map((n) => RULE_LABEL[n] ?? 'sensitive data'))].slice(0, 5)
+    const verb = req.verdict === 'blocked' ? 'stopped' : req.verdict === 'removed' ? 'removed' : 'cancelled'
+    try {
+      if (!barHost) onWarnHost()
+      const row = document.createElement('div')
+      row.className = 'bar'
+      row.setAttribute('role', 'status')
+      const msg = document.createElement('span')
+      msg.className = 'msg'
+      const list = names.join(', ')
+      msg.textContent = `Shield ${verb} ${list}${why.length ? ` (it contains ${why.join(', ')})` : ''}. ` +
+        `${names.length > 1 ? "They weren't" : "It wasn't"} uploaded; remove ${names.length > 1 ? 'them' : 'it'} ` +
+        'from your message before sending.'
+      const ok = document.createElement('button')
+      ok.textContent = 'OK'
+      let timer
+      const close = () => {
+        clearTimeout(timer)
+        try { row.remove(); if (barBox && !barBox.children.length) { barHost.remove(); barHost = null; barBox = null } } catch { /* page gone */ }
+      }
+      ok.addEventListener('click', close)
+      row.append(msg, ok)
+      barBox.append(row)
+      timer = setTimeout(close, NOTICE_MS)
+    } catch { /* the record still says what happened */ }
   }
 
   // Fallback for sends that don't go over fetch: watch the send control so a

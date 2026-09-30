@@ -659,6 +659,17 @@
     const flagsOf = (f) => [...f.hits.map((h) => `${h.tier}:${h.name}`), ...(f.unreadable ? ['flag:unreadable'] : [])]
     // One row per file; `verdictOf` gives each its own outcome.
     const finish = (verdictOf, out) => {
+      // The app still shows a file whose upload was refused as attached;
+      // tell the user it isn't. Names and rule names go to the relay's bar
+      // only, never into an event.
+      const stopped = facts.filter((f, i) => /blocked|removed|cancelled/.test(verdictOf(f, i)))
+      if (stopped.length && port) {
+        try {
+          port.postMessage({ t: 'notice', names: stopped.map((f) => f.name || 'a file').slice(0, 5),
+            labels: [...new Set(stopped.flatMap((f) => f.hits.map((h) => h.name)))],
+            verdict: out === 'block' ? 'blocked' : out === 'go' || out === 'remove' ? 'removed' : 'cancelled' })
+        } catch { /* relay gone: the record still says what happened */ }
+      }
       facts.forEach((f, i) => emit({
         kind: 'browser.chat.attachment', app, name: f.name && f.name.slice(0, 512), mime: f.mime, bytes: f.bytes,
         sha256: f.sha256, scanned: f.scanned, flags: flagsOf(f), rules_version: RULES.rules_version,

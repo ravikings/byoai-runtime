@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PRIVACY.md). Telemetry blobs (`/api/v2/rum`) and ChatGPT's `prepare` and
   `realtime` calls no longer count as attachments or unrecognised sends. The
   desktop proxy also treats ChatGPT's file-storage PUT as an upload.
+- Extension 0.9.1: after Shield stops, removes or cancels a file, the page shows a
+  notice that it wasn't uploaded (claude.ai and ChatGPT keep showing the file as
+  attached after its upload fails).
 - **Shield browser extension 0.8.0: a warn bar, health events and attachment
   facts.** A tier set to `warn` holds the send behind a bar in the page (send
   redacted, send anyway, cancel; 60 s without an answer cancels, and the
