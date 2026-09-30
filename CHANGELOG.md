@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PRIVACY.md). Telemetry blobs (`/api/v2/rum`) and ChatGPT's `prepare` and
   `realtime` calls no longer count as attachments or unrecognised sends. The
   desktop proxy also treats ChatGPT's file-storage PUT as an upload.
+- Extension 0.9.5: FormData chat bodies are checked (their text fields, redacted
+  in place), a Blob body that can't be read is refused rather than sent, and
+  the page can read `window.__shieldVersion` to confirm which build a tab runs.
 - **Extension 0.9.4: a refused message can't be resent another way.** Found
   live: after Shield refused a message, claude.ai resent it with a stream
   body, which the extension let through unread. Stream, byte and

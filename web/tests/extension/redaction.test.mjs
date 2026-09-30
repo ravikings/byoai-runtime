@@ -152,16 +152,16 @@ describe('page capture: a send made with a Request object', () => {
   })
 })
 
-describe('page capture: a body it cannot read', () => {
-  it('notes the send without a length, and leaves it alone', async () => {
+describe('page capture: a FormData chat body', () => {
+  // Was passed on unread; a page that retries a refused send as FormData
+  // must not get past the rules.
+  it('reads its text fields and redacts them in place', async () => {
     const p = page('claude.ai', agreed('redact'))
     const form = new FormData()
     form.set('prompt', 'mail ann@example.com')
     await p.window.fetch('https://claude.ai' + SEND_PATH['claude.ai'], { method: 'POST', body: form })
-    expect(p.sent).toEqual([form])
-    expect(p.captured).toEqual([
-      { kind: 'browser.chat.request', app: 'claude', chars: null, wire: SEND_PATH['claude.ai'] },
-    ])
+    expect(p.sent[0].get('prompt')).toBe('mail [EMAIL_1]')
+    expect(p.captured[0]).toMatchObject({ kind: 'browser.chat.request', app: 'claude', redactions: ['emails'] })
   })
 })
 

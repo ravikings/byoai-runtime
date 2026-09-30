@@ -31,6 +31,8 @@
     }
   } catch { /* cross-origin parent: this frame is its own page */ }
   window.__shieldCapturePatched = true
+  // Which build this tab runs (a tab opened before a reload keeps old code).
+  try { Object.defineProperty(window, '__shieldVersion', { value: '0.9.5' }) } catch { /* already set */ }
 
   const APP_FOR_HOST = {
     'claude.ai': 'claude',
@@ -441,7 +443,18 @@
 
   function go(self, input, init, raw, out, facts, sendId) {
     let args = [input, init]
-    if (out !== raw) {
+    if (out !== raw && init && isForm(init.body)) {
+      // A FormData chat body was checked as its text fields: put the
+      // redacted fields back, keep everything else as it was.
+      let red = {}
+      try { red = JSON.parse(out) } catch { /* keep the fields */ }
+      const next = new FormData()
+      for (const [k, v] of init.body.entries()) {
+        if (typeof v === 'string' && typeof red[k] === 'string') next.append(k, red[k])
+        else next.append(k, v, v && v.name)
+      }
+      args = [input, { ...init, body: next }]
+    } else if (out !== raw) {
       args = init && init.body != null
         ? [input, { ...init, body: out }]
         : [new Request(input, { body: out }), init]
@@ -853,6 +866,16 @@
     return orig.call(self, new Request(input, { body: up.body, headers }), init)
   }
 
+  // A chat body that couldn't be read: refused while Shield governs the app
+  // (a page that retries in another form must not get an unchecked send).
+  function unreadableChat(self, input, init, path, consumed) {
+    const strict = governing() && config.mode !== 'observe'
+    emit({ kind: 'browser.chat.request', app, chars: null, wire: path.slice(0, 60),
+      ...(strict ? { verdict: 'blocked', flags: ['flag:unreadable'] } : {}) })
+    if (strict) return refusal(['unreadable'])
+    return consumed ? null : orig.call(self, input, init)
+  }
+
   window.fetch = function (input, init) {
     let url = ''
     try { url = typeof Request !== 'undefined' && input instanceof Request ? input.url : String(input) } catch { /* unreadable */ }
@@ -888,20 +911,13 @@
           const self = this
           return body.text().then(
             (raw) => send(self, input, init, raw, path),
-            () => {
-              emit({ kind: 'browser.chat.request', app, chars: null, wire: path.slice(0, 60) })
-              return orig.call(self, input, init)
-            })
+            () => unreadableChat(self, input, init, path))
         }
         // Found live: after a refusal claude.ai resends the same message with a
         // non-string body. A body that can't be read here must not go out
         // unchecked while Shield governs the app: it is refused.
         const self = this
-        const unreadable = () => {
-          emit({ kind: 'browser.chat.request', app, chars: null, wire: path.slice(0, 60),
-            ...(governing() && config.mode !== 'observe' ? { verdict: 'blocked', flags: ['flag:unreadable'] } : {}) })
-          return governing() && config.mode !== 'observe' ? refusal(['unreadable']) : null
-        }
+        const unreadable = () => unreadableChat(self, input, init, path, true)
         if (isRequestObject && !(init && init.body)) {
           // A Request carries its body as a stream. Read a copy, so the send
           // can still be inspected and, when Shield says so, rewritten.
@@ -918,8 +934,14 @@
             (raw) => send(self, input, { ...next, body: raw }, raw, path),
             () => unreadable() || Promise.reject(new TypeError('Failed to fetch')))
         }
-        // FormData on a chat path: its file parts are handled as uploads above.
-        emit({ kind: 'browser.chat.request', app, chars: null, wire: path.slice(0, 60) })
+        if (isForm(body)) {
+          // FormData on a chat path: its text fields are the message. Check
+          // them as one body; rewrite them if redacted; file parts stay.
+          const fields = {}
+          for (const [k, v] of body.entries()) if (typeof v === 'string') fields[k] = v
+          const raw = JSON.stringify(fields)
+          return send(self, input, init, raw, path)
+        }
       }
     } catch { /* capture must never break the chat */ }
     return orig.apply(this, arguments)

@@ -788,3 +788,36 @@ describe('a retry with another body type is checked too', () => {
     expect(cur.xhrSent[0]).toContain('[EMAIL_1]')
   })
 })
+
+describe('FormData and unreadable chat bodies', () => {
+  const U = 'https://claude.ai/api/organizations/o/chat_conversations/c/completion'
+  it('a FormData chat body with a key is blocked', async () => {
+    make({})
+    const f = new FormData()
+    f.set('prompt', `k ${AWS}`)
+    const res = await cur.win.fetch(U, { method: 'POST', body: f })
+    expect(res.status).toBe(403)
+    expect(cur.sent).toEqual([])
+  })
+  it('a FormData chat body with an email goes out redacted, as FormData', async () => {
+    make({})
+    const f = new FormData()
+    f.set('prompt', `mail ${EMAIL}`)
+    await cur.win.fetch(U, { method: 'POST', body: f })
+    const b = cur.sent[0].body
+    expect(Object.prototype.toString.call(b)).toBe('[object FormData]')
+    expect(b.get('prompt')).toContain('[EMAIL_1]')
+  })
+  it('a Blob that cannot be read is refused, not sent', async () => {
+    make({})
+    const blob = new Blob(['x'])
+    blob.text = () => Promise.reject(new Error('nope'))
+    const res = await cur.win.fetch(U, { method: 'POST', body: blob })
+    expect(res.status).toBe(403)
+    expect(cur.sent).toEqual([])
+  })
+  it('the build is visible to the page', () => {
+    make({})
+    expect(cur.win.__shieldVersion).toBe('0.9.5')
+  })
+})
