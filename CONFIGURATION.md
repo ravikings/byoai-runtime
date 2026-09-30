@@ -166,6 +166,21 @@ Rows with a `sha256` appear in the feed and are sealed with a `file` object (`mi
 
 What is scanned: every string in the request body except id-like keys (`id`, `*_id`, `uuid`, `model`, `signature`, media types) and base64 payloads, so system prompts, tool results, tool inputs and document text count as much as the typed message. Secret rules always scan the whole body; personal-detail and flag rules scan the first and last 1,000,000 characters of a body over 2,000,000 and add `flag:oversize`. A private key block is replaced whole when its END line follows within 8 KB; otherwise the send is still stopped on the header. In the extension, policy and warn answers travel over a private channel set up before the page's own scripts run, so the page can't lower the policy or answer the warn bar itself; with no live channel a held send is redacted, never sent as typed.
 
+### Shield guard for your own chat app (`byoai-cache`)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `BYOAI_SHIELD_GUARD` | `off` | `off`, `observe` (check and record, forward as sent) or `enforce` (block or redact). Applies to `/v1/messages`, `/v1/chat/completions` and `/v1/responses`. |
+| `BYOAI_SHIELD_POLICY` | Shield defaults | Path to a Shield policy file (same format as `byoai-shield`: `mode`, `actions`). A missing file means the privacy-first defaults. |
+| `BYOAI_SHIELD_ON_WARN` | `block` | `block` or `redact`. A `warn` hit (for example `credential_assign`) has nobody to ask on a server; `redact` rewrites it when a placeholder exists, otherwise it still blocks. |
+| `BYOAI_SHIELD_OPENAI_UPSTREAM` | `https://api.openai.com` | Where guarded OpenAI-shaped requests go. With the guard `off` those paths keep the old passthrough. |
+| `BYOAI_SHIELD_APP` | none | A Shield app name (for example `claude`). When set, the policy's per-app `files` setting applies to files. Middleware: `app_name=`. |
+| `BYOAI_SHIELD_KEY_PATH` | Shield's own key | Fingerprint key file for `text_hmac`. |
+
+With the guard on, every body-carrying request is checked, not only chat paths: `gzip`/`deflate` bodies are decoded, other `Content-Encoding`s and undecodable bodies get the `403` (`unreadable`), and a non-JSON body (multipart, binary) is scanned as text for secrets only: clean passes byte-for-byte, a secret blocks, personal details are never rewritten. `observe` and `off` forward the original bytes and headers; only `enforce` changes a body (a redacted or repeated-key JSON body is sent decoded, without `Content-Encoding`). The policy file is re-read only when it changes, and checks run in a worker thread. A blocked decision carries no body; the middleware keeps only its last 100 decisions (rules, labels, length, fingerprint).
+
+A blocked request gets `403` with `type: coriqo_shield_blocked`, `rules` and `labels` (Anthropic: `{"type":"error","error":{...}}`; OpenAI: `{"error":{"message","type","code":"shield_blocked",...}}`). The secret tier blocks by default, so a policy with `mode: observe` never stops anything. Recorder rows are kind `shield_guard`: `guard_mode`, `provider`, `path`, `action`, `forwarded`, `redacted`, `rules`, `chars`, `text_hmac`, `rules_version`. The Python middleware is `byoai.shield_guard.fastapi.ShieldGuardMiddleware(app, *, paths=, policy=, mode=, on_warn=, max_body=, key_path=, app_name=)`; a body over `max_body` (8 MB) is refused.
+
 ### Shield managed mode
 
 Once enrolled with Coriqo, Shield can be put into managed mode: a Coriqo

@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[redacted-email]`.
 
 ### Added
+- **Shield for your own chat app.** New `byoai.shield_guard` (`check(body, files=)`
+  returns `allow`, `warn`, `redact` or `block` with rule labels, redacted body and
+  per-file facts) over the existing rules. `byoai-cache` gains an opt-in guard,
+  `BYOAI_SHIELD_GUARD=off|observe|enforce` (default `off`), on `/v1/messages`,
+  `/v1/chat/completions` and `/v1/responses`: `403` `coriqo_shield_blocked` in the
+  provider's error shape, redacted bodies forwarded, streaming untouched, and a
+  `shield_guard` recorder row without text. Also `byoai.shield_guard.fastapi`
+  middleware and a plain-JS Express example in `examples/shield_guard_express/`.
 - **Shield file evidence.** A per-app `files` policy (`allow`, `warn`, `block`;
   default `allow`; lowering needs `acknowledge: less_private`) applies to every
   uploaded file. Text-like files up to 5 MB are also read by the existing rules.

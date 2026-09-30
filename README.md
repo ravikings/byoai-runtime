@@ -649,6 +649,50 @@ signed request cross the network in the clear otherwise. See
 `CONFIGURATION.md` for every `BYOAI_SHIELD_SERVER_*` env var and the full
 `byoai-shield-server` CLI (`serve` / `mint-token` / `admin-token`).
 
+### Use Shield in your own chat app
+
+Shield's rules also run outside the browser, for a chat app you build or host.
+Three ways in, one rule set and one policy file (the same `actions` map Shield
+uses; see CONFIGURATION.md):
+
+1. **Swap the base URL.** Run `byoai-cache` with the guard on and point your SDK at it:
+
+   ```bash
+   BYOAI_SHIELD_GUARD=enforce byoai-cache start
+   export ANTHROPIC_BASE_URL=http://localhost:8787
+   export OPENAI_BASE_URL=http://localhost:8787/v1
+   ```
+
+   `POST /v1/messages`, `/v1/chat/completions` and `/v1/responses` are checked
+   before they are forwarded. A secret stops the request with a `403` and
+   `type: "coriqo_shield_blocked"` in the provider's own error shape, naming rule
+   labels and never the matched text; personal details are replaced by
+   `[EMAIL_1]`-style placeholders; streaming replies still stream. With the
+   recorder on (`BYOAI_RECORDER_ENABLED=1`) each hit adds a `shield_guard` row
+   (rule names, length, keyed fingerprint, `rules_version`; no text).
+2. **FastAPI / Starlette middleware.**
+
+   ```python
+   from byoai.shield_guard.fastapi import ShieldGuardMiddleware
+   app.add_middleware(ShieldGuardMiddleware, policy="~/.byoai/shield/policy.json")
+   ```
+
+   Or call the pure function yourself: `from byoai.shield_guard import check`;
+   `check(body, files=[(name, mime, bytes)])` returns a `Decision` with `action`
+   (`allow`, `warn`, `redact`, `block`), `rules`, `labels`, the redacted `body`
+   and per-file facts (`sha256`, `scanned`, `flags`, `rules_version`). A server
+   cannot ask the user, so `warn` blocks unless you pass `on_warn="redact"`.
+3. **Express.** `examples/shield_guard_express/` is a plain-JS middleware that
+   reads the generated `shield-rules.js`, so it mirrors the Python rules
+   (`rules_version` says which set). Re-sync it after upgrading.
+
+With the guard on, every request with a body (POST, PUT, PATCH; also `/v1/complete`,
+batches and `count_tokens`, and trailing-slash variants) is checked, gzip/deflate
+bodies are decoded first, and a body the guard can't read is refused. A secret
+anywhere in the JSON (any string, key, or base64 `data`/`file_data` that decodes
+to text) blocks; personal details under id-like keys are only reported. Use
+`check(..., files=...)` for uploads your server receives.
+
 ### 5. Semantic (intent) caching
 
 Serve *similar* questions from cache — not just identical ones. One embedding

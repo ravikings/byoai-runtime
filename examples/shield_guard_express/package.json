@@ -1,0 +1,13 @@
+{
+  "name": "shield-guard-express-example",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "sync-rules": "cp ../../src/byoai/browser_extension/shield-rules.js ./shield-rules.js",
+    "prestart": "npm run sync-rules",
+    "start": "node server.js",
+    "pretest": "npm run sync-rules",
+    "test": "node test.js"
+  },
+  "dependencies": { "express": "^4.19.2" }
+}

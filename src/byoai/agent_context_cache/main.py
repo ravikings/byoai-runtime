@@ -9,7 +9,10 @@ from contextlib import asynccontextmanager
 
 import httpx
 import redis.asyncio as redis
+from dataclasses import dataclass
+
 from fastapi import FastAPI, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -27,6 +30,7 @@ from ..recorder.schema import new_span_id, new_trace_id
 from ..session_hash import RedisHashStore
 from ..stages import PromptCacheInjection, SessionDedup
 from ..stages import _count_cache_control_markers as _stage_count_cache_control_markers
+from ..shield_guard import gateway as shield_gw
 from . import console as console_assets
 from . import db, openai_compat
 
@@ -462,6 +466,45 @@ async def health_check():
     return {"status": "ok", "message": "byoai-runtime is operational."}
 
 
+@dataclass
+class _Gate:
+    parse: bytes                       # readable body, for routes that read it themselves
+    forward: bytes                     # what a passthrough sends
+    drop_encoding: bool = False        # True only when ``forward`` is not the original body
+    active: bool = False               # the guard looked at this request
+    response: Response | None = None   # set when the request must stop here
+
+
+async def _shield_gate(request: Request, body_bytes: bytes, shape: str, provider: str) -> _Gate:
+    """Shield guard for one body-carrying request. With the guard off, or no
+    body, nothing changes. ``observe`` records and forwards the original bytes;
+    only ``enforce`` blocks or rewrites."""
+    if shield_gw.mode() == "off" or not body_bytes:
+        return _Gate(body_bytes, body_bytes)
+    outcome = await run_in_threadpool(
+        shield_gw.guard_raw, body_bytes, request.headers.get("content-encoding"), shape)
+    try:
+        shield_gw.record_evidence(
+            get_recorder(), outcome, provider=provider, path=request.url.path,
+            session_id=request.headers.get("x-byoai-session-id") or "shield-guard",
+            trace_id=new_trace_id(), span_id=new_span_id())
+    except LedgerWriteError as e:
+        return _Gate(b"", b"", response=_recorder_write_failed_response(e))
+    if outcome.blocked is not None:
+        return _Gate(b"", b"", response=Response(
+            content=shield_gw.error_bytes(outcome.blocked), status_code=403,
+            media_type=JSON_MEDIA_TYPE))
+    return _Gate(outcome.parse, outcome.forward, outcome.drop_encoding, active=True)
+
+
+_BASE_DROP = ("host", "content-length", "accept-encoding", "connection")
+
+
+def _fwd_headers(request: Request, drop_encoding: bool = False) -> dict:
+    drop = _BASE_DROP + (("content-encoding",) if drop_encoding else ())
+    return {k: v for k, v in request.headers.items() if k.lower() not in drop}
+
+
 @app.api_route("/v1/messages/count_tokens", methods=["GET", "POST"])
 async def proxy_count_tokens(request: Request):
     """
@@ -477,25 +520,24 @@ async def proxy_count_tokens(request: Request):
     instead; it's the same estimate already used for the /v1/stats
     savings numbers, so it's consistent even if not tokenizer-exact.
     """
-    body_bytes = await request.body()
+    gate = await _shield_gate(request, await request.body(), "anthropic", "anthropic")
+    if gate.response is not None:
+        return gate.response
+    body_bytes = gate.forward
 
-    if body_bytes:
+    if gate.parse:
         try:
-            raw_body = json.loads(body_bytes)
-        except json.JSONDecodeError:
+            raw_body = json.loads(gate.parse)
+        except (ValueError, RecursionError):
             raw_body = None
-        if raw_body and raw_body.get("model") in OPENAI_COMPAT_MODELS:
+        if isinstance(raw_body, dict) and raw_body.get("model") in OPENAI_COMPAT_MODELS:
             return Response(
                 content=json.dumps({"input_tokens": estimate_tokens(raw_body)}),
                 status_code=200,
                 media_type=JSON_MEDIA_TYPE,
             )
 
-    headers = {
-        k: v
-        for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length", "accept-encoding", "connection")
-    }
+    headers = _fwd_headers(request, gate.drop_encoding)
     upstream_url = f"{ANTHROPIC_UPSTREAM}/v1/messages/count_tokens"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
@@ -756,7 +798,10 @@ async def _maybe_run_benchmark_sample(
 
 @app.api_route("/v1/messages", methods=["GET", "POST"])
 async def proxy_claude_messages(request: Request):
-    body_bytes = await request.body()
+    gate = await _shield_gate(request, await request.body(), "anthropic", "anthropic")
+    if gate.response is not None:
+        return gate.response
+    body_bytes = gate.parse
 
     if not body_bytes or request.method == "GET":
         return Response(
@@ -767,7 +812,9 @@ async def proxy_claude_messages(request: Request):
 
     try:
         raw_body = json.loads(body_bytes)
-    except json.JSONDecodeError:
+        if not isinstance(raw_body, dict):
+            raise ValueError
+    except (ValueError, RecursionError):
         return Response(
             content=json.dumps(
                 {"error": {"type": "invalid_request_error", "message": "Invalid JSON payload"}}
@@ -804,11 +851,9 @@ async def proxy_claude_messages(request: Request):
         raw_body, session_id, is_enabled
     )
 
-    headers = {
-        k: v
-        for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length", "accept-encoding", "connection")
-    }
+    # This route sends its own re-serialised JSON, so a request the guard read
+    # (and possibly decoded) must not keep the client's Content-Encoding.
+    headers = _fwd_headers(request, gate.active)
 
     await _maybe_run_benchmark_sample(
         is_benchmark_sample, pre_optimize_snapshot, body, headers, session_id, requested_model
@@ -1303,6 +1348,50 @@ async def console_spa(path: str):
     )
 
 
+@app.post("/v1/chat/completions")
+@app.post("/v1/responses")
+async def proxy_openai_guarded(request: Request):
+    """OpenAI-shaped chat requests, checked by Shield's rules before they go on.
+
+    With BYOAI_SHIELD_GUARD off (the default) this is the old behaviour: the
+    generic passthrough below. Otherwise the request is checked, then sent to
+    BYOAI_SHIELD_OPENAI_UPSTREAM (default https://api.openai.com) and the reply
+    is streamed back as it arrives."""
+    path = request.url.path.strip("/").lower()[len("v1/"):]
+    if shield_gw.mode() == "off":
+        return await proxy_catch_all(request, path)
+    gate = await _shield_gate(request, await request.body(), "openai", "openai")
+    if gate.response is not None:
+        return gate.response
+    body_bytes = gate.forward
+    headers = _fwd_headers(request, gate.drop_encoding)
+    if gate.drop_encoding:
+        headers["content-type"] = "application/json"
+    url = f"{shield_gw.openai_upstream()}/v1/{path}"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+    client = get_http_client()
+    req = client.build_request("POST", url, content=body_bytes, headers=headers)
+    try:
+        res = await client.send(req, stream=True)
+    except httpx.HTTPError as e:
+        return Response(
+            content=json.dumps({"error": {
+                "message": f"byoai-runtime: could not reach upstream: {e}",
+                "type": "api_error", "code": "upstream_unreachable"}}),
+            status_code=502, media_type=JSON_MEDIA_TYPE)
+
+    async def relay():
+        try:
+            async for chunk in res.aiter_bytes():
+                yield chunk
+        finally:
+            await res.aclose()
+
+    return StreamingResponse(relay(), status_code=res.status_code,
+                             headers=clean_response_headers(dict(res.headers)))
+
+
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_catch_all(request: Request, path: str):
     """
@@ -1317,12 +1406,20 @@ async def proxy_catch_all(request: Request, path: str):
     would otherwise shadow every specific route above it (/v1/messages,
     /v1/messages/count_tokens, /v1/stats, /v1/config, /v1/toggle).
     """
-    body_bytes = await request.body()
-    headers = {
-        k: v
-        for k, v in request.headers.items()
-        if k.lower() not in ("host", "content-length", "accept-encoding", "connection")
-    }
+    norm = path.strip("/").lower()
+    if shield_gw.mode() != "off" and request.method == "POST":
+        # Trailing-slash and case variants of the guarded routes take the same road.
+        if norm in shield_gw.OPENAI_PATHS:
+            return await proxy_openai_guarded(request)
+        if norm == "messages":
+            return await proxy_claude_messages(request)
+        if norm == "messages/count_tokens":
+            return await proxy_count_tokens(request)
+    gate = await _shield_gate(request, await request.body(), "anthropic", "anthropic")
+    if gate.response is not None:
+        return gate.response
+    body_bytes = gate.forward
+    headers = _fwd_headers(request, gate.drop_encoding)
     upstream_url = f"{ANTHROPIC_UPSTREAM}/v1/{path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
