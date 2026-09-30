@@ -751,3 +751,40 @@ describe('a blocked message says why', () => {
     expect(text()).not.toContain(AWS)
   })
 })
+
+describe('a retry with another body type is checked too', () => {
+  const U = 'https://claude.ai/api/organizations/o/chat_conversations/c/completion'
+  const msg = (t) => JSON.stringify({ prompt: t })
+  const stream = (s) => new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(s)); c.close() } })
+  it('a ReadableStream body with a key is read and blocked', async () => {
+    make({})
+    const res = await cur.win.fetch(U, { method: 'POST', body: stream(msg(`k ${AWS}`)), duplex: 'half' })
+    expect(res.status).toBe(403)
+    expect(cur.sent).toEqual([])
+  })
+  it('a clean stream body goes out as the text that was checked', async () => {
+    make({})
+    await cur.win.fetch(U, { method: 'POST', body: stream(msg('hello')), duplex: 'half' })
+    expect(cur.sent[0].body).toBe(msg('hello'))
+  })
+  it('bytes and URLSearchParams are read too', async () => {
+    make({})
+    const r1 = await cur.win.fetch(U, { method: 'POST', body: new TextEncoder().encode(msg(`k ${AWS}`)) })
+    expect(r1.status).toBe(403)
+    expect(cur.sent).toEqual([])
+  })
+  it('a chat send over XHR with a key never goes out', () => {
+    make({})
+    const x = new cur.win.XMLHttpRequest()
+    x.open('POST', U)
+    x.send(msg(`k ${AWS}`))
+    expect(cur.xhrSent).toEqual([])
+  })
+  it('a clean chat send over XHR is redacted and sent', () => {
+    make({})
+    const x = new cur.win.XMLHttpRequest()
+    x.open('POST', U)
+    x.send(msg(`mail ${EMAIL}`))
+    expect(cur.xhrSent[0]).toContain('[EMAIL_1]')
+  })
+})

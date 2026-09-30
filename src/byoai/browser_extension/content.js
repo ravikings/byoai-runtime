@@ -893,19 +893,32 @@
               return orig.call(self, input, init)
             })
         }
+        // Found live: after a refusal claude.ai resends the same message with a
+        // non-string body. A body that can't be read here must not go out
+        // unchecked while Shield governs the app: it is refused.
+        const self = this
+        const unreadable = () => {
+          emit({ kind: 'browser.chat.request', app, chars: null, wire: path.slice(0, 60),
+            ...(governing() && config.mode !== 'observe' ? { verdict: 'blocked', flags: ['flag:unreadable'] } : {}) })
+          return governing() && config.mode !== 'observe' ? refusal(['unreadable']) : null
+        }
         if (isRequestObject && !(init && init.body)) {
           // A Request carries its body as a stream. Read a copy, so the send
           // can still be inspected and, when Shield says so, rewritten.
-          const self = this
           return input.clone().text().then(
             (raw) => send(self, input, init, raw, path),
-            () => {
-              emit({ kind: 'browser.chat.request', app, chars: null, wire: path.slice(0, 60) })
-              return orig.call(self, input, init)
-            })
+            () => unreadable() || orig.call(self, input, init))
         }
-        // Any other body (FormData, Blob, a stream) can't be read without
-        // consuming it: noted, not inspected or rewritten.
+        if (body != null && !isForm(body)) {
+          // A stream, bytes or URLSearchParams: read it whole (a stream can be
+          // read only once), then send the text that was checked.
+          const next = { ...init, body: undefined }
+          delete next.duplex
+          return new Response(body).text().then(
+            (raw) => send(self, input, { ...next, body: raw }, raw, path),
+            () => unreadable() || Promise.reject(new TypeError('Failed to fetch')))
+        }
+        // FormData on a chat path: its file parts are handled as uploads above.
         emit({ kind: 'browser.chat.request', app, chars: null, wire: path.slice(0, 60) })
       }
     } catch { /* capture must never break the chat */ }
@@ -952,6 +965,24 @@
     }
     XP.send = function (body) {
       const m = meta.get(this)
+      // A chat send over XHR gets the same decision as over fetch (a page can
+      // fall back to XHR after fetch refused it).
+      try {
+        const p = m && String(m.url).replace(/^https?:\/\/[^/]+/, '')
+        if (m && !m.held && m.method === 'POST' && typeof body === 'string' && CHAT_PATHS.some((re) => re.test(p))) {
+          lastInspected = Date.now()
+          const r = inspect(body)
+          emit({ kind: 'browser.chat.request', app, wire: p.slice(0, 60), ...r.facts,
+            ...(r.warn ? { verdict: 'warned\u2192redacted', reason: 'xhr' } : {}) })
+          if (r.blocked) {
+            try { port && port.postMessage({ t: 'notice', message: true, labels: r.blocked, verdict: 'blocked' }) } catch { /* relay gone */ }
+            failLikeNetwork(this)
+            return
+          }
+          const out = r.warn ? redactJsonBody(body, r.warn.names).raw : r.raw
+          return origSend.call(this, out)
+        }
+      } catch { /* never break the page */ }
       if (m && m.held) throw new window.DOMException("Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.", 'InvalidStateError')
       let up = null
       try {
