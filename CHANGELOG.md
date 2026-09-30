@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PRIVACY.md). Telemetry blobs (`/api/v2/rum`) and ChatGPT's `prepare` and
   `realtime` calls no longer count as attachments or unrecognised sends. The
   desktop proxy also treats ChatGPT's file-storage PUT as an upload.
+- Extension 0.9.3: a blocked message now says why ("Shield stopped this
+  message: it contains an AWS access key. It wasn't sent"), where before the
+  app just put the text back in the box. ChatGPT's `sentinel` and `bazaar`
+  calls no longer trip the "Shield may be out of date" check. After reloading
+  or updating the extension, refresh open Claude and ChatGPT tabs: a tab
+  opened before the reload keeps the old code until it is refreshed.
 - **Extension 0.9.2: sends through a hidden iframe are checked too.** claude.ai
   sent a message through a same-origin `about:blank` iframe's native `fetch`,
   so it went out past every rule (the page's own wrapped `fetch` saw and

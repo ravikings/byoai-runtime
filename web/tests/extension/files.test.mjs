@@ -738,3 +738,16 @@ describe('same-origin frames get the same checks', () => {
     expect(f.contentWindow.fetch).toBe(cur.win.fetch)
   })
 })
+
+describe('a blocked message says why', () => {
+  it('shows "Shield stopped this message" with the rule label, never the key', async () => {
+    make({ relay: true })
+    const res = await cur.win.fetch('https://claude.ai/api/organizations/o/chat_conversations/c/completion',
+      { method: 'POST', body: JSON.stringify({ prompt: `test key aws_access_key_id=${AWS}` }) })
+    expect(res.status).toBe(403)
+    const text = () => cur.w.shadow?.querySelector('[role=status]')?.textContent ?? ''
+    await vi.waitFor(() => expect(text()).toContain('Shield stopped this message'))
+    expect(text()).toContain('an AWS access key')
+    expect(text()).not.toContain(AWS)
+  })
+})

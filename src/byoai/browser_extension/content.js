@@ -431,7 +431,11 @@
       })
     }
     emit({ kind: 'browser.chat.request', ...base, ...facts })
-    if (blocked) return Promise.resolve(refusal(blocked))
+    if (blocked) {
+      // The app just puts the text back in the box; say why. Rule names only.
+      try { port && port.postMessage({ t: 'notice', message: true, labels: blocked, verdict: 'blocked' }) } catch { /* relay gone */ }
+      return Promise.resolve(refusal(blocked))
+    }
     return go(self, input, init, raw, out, facts, sendId)
   }
 
@@ -462,7 +466,7 @@
   // Requests that look like a send by name but are not one: an upload (handled
   // as a file, see below), Datadog telemetry, the realtime channel and ChatGPT's
   // prepare call. They never count toward "Shield may be out of date".
-  const NOT_A_SEND = /\/(files|uploads?|attachments)(\/|$|\?)|\/wiggle\/upload-file$|\/backend-api\/files|\/backend-api\/f\/conversation\/prepare|\/realtime\/|\/api\/v2\/rum/i
+  const NOT_A_SEND = /\/(files|uploads?|attachments)(\/|$|\?)|\/wiggle\/upload-file$|\/backend-api\/files|\/backend-api\/f\/conversation\/prepare|\/realtime\/|\/api\/v2\/rum|\/backend-api\/(sentinel|bazaar)\//i
   const CANARY_MS = 10 * 60_000
   let unmatched = []
   let lastInspected = 0

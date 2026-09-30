@@ -229,8 +229,10 @@
    */
   const NOTICE_MS = 20_000
   function onNotice(req) {
-    if (!req || !Array.isArray(req.names)) return
-    const names = req.names.filter((n) => typeof n === 'string').map((n) => n.slice(0, 80)).slice(0, 5)
+    if (!req) return
+    const isMessage = req.message === true
+    if (!isMessage && !Array.isArray(req.names)) return
+    const names = isMessage ? ['this message'] : req.names.filter((n) => typeof n === 'string').map((n) => n.slice(0, 80)).slice(0, 5)
     if (!names.length) return
     const why = [...new Set((Array.isArray(req.labels) ? req.labels : [])
       .map((n) => RULE_LABEL[n] ?? 'sensitive data'))].slice(0, 5)
@@ -243,7 +245,10 @@
       const msg = document.createElement('span')
       msg.className = 'msg'
       const list = names.join(', ')
-      msg.textContent = `Shield ${verb} ${list}${why.length ? ` (it contains ${why.join(', ')})` : ''}. ` +
+      msg.textContent = isMessage
+        ? `Shield stopped this message${why.length ? `: it contains ${why.join(', ')}` : ''}. It wasn't sent; ` +
+          'remove that part and send again.'
+        : `Shield ${verb} ${list}${why.length ? ` (it contains ${why.join(', ')})` : ''}. ` +
         `${names.length > 1 ? "They weren't" : "It wasn't"} uploaded; remove ${names.length > 1 ? 'them' : 'it'} ` +
         'from your message before sending.'
       const ok = document.createElement('button')
