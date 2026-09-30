@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PRIVACY.md). Telemetry blobs (`/api/v2/rum`) and ChatGPT's `prepare` and
   `realtime` calls no longer count as attachments or unrecognised sends. The
   desktop proxy also treats ChatGPT's file-storage PUT as an upload.
+- **Extension 0.9.2: sends through a hidden iframe are checked too.** claude.ai
+  sent a message through a same-origin `about:blank` iframe's native `fetch`,
+  so it went out past every rule (the page's own wrapped `fetch` saw and
+  refused a first attempt). Same-origin frames now get the page's `fetch`,
+  `XMLHttpRequest` and `sendBeacon` wrappers: when their `contentWindow` or
+  `contentDocument` is read, when they're added to the page, when
+  `window.open` returns them, and when the extension runs in them
+  (`all_frames`, `match_about_blank`). Requests made from web workers are
+  still not checked.
 - Extension 0.9.1: after Shield stops, removes or cancels a file, the page shows a
   notice that it wasn't uploaded (claude.ai and ChatGPT keep showing the file as
   attached after its upload fails).

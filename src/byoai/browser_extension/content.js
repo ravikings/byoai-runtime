@@ -21,6 +21,15 @@
   'use strict'
 
   if (window.__shieldCapturePatched) return
+  // A same-origin child frame (claude.ai keeps an about:blank iframe whose
+  // fetch is untouched): the parent's capture arms it with its own wrappers,
+  // so both share one policy and one record.
+  try {
+    if (window.parent !== window && typeof window.parent.__shieldArm === 'function') {
+      window.parent.__shieldArm(window)
+      return
+    }
+  } catch { /* cross-origin parent: this frame is its own page */ }
   window.__shieldCapturePatched = true
 
   const APP_FOR_HOST = {
@@ -965,6 +974,59 @@
       decideUpload(up).then(settle, () => settle('go'))
     }
   }
+
+  /*
+   * Same-origin frames. A page can take a clean fetch or XMLHttpRequest from
+   * an iframe it made (claude.ai does: its sends went out through an
+   * about:blank frame's native fetch, past every rule). Every same-origin
+   * frame the page can reach gets this window's wrappers: when its
+   * contentWindow/contentDocument is read, when it is added to the document,
+   * when window.open returns it, and when the extension's own script runs in
+   * it (manifest: all_frames, match_about_blank).
+   */
+  function armFrame(w) {
+    try {
+      if (!w || w === window || w.__shieldCapturePatched) return
+      void w.document // throws for a cross-origin frame: not ours to reach, and its sends aren't this page's
+      Object.defineProperty(w, '__shieldCapturePatched', { value: true })
+      w.fetch = window.fetch
+      if (typeof XMLHttpRequest !== 'undefined' && w.XMLHttpRequest) {
+        const P = w.XMLHttpRequest.prototype
+        const XP = XMLHttpRequest.prototype
+        P.open = XP.open
+        P.send = XP.send
+        P.abort = XP.abort
+      }
+      if (w.navigator && window.navigator && typeof window.navigator.sendBeacon === 'function') {
+        w.navigator.sendBeacon = window.navigator.sendBeacon.bind(window.navigator)
+      }
+    } catch { /* a frame going away: nothing to arm */ }
+  }
+  Object.defineProperty(window, '__shieldArm', { value: armFrame })
+  for (const C of [window.HTMLIFrameElement, window.HTMLFrameElement, window.HTMLObjectElement]) {
+    try {
+      const proto = C && C.prototype
+      for (const [prop, toWin] of [['contentWindow', (v) => v], ['contentDocument', (v) => v && v.defaultView]]) {
+        const d = proto && Object.getOwnPropertyDescriptor(proto, prop)
+        if (!d || !d.get) continue
+        Object.defineProperty(proto, prop, {
+          configurable: true, enumerable: d.enumerable,
+          get() { const v = d.get.call(this); armFrame(toWin(v)); return v },
+        })
+      }
+    } catch { /* leave that element type alone */ }
+  }
+  try {
+    const armAll = () => { for (let i = 0; i < window.frames.length; i++) armFrame(window.frames[i]) }
+    new window.MutationObserver(armAll).observe(document, { childList: true, subtree: true })
+    armAll()
+  } catch { /* no DOM yet */ }
+  try {
+    const origOpen = window.open
+    if (typeof origOpen === 'function') {
+      window.open = function () { const w = origOpen.apply(this, arguments); armFrame(w); return w }
+    }
+  } catch { /* leave window.open alone */ }
 
   /*
    * sendBeacon: the same. It has to answer at once, so a `block` file policy

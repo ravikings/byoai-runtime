@@ -709,3 +709,32 @@ describe('the "not uploaded" notice', () => {
     expect(notice()).toBe('')
   })
 })
+
+describe('same-origin frames get the same checks', () => {
+  const CHAT = '/api/organizations/o/chat_conversations/c/completion'
+  const body = JSON.stringify({ prompt: `is this valid aws_access_key_id=${AWS}` })
+  it("a send through a hidden iframe's fetch is blocked like the page's own", async () => {
+    make({})
+    const f = cur.win.document.createElement('iframe')
+    cur.win.document.body.append(f)
+    const res = await f.contentWindow.fetch(`https://claude.ai${CHAT}`, { method: 'POST', body })
+    expect(res.status).toBe(403)
+    expect(cur.sent).toEqual([])
+  })
+  it('a frame reached through window.frames is armed too', async () => {
+    make({})
+    const f = cur.win.document.createElement('iframe')
+    cur.win.document.body.append(f)
+    await Promise.resolve() // the MutationObserver arms it on the next microtask
+    const res = await cur.win.frames[0].fetch(`https://claude.ai${CHAT}`, { method: 'POST', body })
+    expect(res.status).toBe(403)
+    expect(cur.sent).toEqual([])
+  })
+  it('the frame is marked, so arming is done once', () => {
+    make({})
+    const f = cur.win.document.createElement('iframe')
+    cur.win.document.body.append(f)
+    expect(f.contentWindow.__shieldCapturePatched).toBe(true)
+    expect(f.contentWindow.fetch).toBe(cur.win.fetch)
+  })
+})
