@@ -1278,6 +1278,42 @@ def test_the_extension_rules_file_is_generated_from_the_python_rules():
         "shield-rules.js is out of date: run python scripts/gen_extension_rules.py")
 
 
+def test_the_extension_sites_file_is_generated_from_sites_json():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gen_extension_rules",
+        Path(__file__).resolve().parents[2] / "scripts" / "gen_extension_rules.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.SITES_TARGET.read_text() == mod.render_sites(), (
+        "shield-sites.js is out of date: run python scripts/gen_extension_rules.py")
+    sites = json.loads(mod.SITES_SOURCE.read_text())["sites"]
+    assert {s["app"] for s in sites} >= {"claude", "chatgpt", "gemini", "copilot"}
+    for s in sites:
+        assert set(s) >= {"hosts", "compose", "send", "chat_paths", "upload"}
+    # Every host the extension runs on has a profile, and the manifest loads the shared files in both worlds.
+    manifest = json.loads((mod.SITES_SOURCE.parent / "manifest.json").read_text())
+    hosts = {h for s in sites for h in s["hosts"]}
+    for entry in manifest["content_scripts"]:
+        assert {m.split("//")[1].split("/")[0] for m in entry["matches"]} == hosts
+        js = entry["js"]
+        # The shared engine reads the rules and the site list, and both scripts read the engine.
+        assert js.index("shield-rules.js") < js.index("shield-core.js")
+        assert js.index("shield-sites.js") < js.index("shield-core.js")
+        for consumer in ("content.js", "content-relay.js"):
+            if consumer in js:
+                assert js.index("shield-core.js") < js.index(consumer)
+    isolated = next(e for e in manifest["content_scripts"] if "world" not in e)
+    page = next(e for e in manifest["content_scripts"] if e.get("world") == "MAIN")
+    assert isolated["js"][-1] == "content-relay.js" and page["js"][-1] == "content.js"
+    assert {"shield-rules.js", "shield-core.js", "shield-sites.js"} <= set(isolated["js"])
+    assert {"shield-rules.js", "shield-core.js", "shield-sites.js"} <= set(page["js"])
+    # The host -> app map is not written by hand anywhere else in the extension.
+    ext = mod.SITES_SOURCE.parent
+    for name in ("shield-core.js", "content.js", "content-relay.js"):
+        assert "'claude.ai': 'claude'" not in (ext / name).read_text(), name
+
+
 def test_browser_rows_keep_rule_names_but_nothing_else():
     row = clean_browser_row({
         "kind": "browser.chat.request", "app": "chatgpt", "chars": 47,

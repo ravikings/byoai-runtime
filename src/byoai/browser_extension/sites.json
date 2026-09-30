@@ -1,0 +1,36 @@
+{
+  "sites": [
+    {
+      "app": "claude",
+      "hosts": ["claude.ai"],
+      "compose": ["div[contenteditable=\"true\"][aria-label*=\"prompt\" i]", "div.ProseMirror[contenteditable=\"true\"]"],
+      "send": ["button[aria-label=\"Send message\"]", "button[aria-label*=\"send\" i]"],
+      "chat_paths": ["/chat_conversations/"],
+      "upload": ["input[type=\"file\"]"]
+    },
+    {
+      "app": "chatgpt",
+      "hosts": ["chatgpt.com", "chat.openai.com"],
+      "compose": ["#prompt-textarea"],
+      "send": ["button[data-testid=\"send-button\"]"],
+      "chat_paths": ["/backend-api/conversation", "/backend-api/f/conversation"],
+      "upload": ["input[type=\"file\"]"]
+    },
+    {
+      "app": "gemini",
+      "hosts": ["gemini.google.com"],
+      "compose": ["rich-textarea .ql-editor", "div[contenteditable=\"true\"][role=\"textbox\"]"],
+      "send": ["button[aria-label*=\"send\" i]"],
+      "chat_paths": [],
+      "upload": ["input[type=\"file\"]"]
+    },
+    {
+      "app": "copilot",
+      "hosts": ["copilot.microsoft.com"],
+      "compose": ["textarea#userInput", "textarea[data-testid=\"composer-input\"]"],
+      "send": ["button[data-testid=\"submit-button\"]", "button[aria-label*=\"submit\" i]"],
+      "chat_paths": [],
+      "upload": ["input[type=\"file\"]"]
+    }
+  ]
+}

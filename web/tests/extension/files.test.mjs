@@ -17,6 +17,8 @@ import { REPO } from './env.mjs'
 
 const EXT = path.join(REPO, 'src', 'byoai', 'browser_extension')
 const read = (f) => readFileSync(path.join(EXT, f), 'utf8')
+const SITES_JS = readFileSync(path.join(EXT, 'shield-sites.js'), 'utf8')
+const CORE_JS = readFileSync(path.join(EXT, 'shield-core.js'), 'utf8')
 const CONTENT_JS = read('content.js')
 const RELAY_JS = read('content-relay.js')
 const CONSENT_JS = read('consent.js')
@@ -53,7 +55,7 @@ const RULES = {
 const CLAUDE_UPLOAD = '/api/organizations/o/conversations/c/wiggle/upload-file'
 const GPT_PUT = 'https://files.oaiusercontent.com/files/f1/raw'
 
-function world({ host = 'claude.ai', config = {}, relay = false, realRules = false, nodeForms = false } = {}) {
+function world({ host = 'claude.ai', config = {}, relay = false, realRules = false, nodeForms = false, core = 'ok' } = {}) {
   const dom = new JSDOM('<!doctype html><body></body>', { url: `https://${host}/`, virtualConsole: new VirtualConsole() })
   const win = dom.window
   const sent = []
@@ -90,9 +92,13 @@ function world({ host = 'claude.ai', config = {}, relay = false, realRules = fal
       storage: { local: { get: (_k, cb) => cb({ consent: { version: 2 }, shield_policy: policy }) }, onChanged: { addListener() {} } } } })
   win.postMessage = (data, _o, transfer) => postPort(win, win.Event, transfer[0], data)
   vm.runInContext(CONSENT_JS, ctx)
+  vm.runInContext(SITES_JS, ctx)
+  // 'tampered': the page got there first (it can't, in a top frame; this is the check that catches it).
+  if (core === 'tampered') win.__shieldCore = { engine: () => ({ scan: () => [], assessFiles: async () => ({ facts: [], labels: [], top: 0, level: () => 0, flagsOf: () => [] }) }) }
+  if (core !== 'missing') vm.runInContext(CORE_JS, ctx)
   vm.runInContext(CONTENT_JS, ctx)
   if (relay) vm.runInContext(RELAY_JS, ctx)
-  else connectPage(win, win.Event, { consented: true, mode: 'redact', apps: null, ...config })
+  else w.relay = connectPage(win, win.Event, { consented: true, mode: 'redact', apps: null, ...config })
   const post = (body, p = CLAUDE_UPLOAD) => win.fetch(`https://${host}${p}`, { method: 'POST', body })
   const rows = () => captured.filter((r) => r.kind === 'browser.chat.attachment')
   return { win, w, sent, xhrSent, captured, post, rows, beacons }
@@ -134,7 +140,7 @@ describe('what is an upload', () => {
     await w.post(form)
     expect(w.sent).toHaveLength(1)
     expect([...w.sent[0].body.entries()].map(([k, v]) => [k, v.name])).toEqual([['file', 'hello.txt']])
-    expect(w.rows()).toEqual([{ kind: 'browser.chat.attachment', app: 'claude', name: 'hello.txt', mime: 'text/plain',
+    expect(w.rows()).toEqual([{ kind: 'browser.chat.attachment', stage: 'network', app: 'claude', name: 'hello.txt', mime: 'text/plain',
       bytes: 6, sha256: HELLO_SHA, scanned: true, flags: [], rules_version: VERSION, verdict: 'allowed' }])
   })
   it('a FormData file on any path counts', async () => {
@@ -816,8 +822,28 @@ describe('FormData and unreadable chat bodies', () => {
     expect(res.status).toBe(403)
     expect(cur.sent).toEqual([])
   })
+  it('rows say they are network rows; a gate id goes on the first one after it, once', async () => {
+    const w = make({})
+    await w.post(uploadForm('hello\n'))
+    w.w.relay.postMessage({ t: 'gate', gate_id: 'gate-1234abcd' })
+    await w.post(uploadForm('again\n'))
+    await w.post(uploadForm('third\n'))
+    expect(w.rows().map((r) => [r.stage, r.gate_id])).toEqual([['network', undefined], ['network', 'gate-1234abcd'], ['network', undefined]])
+  })
+  for (const core of ['missing', 'tampered']) {
+    it(`no trusted checker (${core}): a chat send and an upload are refused, and a health row says why`, async () => {
+      const w = make({ core })
+      expect(w.captured.filter((r) => r.kind === 'browser.health.core_missing')).toEqual([{ kind: 'browser.health.core_missing', app: 'claude' }])
+      const res = await w.win.fetch('https://claude.ai/api/organizations/o/chat_conversations/c/completion',
+        { method: 'POST', body: JSON.stringify({ prompt: 'hello there' }) })
+      expect(res.status).toBe(403)
+      const up = await w.post(uploadForm('hello\n'))
+      expect(up.status).toBe(403)
+      expect(w.sent).toEqual([])
+    })
+  }
   it('the build is visible to the page', () => {
     make({})
-    expect(cur.win.__shieldVersion).toBe('0.9.5')
+    expect(cur.win.__shieldVersion).toBe('0.10.0')
   })
 })

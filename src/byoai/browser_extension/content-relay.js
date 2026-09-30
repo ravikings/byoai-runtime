@@ -62,7 +62,34 @@
    */
   let policy = null
   let toPage = null
+  const RULES = window.__shieldRules
+  const core = window.__shieldCore // this world's own copy: the page can't reach it
+  const sites = (window.__shieldSites && window.__shieldSites.sites) || []
+  const site = sites.find((x) => Array.isArray(x.hosts) && x.hosts.includes(location.host)) ||
+    { compose: [], send: [], upload: [] }
+  const gateApp = site.app
+  let cfg = { consented: false, mode: 'redact', apps: null, actions: {}, files: {} }
+  const eng = gateApp && RULES && core && core.engine(RULES, () => cfg)
+  const localWaiters = new Map()
+  var gateListeners = null // eslint-disable-line no-var -- read by disable(), which can run first
+  let bypass = false // one-shot: set only around the gate's own re-dispatch
+  let pendingBar = false
+  let lastDec = null
+  let stopKeyUntil = 0 // a stopped Enter keydown: its keypress and keyup are stopped too
+  let lastPointer = null
+
+  function syncCfg() {
+    if (!eng) return
+    cfg = {
+      consented: consented === true,
+      mode: ['observe', 'redact', 'block'].includes(policy && policy.mode) ? policy.mode : 'redact',
+      apps: policy && policy.apps && typeof policy.apps === 'object' ? policy.apps : null,
+      actions: eng.cleanActions(policy && policy.actions),
+      files: eng.cleanFiles(policy && policy.files),
+    }
+  }
   function tellPage() {
+    syncCfg()
     if (!toPage) return
     toPage.postMessage({ t: 'config', consented: consented === true, mode: policy?.mode,
       apps: policy?.apps ?? null, actions: policy?.actions ?? null, files: policy?.files ?? null })
@@ -106,13 +133,9 @@
   function onCapture(ev) {
     const row = ev.detail
     if (row && row.kind && !disabled && consented !== false) {
-      if (row.kind === 'browser.chat.request') {
-        // The page capture saw this send, so the key/click fallback for the
-        // same send is not a second message.
-        lastFetchSend = Date.now()
-        clearTimeout(pendingFallback)
-        pendingFallback = null
-      }
+      // The page capture saw this send, so the key/click fallback for the
+      // same send is not a second message.
+      if (row.kind === 'browser.chat.request') noteSend()
       forward(row)
     }
   }
@@ -128,6 +151,7 @@
     clearTimeout(pendingFallback)
     document.removeEventListener('keydown', onKey, true)
     document.removeEventListener('click', onClick, true)
+    removeGate()
   }
 
   window.addEventListener('shield-agent-capture', onCapture)
@@ -148,6 +172,7 @@
     jwt: 'a JSON web token', conn_string: 'a database URL with a password',
     bearer: 'a bearer token', credential_assign: 'a password or key assignment',
     emails: 'an email address', cards: 'a card number', phone_numbers: 'a phone number',
+    core_missing: "a check Shield couldn't run",
     ssn_like: 'a social security number', wallets: 'a crypto wallet address', iban: 'an IBAN',
   }
   const WARN_MS = 60_000
@@ -156,6 +181,8 @@
   let barBox = null
 
   function answer(sendId, choice) {
+    const local = localWaiters.get(sendId)
+    if (local) { localWaiters.delete(sendId); local(choice); return }
     try { toPage && toPage.postMessage({ t: 'warn-result', send_id: sendId, choice }) } catch { /* page gone */ }
   }
 
@@ -245,7 +272,11 @@
       const msg = document.createElement('span')
       msg.className = 'msg'
       const list = names.join(', ')
-      msg.textContent = isMessage
+      msg.textContent = req.retry === true
+        ? "Shield couldn't send it for you; press send again."
+        : req.rewrite === true
+        ? "Shield couldn't rewrite this message; remove the details and send again."
+        : isMessage
         ? `Shield stopped this message${why.length ? `: it contains ${why.join(', ')}` : ''}. It wasn't sent; ` +
           'remove that part and send again.'
         : `Shield ${verb} ${list}${why.length ? ` (it contains ${why.join(', ')})` : ''}. ` +
@@ -264,6 +295,378 @@
       timer = setTimeout(close, NOTICE_MS)
     } catch { /* the record still says what happened */ }
   }
+
+  /*
+   * The input gate. The page's own JavaScript can always find another way to
+   * send (a hidden iframe, a retry with another body), so the message and the
+   * files are checked here first, in the isolated world, when the user hands
+   * them to the page: Enter, the send button, a form submit, a picked file, a
+   * drop, a paste. Listeners sit on `window` in the capture phase and are
+   * registered at document_start, so they run before any page handler and the
+   * page can neither patch nor read them. The text and files are read here
+   * for rule names, counts and hashes only; they go into no event and are
+   * never sent anywhere. The rules, actions and file policy are the ones the
+   * network wrapper uses (shield-core.js), and that wrapper stays as the
+   * backstop.
+   */
+  const governing = () => !disabled && eng && cfg.consented && (cfg.apps === null || cfg.apps[gateApp] === true)
+  const newId = () => (globalThis.crypto && crypto.randomUUID ? crypto.randomUUID()
+    : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join(''))
+
+  // closest() that also crosses open shadow roots, which a plain closest() stops at.
+  const closestDeep = (el, sel) => {
+    for (let n = el; n; n = n.getRootNode && n.getRootNode().host) {
+      let m = null
+      try { m = n.closest && n.closest(sel) } catch { /* bad selector */ }
+      if (m) return m
+    }
+    return null
+  }
+  const closestAny = (el, sels) => {
+    for (const sel of sels) { const m = closestDeep(el, sel); if (m) return m }
+    return null
+  }
+  // Where the user really acted, even inside an open shadow root (window sees only the host).
+  const tgt = (ev) => (ev.composedPath && ev.composedPath()[0]) || ev.target
+  const queryAny = (root, sels) => {
+    for (const sel of sels) { try { const m = root.querySelector(sel); if (m) return m } catch { /* bad selector */ } }
+    return null
+  }
+  const GENERIC_COMPOSE = 'textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]'
+  const GENERIC_SEND = 'button[aria-label*="send" i], [role="button"][aria-label*="send" i], [data-testid*="send" i]'
+  // Enter is a send only inside the site's own message box; a search field or
+  // an "edit message" textarea is not one.
+  const composeOf = (t) => (t && t.closest ? closestAny(t, site.compose) : null)
+  const sendOf = (t) => (t && t.closest ? (closestAny(t, site.send) || closestDeep(t, GENERIC_SEND)) : null)
+  // The message box a send button belongs to: the nearest ancestor that holds one
+  // (site profile first, then any textarea/contenteditable).
+  function composeFor(btn) {
+    for (let n = btn.parentNode; n; n = n.parentNode || n.host) {
+      if (!n.querySelector) continue
+      const m = queryAny(n, site.compose) || n.querySelector(GENERIC_COMPOSE)
+      if (m) return m
+    }
+    return null
+  }
+  const isField = (el) => el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
+  const readText = (el) => (isField(el) ? el.value : (el.innerText ?? el.textContent ?? ''))
+  const stop = (ev) => { ev.preventDefault(); ev.stopImmediatePropagation() }
+
+  /*
+   * Put new text in the box so the framework notices: the native value
+   * setter plus an input event for a textarea, select-all plus
+   * execCommand('insertText') for a contenteditable (ProseMirror listens to
+   * the beforeinput/input those fire).
+   */
+  function setText(el, text) {
+    if (isField(el)) {
+      const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype
+      const set = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+      if (set) set.call(el, text); else el.value = text
+      el.dispatchEvent(new window.Event('input', { bubbles: true }))
+      return true
+    }
+    // A contenteditable's editor model only follows real editing commands; if one
+    // isn't taken, setting textContent would change what is drawn but not what
+    // the app sends, so the caller stops the send instead.
+    try {
+      el.focus()
+      const sel = window.getSelection()
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      let ok = true
+      text.split('\n').forEach((line, i) => {
+        if (i > 0) ok = document.execCommand('insertLineBreak') === true && ok
+        if (line) ok = document.execCommand('insertText', false, line) === true && ok
+      })
+      if (!text) ok = document.execCommand('delete') === true && ok
+      return ok
+    } catch { return false }
+  }
+
+  const redactable = (h) => h.tier !== 'flag' && (h.action === 'redact' || h.action === 'warn')
+  function judge(text) {
+    const hits = text ? eng.scan(text) : []
+    const top = hits.reduce((m, h) => Math.max(m, eng.ORDER[h.action]), 0)
+    const named = (a) => hits.filter((h) => h.action === a).map((h) => h.name)
+    const facts = { chars: text.length, flags: hits.map((h) => `${h.tier}:${h.name}`) }
+    if (text.length > eng.SCAN_MAX) facts.flags.push('flag:oversize')
+    return { hits, top, facts, blocked: named('block'), warned: named('warn'),
+      names: new Set(hits.filter(redactable).map((h) => h.name)),
+      keep: new Set(hits.filter((h) => h.tier !== 'flag' && h.action === 'redact').map((h) => h.name)) }
+  }
+  function redacted(text, names) {
+    const hit = new Set()
+    const out = eng.redactWithRules(text, names, {}, hit)
+    return { out, rules: [...hit].sort() }
+  }
+
+  // This send has its row; the key/click fallback would be a second one.
+  function noteSend() {
+    lastFetchSend = Date.now()
+    clearTimeout(pendingFallback)
+    pendingFallback = null
+  }
+  function gateRow(row) {
+    noteSend()
+    forward({ kind: 'browser.chat.request', stage: 'input', app: gateApp, wire: 'input', ...row })
+  }
+  function tellGate(id) {
+    try { toPage && toPage.postMessage({ t: 'gate', gate_id: id }) } catch { /* page gone */ }
+  }
+
+  function askLocal(labels, file) {
+    return new Promise((resolve) => {
+      const id = `gate-${newId()}`
+      localWaiters.set(id, resolve)
+      onWarn(file ? { send_id: id, labels, file: true, name: file.name } : { send_id: id, labels })
+      if (!bars.has(id) && localWaiters.delete(id)) resolve('cancelled')
+    })
+  }
+
+  // Send the message on, once, through the gate itself: it is let by the
+  // one-shot flag, which only this code can set.
+  function redo(kind, ev, compose, gateId) {
+    bypass = true
+    try {
+      if (kind === 'submit' && ev.target && ev.target.requestSubmit) { ev.target.requestSubmit(); return }
+      let btn = kind === 'click' ? sendOf(tgt(ev)) : null
+      if (!btn || btn.disabled) btn = queryAny(document, site.send) || document.querySelector(GENERIC_SEND)
+      if (btn && !btn.disabled) { btn.click(); return }
+      // No button: a synthetic Enter may not be taken as a send. If the box still
+      // holds the same text a moment later, say so instead of failing silently.
+      const held = readText(compose)
+      compose.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+        bubbles: true, cancelable: true, composed: true }))
+      setTimeout(() => {
+        if (disabled || !compose.isConnected || readText(compose) !== held) return
+        gateRow({ chars: held.length, flags: [], gate_id: gateId, verdict: 'blocked', reason: 'send_retry_needed' })
+        onNotice({ message: true, retry: true, labels: [], verdict: 'blocked' })
+      }, 1500)
+    } finally { bypass = false }
+  }
+
+  function gateSend(ev, kind, compose) {
+    if (!eng || !compose) return
+    if (bypass) { bypass = false; return }
+    const text = readText(compose)
+    const halt = () => { stop(ev); if (kind === 'key') stopKeyUntil = Date.now() + 2000 }
+    if (!text.trim() || !governing()) return
+    const now = Date.now()
+    // pointerdown then click, or Enter then the form's submit, are one send: one
+    // decision. A repeat of the same text any other way is a new send, judged and recorded.
+    const pair = lastDec && now - lastDec.at < 1000 && (text === lastDec.text || text === lastDec.after) &&
+      ((lastDec.evType === 'pointerdown' && ev.type === 'click') || (ev.type === 'submit' && lastDec.evType !== 'submit'))
+    if (pair) {
+      if (lastDec.stopped) halt()
+      return
+    }
+    if (pendingBar) { halt(); return }
+    const id = newId()
+    const j = judge(text)
+    const dec = { at: now, text, after: null, stopped: false, evType: ev.type }
+    lastDec = dec
+    const noticeStop = (labels) => onNotice({ message: true, labels, verdict: 'blocked' })
+    if (j.top === eng.ORDER.block) {
+      dec.stopped = true
+      halt()
+      gateRow({ ...j.facts, gate_id: id, verdict: 'blocked' })
+      noticeStop(j.blocked)
+      return
+    }
+    // Rewrites the box; false if what the framework holds still has a name to hide.
+    const rewrite = (names) => {
+      const { out, rules } = redacted(text, names)
+      if (!rules.length) return { rules }
+      if (!setText(compose, out)) return null
+      dec.after = readText(compose)
+      const left = judge(dec.after).hits.some((h) => redactable(h) && names.has(h.name))
+      return left ? null : { rules }
+    }
+    const failClosed = (labels) => {
+      dec.stopped = true
+      gateRow({ ...j.facts, gate_id: id, verdict: 'blocked', reason: 'rewrite_failed' })
+      onNotice({ message: true, rewrite: true, labels, verdict: 'blocked' })
+    }
+    if (j.top === eng.ORDER.warn) {
+      dec.stopped = true
+      halt()
+      pendingBar = true
+      askLocal(j.warned).then((choice) => {
+        pendingBar = false
+        dec.at = Date.now()
+        if (choice !== 'sent' && choice !== 'redacted') {
+          gateRow({ ...j.facts, gate_id: id, verdict: 'warned→cancelled' })
+          return
+        }
+        const r = rewrite(choice === 'sent' ? j.keep : j.names)
+        if (!r) { failClosed(j.warned); return }
+        gateRow({ ...j.facts, gate_id: id, redactions: r.rules,
+          verdict: choice === 'sent' ? 'warned→sent' : 'warned→redacted' })
+        tellGate(id)
+        dec.stopped = false
+        redo(kind, ev, compose, id)
+      })
+      return
+    }
+    let rules = []
+    if (j.names.size) {
+      const r = rewrite(j.names)
+      if (!r) { halt(); failClosed(j.warned.concat(j.blocked)); return }
+      rules = r.rules
+    }
+    gateRow({ ...j.facts, gate_id: id, redactions: rules,
+      verdict: rules.length ? `redacted(${rules.length})` : cfg.mode })
+    tellGate(id)
+  }
+
+  function onGateKey(ev) {
+    if (ev.key !== 'Enter' || ev.shiftKey || ev.altKey || ev.isComposing || ev.keyCode === 229) return
+    // Ctrl/Cmd+Enter is a send in several apps, so it is gated like Enter.
+    gateSend(ev, 'key', composeOf(tgt(ev)))
+  }
+  function onGateKeyAfter(ev) {
+    if (ev.key !== 'Enter' || Date.now() >= stopKeyUntil) return
+    stop(ev)
+    if (ev.type === 'keyup') stopKeyUntil = 0
+  }
+  function onGateClick(ev) {
+    const btn = sendOf(tgt(ev))
+    if (!btn || !eng) return
+    const now = Date.now()
+    // A blocked pointerdown also stops the click that follows it, whatever the box holds by then.
+    if (!bypass && ev.type === 'click' && lastPointer && lastPointer.btn === btn && lastPointer.stopped &&
+        now - lastPointer.at < 1000) { stop(ev); return }
+    gateSend(ev, 'click', composeFor(btn))
+    if (ev.type === 'pointerdown') lastPointer = { btn, at: now, stopped: ev.defaultPrevented }
+  }
+  function onGateSubmit(ev) {
+    const form = ev.target
+    if (!form || !form.querySelector) return
+    gateSend(ev, 'submit', queryAny(form, site.compose))
+  }
+
+  // --- files ---
+
+  const isFileInput = (t) => t && t.tagName === 'INPUT' && t.type === 'file'
+  const pendingInputs = new WeakSet()
+  const nameOfFile = (f) => (f && f.name ? String(f.name) : 'a file')
+
+  function tryDataTransfer(list, origin) {
+    try {
+      const dt = new window.DataTransfer()
+      for (const f of list) dt.items.add(f)
+      // Text that came with a pasted or dropped file goes along.
+      for (const t of origin ? Array.from(origin.types || []) : []) {
+        if (t !== 'Files') { try { dt.setData(t, origin.getData(t)) } catch { /* unreadable type */ } }
+      }
+      return dt
+    } catch { return null }
+  }
+
+  // Hand the (possibly reduced) files to the page. False if that can't be done.
+  function release(kind, target, list, all, originDt) {
+    if (kind === 'input') {
+      if (list.length !== all.length) {
+        const dt = tryDataTransfer(list, null)
+        if (!dt) return false
+        try { target.files = dt.files } catch { return false }
+        if (!target.files || target.files.length !== list.length) return false
+      }
+      for (const type of ['input', 'change']) {
+        bypass = true
+        try { target.dispatchEvent(new window.Event(type, { bubbles: true, composed: true })) } finally { bypass = false }
+      }
+      return true
+    }
+    const dt = tryDataTransfer(list, originDt)
+    if (!dt) return false
+    const init = { bubbles: true, cancelable: true, composed: true }
+    const Ctor = kind === 'drop' ? window.DragEvent : window.ClipboardEvent
+    let ev
+    try { ev = new Ctor(kind, { ...init, [kind === 'drop' ? 'dataTransfer' : 'clipboardData']: dt }) } catch { ev = null }
+    const prop = kind === 'drop' ? 'dataTransfer' : 'clipboardData'
+    if (!ev || !ev[prop] || ev[prop].files.length !== list.length) {
+      ev = new window.Event(kind, init)
+      Object.defineProperty(ev, prop, { value: dt })
+    }
+    bypass = true
+    try { target.dispatchEvent(ev) } finally { bypass = false }
+    return true
+  }
+  function clear(kind, target) {
+    if (kind === 'input') { try { target.value = '' } catch { /* read-only */ } }
+  }
+
+  async function processFiles(kind, target, files, originDt) {
+    let a
+    try { a = await eng.assessFiles(gateApp, files.map((f) => ({ blob: f, name: f.name }))) } catch { a = null }
+    if (!a) { clear(kind, target); onNotice({ names: files.map(nameOfFile).slice(0, 5), labels: [], verdict: 'cancelled' }); return }
+    const gate_id = newId()
+    const rows = (verdictOf) => a.facts.forEach((f, i) => forward({
+      kind: 'browser.chat.attachment', stage: 'input', app: gateApp, name: f.name && f.name.slice(0, 512),
+      mime: f.mime, bytes: f.bytes, sha256: f.sha256, scanned: f.scanned, flags: a.flagsOf(f),
+      rules_version: RULES.rules_version, gate_id, verdict: verdictOf(f, i) }))
+    const say = (idx, verdict) => onNotice({ names: idx.map((i) => nameOfFile(files[i])).slice(0, 5),
+      labels: [...new Set(idx.flatMap((i) => a.facts[i].hits.map((h) => h.name)))], verdict })
+    const all = files.map((_, i) => i)
+    const flagged = all.filter((i) => a.level(a.facts[i]) > 0)
+    const cancel = (verdict) => { clear(kind, target); say(all, verdict) }
+    const go = (list) => {
+      if (!release(kind, target, list.map((i) => files[i]), files, originDt)) { cancel('cancelled'); return false }
+      return true
+    }
+    if (a.top === 0) { rows(() => 'allowed'); go(all); return }
+    if (a.top === 2) { rows(() => 'blocked'); cancel('blocked'); return }
+    const choice = await askLocal(a.labels, { name: files.length === 1 ? nameOfFile(files[0]) : `${files.length} files` })
+    if (choice === 'sent') { rows((f) => (a.level(f) > 0 ? 'warned→uploaded' : 'allowed')); go(all); return }
+    if (choice === 'removed') {
+      const rest = all.filter((i) => !flagged.includes(i))
+      rows((f) => (a.level(f) > 0 ? 'warned→removed' : 'allowed'))
+      if (rest.length) { if (go(rest)) say(flagged, 'removed') } else { clear(kind, target); say(flagged, 'removed') }
+      return
+    }
+    rows(() => 'cancelled')
+    cancel('cancelled')
+  }
+
+  function onGateFileInput(ev) {
+    const t = tgt(ev)
+    if (!eng || !isFileInput(t)) return
+    if (bypass) { bypass = false; return }
+    if (!t.files || !t.files.length || !governing()) return
+    stop(ev)
+    if (pendingInputs.has(t)) return // its `input` and `change` are one pick
+    pendingInputs.add(t)
+    processFiles('input', t, Array.from(t.files), null).catch(() => clear('input', t))
+      .finally(() => pendingInputs.delete(t))
+  }
+  function onGateFileEvent(ev, dt, kind) {
+    if (!eng) return
+    if (bypass) { bypass = false; return }
+    const files = dt && dt.files ? Array.from(dt.files) : []
+    if (!files.length || !governing()) return
+    stop(ev)
+    processFiles(kind, tgt(ev), files, dt).catch(() => {})
+  }
+  const onGateDrop = (ev) => onGateFileEvent(ev, ev.dataTransfer, 'drop')
+  const onGatePaste = (ev) => onGateFileEvent(ev, ev.clipboardData, 'paste')
+
+  function installGate() {
+    if (!eng || gateListeners) return
+    gateListeners = [['keydown', onGateKey], ['click', onGateClick], ['pointerdown', onGateClick],
+      ['submit', onGateSubmit], ['change', onGateFileInput], ['input', onGateFileInput],
+      ['drop', onGateDrop], ['paste', onGatePaste], ['keypress', onGateKeyAfter], ['keyup', onGateKeyAfter]]
+    for (const [type, fn] of gateListeners) window.addEventListener(type, fn, true)
+  }
+  function removeGate() {
+    for (const [type, fn] of gateListeners || []) window.removeEventListener(type, fn, true)
+    gateListeners = null
+  }
+  syncCfg()
+  installGate()
 
   // Fallback for sends that don't go over fetch: watch the send control so a
   // websocket-only send is still recorded as data-free activity. Enter or a

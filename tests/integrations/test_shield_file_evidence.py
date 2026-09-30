@@ -122,6 +122,36 @@ def test_clean_browser_row_attachment_fields():
         assert clean_browser_row({"kind": "browser.chat.attachment", "verdict": v})["verdict"] == v
 
 
+def test_clean_browser_row_keeps_stage_and_gate_id_for_sends_and_files_only():
+    for kind in ("browser.chat.request", "browser.chat.attachment"):
+        for stage in ("input", "network"):
+            row = clean_browser_row({"kind": kind, "stage": stage, "gate_id": "gate-1234abcd"})
+            assert row["stage"] == stage and row["gate_id"] == "gate-1234abcd"
+        bad = clean_browser_row({"kind": kind, "stage": "fetch", "gate_id": "no spaces allowed!"})
+        assert "stage" not in bad and "gate_id" not in bad
+    # A row that isn't a send or a file has neither field.
+    other = clean_browser_row({"kind": "browser.health.unmatched", "stage": "input", "gate_id": "gate-1234abcd"})
+    assert "stage" not in other and "gate_id" not in other
+    # The input gate's rows: verdicts and rule names pass, names are still hashed.
+    row = clean_browser_row({"kind": "browser.chat.request", "stage": "input", "app": "gemini",
+                             "wire": "input", "chars": 12, "flags": ["secret:aws_access_key"],
+                             "verdict": "warned→redacted", "redactions": ["emails"]})
+    assert row["app"] == "gemini" and row["verdict"] == "warned→redacted" and row["redactions"] == ["emails"]
+
+
+def test_clean_browser_row_survives_unhashable_or_odd_stage_gate_and_reason_values():
+    for bad in (["input"], {"a": 1}, 7, None, True):
+        row = clean_browser_row({"kind": "browser.chat.request", "stage": bad, "gate_id": bad, "reason": bad})
+        assert row is not None
+        assert not {"stage", "gate_id", "reason"} & set(row)
+    for reason in ("rewrite_failed", "send_retry_needed"):
+        row = clean_browser_row({"kind": "browser.chat.request", "verdict": "blocked", "reason": reason})
+        assert row["reason"] == reason
+    assert "reason" not in clean_browser_row({"kind": "browser.chat.request", "reason": "anything else"})
+    health = clean_browser_row({"kind": "browser.health.core_missing", "app": "claude", "path": "x"})
+    assert health["kind"] == "browser.health.core_missing" and health["app"] == "claude"
+
+
 # ---- proxy ----------------------------------------------------------------
 
 pytest.importorskip("mitmproxy")

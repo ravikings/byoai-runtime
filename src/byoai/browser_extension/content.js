@@ -32,23 +32,30 @@
   } catch { /* cross-origin parent: this frame is its own page */ }
   window.__shieldCapturePatched = true
   // Which build this tab runs (a tab opened before a reload keeps old code).
-  try { Object.defineProperty(window, '__shieldVersion', { value: '0.9.5' }) } catch { /* already set */ }
+  try { Object.defineProperty(window, '__shieldVersion', { value: '0.10.0' }) } catch { /* already set */ }
 
-  const APP_FOR_HOST = {
-    'claude.ai': 'claude',
-    'chatgpt.com': 'chatgpt',
-    'chat.openai.com': 'chatgpt',
-    'gemini.google.com': 'gemini',
-    'copilot.microsoft.com': 'copilot',
-  }
-  const app = APP_FOR_HOST[location.host]
+  // Which app this host is: from the generated shield-sites.js (sites.json).
+  const site = ((window.__shieldSites && window.__shieldSites.sites) || [])
+    .find((x) => Array.isArray(x.hosts) && x.hosts.includes(location.host))
+  const app = site && site.app
   if (!app) return
+
+  /*
+   * The rule engine (shield-core.js, run just before this file, before any
+   * page script). It is trusted only if it is the one that script defined: a
+   * frozen value on a non-writable, non-configurable property, with no
+   * "tampered" marker. Anything else (missing, or put there by the page)
+   * means the checker isn't running, and a chat send on a governed app is
+   * then refused rather than passed unchecked, with a health row saying why.
+   */
+  const coreDesc = Object.getOwnPropertyDescriptor(window, '__shieldCore')
+  const coreOk = !!coreDesc && coreDesc.configurable === false && coreDesc.writable === false &&
+    Object.isFrozen(coreDesc.value) && typeof coreDesc.value.engine === 'function' &&
+    !Object.prototype.hasOwnProperty.call(window, '__shieldCoreTampered')
+  const core = coreOk ? coreDesc.value : null
 
   const RULES = window.__shieldRules ||
     { secret: [], pii: [], flag: [], validators: {}, placeholder: {}, rule_actions: {}, default_actions: {}, covered_apps: [] }
-  const compile = (list) => (list || []).map(([name, source, flags]) =>
-    ({ name, all: new RegExp(source, flags.replace('g', '') + 'g') }))
-  const TIERS = [['secret', compile(RULES.secret)], ['pii', compile(RULES.pii)], ['flag', compile(RULES.flag)]]
   // Gemini's web client sends form-encoded batch RPC and Copilot a websocket,
   // so only these apps' messages can be read and rewritten.
   const covered = (RULES.covered_apps || []).includes(app)
@@ -59,24 +66,17 @@
    * paired Shield). Until it arrives nothing is rewritten; with no policy
    * heard from Shield yet, the privacy-first default applies: redact.
    */
-  const SCAN_MAX = 2_000_000
-  const ORDER = { log: 0, redact: 1, warn: 2, block: 3 }
-  const isAction = (a) => typeof a === 'string' && Object.prototype.hasOwnProperty.call(ORDER, a)
-  // Only valid actions survive; a missing or invalid one falls back to the default.
-  const cleanActions = (a) => {
-    const out = {}
-    for (const tier of ['secret', 'pii', 'flag']) if (a && isAction(a[tier])) out[tier] = a[tier]
-    return out
-  }
-  const FILE_ORDER = { allow: 0, warn: 1, block: 2 }
-  const cleanFiles = (f) => {
-    const out = {}
-    for (const a of Object.keys(APP_FOR_HOST).map((h) => APP_FOR_HOST[h])) {
-      if (f && typeof f[a] === 'string' && Object.prototype.hasOwnProperty.call(FILE_ORDER, f[a])) out[a] = f[a]
-    }
-    return out
-  }
   let config = { consented: false, mode: 'redact', apps: null, actions: {}, files: {} }
+  const { SCAN_MAX, ORDER, cleanActions, cleanFiles, passes, scan, redactWithRules, assessFiles, cleanMime } = core
+    ? core.engine(RULES, () => config)
+    : {
+      SCAN_MAX: 2_000_000, ORDER: { log: 0, redact: 1, warn: 2, block: 3 }, cleanActions: () => ({}), cleanFiles: () => ({}),
+      passes: () => true, scan: () => [], redactWithRules: (t) => t,
+      // No checker: every file is stopped (level 2), never let through unread.
+      assessFiles: async (_a, parts) => ({ facts: parts.map((p) => ({ name: p.name, mime: '', bytes: null, sha256: null,
+        scanned: false, hits: [], unreadable: true })), labels: ['core_missing'], top: 2, level: () => 2, flagsOf: () => [] }),
+      cleanMime: (m) => String(m || '').split(';')[0].trim().toLowerCase().slice(0, 60),
+    }
   /*
    * Everything from the relay (config, warn answers) arrives on one
    * MessageChannel port that the relay transfers in a single event at
@@ -100,6 +100,8 @@
       }
     } else if (c.t === 'warn-result') {
       answered(c.send_id, c.choice)
+    } else if (c.t === 'gate') {
+      if (typeof c.gate_id === 'string' && c.gate_id.length <= 64) gate = { id: c.gate_id, at: Date.now() }
     } else if (c.t === 'relay-closed') {
       relayGone()
     }
@@ -145,123 +147,6 @@
       return contentText(inp[inp.length - 1].content)
     }
     return ''
-  }
-
-  // A regex hit counts only if the rule's named validator passes on the match.
-  function luhn(m) {
-    const d = m.replace(/\D/g, '')
-    if (d.length < 13 || d.length > 19) return false
-    let sum = 0
-    for (let i = 0; i < d.length; i++) {
-      let n = d.charCodeAt(d.length - 1 - i) - 48
-      if (i % 2 === 1) { n *= 2; if (n > 9) n -= 9 }
-      sum += n
-    }
-    return sum % 10 === 0
-  }
-  function iban(m) {
-    const s = m.replace(/\s/g, '').toUpperCase()
-    if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(s)) return false
-    let rem = 0
-    for (const ch of s.slice(4) + s.slice(0, 4)) {
-      const v = /[A-Z]/.test(ch) ? String(ch.charCodeAt(0) - 55) : ch
-      for (const dg of v) rem = (rem * 10 + (dg.charCodeAt(0) - 48)) % 97
-    }
-    return rem === 1
-  }
-  const VALIDATORS = { luhn, iban }
-  const passes = (name, m) => {
-    const v = RULES.validators && RULES.validators[name]
-    if (!v) return true
-    const fn = VALIDATORS[v]
-    return fn ? fn(m) : false // an unknown validator never vouches for a hit
-  }
-  const matchesOf = (rule, text) => {
-    const out = []
-    for (const m of text.matchAll(rule.all)) if (passes(rule.name, m[0])) out.push(m[0])
-    return out
-  }
-
-  // What Shield does about one hit: a rule's own action first, else the
-  // policy's action for its tier. "observe" mode makes everything a log.
-  function actionFor(tier, name) {
-    if (config.mode === 'observe') return 'log'
-    const own = RULES.rule_actions && RULES.rule_actions[name]
-    if (isAction(own)) return own
-    const t = config.actions[tier]
-    if (isAction(t)) return t
-    const d = RULES.default_actions && RULES.default_actions[tier]
-    return isAction(d) ? d : 'log'
-  }
-
-  // Rules a message matches: [{tier, name, action}] (rule names, never text).
-  // The secret tier always reads the full text; pii and flag read the head and
-  // tail of a text over SCAN_MAX (and the caller flags it oversize).
-  const capped = (text) => (text.length > SCAN_MAX ? text.slice(0, SCAN_MAX / 2) + '\n' + text.slice(-SCAN_MAX / 2) : text)
-  function scan(text) {
-    const out = []
-    const short = capped(text)
-    for (const [tier, rules] of TIERS) {
-      const t = tier === 'secret' ? text : short
-      for (const r of rules) if (matchesOf(r, t).length) out.push({ tier, name: r.name, action: actionFor(tier, r.name) })
-    }
-    return out
-  }
-
-  // [EMAIL_1]: numbered per body by distinct value, so a model can keep
-  // references straight. Lives only for one call; nothing is kept.
-  function redactWithRules(text, names, state, hit) {
-    for (const [tier, rules] of TIERS) {
-      if (tier === 'flag') continue
-      for (const r of rules) {
-        if (!names.has(r.name)) continue
-        const sub = (m) => {
-          if (!passes(r.name, m)) return m
-          const label = (RULES.placeholder && RULES.placeholder[r.name]) || 'REDACTED'
-          const seen = state[label] || (state[label] = new Map())
-          if (!seen.has(m)) seen.set(m, seen.size + 1)
-          hit.add(r.name)
-          return `[${label}_${seen.get(m)}]`
-        }
-        text = r.name === 'private_key_block' ? redactPrivateKeys(text, r.all, sub) : text.replace(r.all, sub)
-      }
-    }
-    return text
-  }
-
-  /*
-   * A private key header, and the key body through its END line when that
-   * starts within 8192 characters, become one placeholder. Detection is the
-   * header alone; the END search is code, not a regex, and only moves forward
-   * (an END candidate that is not a valid END line is not one for any later
-   * header either), so a stream of headers is linear. Same as
-   * byoai.integrations.shield._redact_private_keys.
-   */
-  const KEY_END = /-----END [A-Z ]{0,256}PRIVATE KEY(?: BLOCK)?-----/y
-  const KEY_BODY_MAX = 8192
-  function redactPrivateKeys(text, headerRx, sub) {
-    const header = new RegExp(headerRx.source, headerRx.flags)
-    const out = []
-    let pos = 0
-    let endAt = -2
-    let endStop = -1
-    for (let m; (m = header.exec(text));) {
-      if (m.index < pos) continue
-      let stop = m.index + m[0].length
-      if (endAt !== -1 && endAt < stop) {
-        endAt = -1
-        for (let i = text.indexOf('-----END ', stop); i !== -1; i = text.indexOf('-----END ', i + 1)) {
-          KEY_END.lastIndex = i
-          const e = KEY_END.exec(text)
-          if (e) { endAt = i; endStop = i + e[0].length; break }
-        }
-      }
-      if (endAt !== -1 && endAt - stop <= KEY_BODY_MAX) stop = endStop
-      out.push(text.slice(pos, m.index), sub(text.slice(m.index, stop)))
-      pos = stop
-    }
-    out.push(text.slice(pos))
-    return out.join('')
   }
 
   /*
@@ -332,6 +217,7 @@
     facts.flags = lastFlags.map((h) => `${h.tier}:${h.name}`) // last message, as Python
     if (oversize) facts.flags.push('flag:oversize')
     if (!governing()) return { facts, raw }
+    if (!core) return { facts: { ...facts, verdict: 'blocked' }, raw, blocked: ['core_missing'] }
     const top = hits.reduce((m, h) => Math.max(m, ORDER[h.action]), 0)
     const named = (a) => hits.filter((h) => h.action === a).map((h) => h.name)
     if (top === ORDER.block) {
@@ -386,7 +272,23 @@
   const newId = () => (crypto.randomUUID?.() ??
     Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''))
 
+  /*
+   * Rows for a send or a file say which layer saw them: this wrapper is the
+   * backstop ("network"); the input gate in the isolated world writes "input".
+   * When the gate decided a send just now it told us (over the private port)
+   * and its id is added, so one send's two rows can be matched.
+   */
+  let gate = null
+  const GATE_MS = 10_000
   function emit(detail) {
+    if (detail && (detail.kind === 'browser.chat.request' || detail.kind === 'browser.chat.attachment')) {
+      detail = { stage: 'network', ...detail }
+      // One decision's id goes on the first network row after it, then it is spent.
+      if (gate && detail.gate_id === undefined) {
+        if (Date.now() - gate.at < GATE_MS) detail.gate_id = gate.id
+        gate = null
+      }
+    }
     window.dispatchEvent(new CustomEvent('shield-agent-capture', { detail }))
   }
 
@@ -506,56 +408,6 @@
    * the attachment row for the local Shield, which keeps a keyed hash of it.
    * Same checks as byoai.integrations.shield.inspect_file.
    */
-  const MAX_FILE_SCAN = 5 * 1024 * 1024
-  const TEXT_EXT = new Set(('.txt .csv .tsv .json .jsonl .md .log .env .ini .cfg .conf .yaml .yml .xml ' +
-    '.sql .py .js .ts .go .java .rb .sh .pem .key').split(' '))
-  // Python's os.path.splitext: leading dots of the base name are not an extension.
-  function extOf(name) {
-    const base = String(name || '').split('/').pop().replace(/^\.+/, '')
-    const i = base.lastIndexOf('.')
-    return i < 0 ? '' : base.slice(i).toLowerCase()
-  }
-  const TEXT_MIMES = new Set(['application/json', 'application/x-sh', 'application/xml',
-    'application/x-yaml', 'application/yaml'])
-  // A declared type that is text whatever the file is called (as mime_text_like in Python).
-  function mimeTextLike(mime) {
-    const m = String(mime || '').split(';')[0].trim().toLowerCase()
-    return m.startsWith('text/') || TEXT_MIMES.has(m) || m.endsWith('+json') || m.endsWith('+xml') ||
-      m.includes('yaml') || m.includes('x509') || m.includes('pem')
-  }
-  const textLike = (name, mime) => TEXT_EXT.has(extOf(name)) || mimeTextLike(mime)
-  // utf-16le / utf-16be for text with no byte-order mark: over 30% of the bytes at one parity are zero.
-  function utf16Guess(u) {
-    const n = u.length
-    if (n < 4) return null
-    let odd = 0
-    let even = 0
-    for (let i = 0; i < n; i++) if (u[i] === 0) { if (i % 2) odd++; else even++ }
-    if (odd / (n / 2) > 0.3 && odd >= even) return 'utf-16le'
-    if (even / (n / 2) > 0.3) return 'utf-16be'
-    return null
-  }
-  const hasBom16 = (u) => u.length >= 2 && ((u[0] === 0xff && u[1] === 0xfe) || (u[0] === 0xfe && u[1] === 0xff))
-  function decodeText(bytes) {
-    const u = new Uint8Array(bytes)
-    if (u.length >= 2 && u[0] === 0xff && u[1] === 0xfe) return new TextDecoder('utf-16le').decode(u)
-    if (u.length >= 2 && u[0] === 0xfe && u[1] === 0xff) return new TextDecoder('utf-16be').decode(u)
-    const g = utf16Guess(u)
-    if (g) return new TextDecoder(g).decode(u)
-    return new TextDecoder('utf-8', { ignoreBOM: true }).decode(u)
-  }
-  // Valid UTF-8, or UTF-16 (with a mark, or by the zero-byte pattern): a bare upload that reads as text.
-  function readsAsText(bytes) {
-    const u = new Uint8Array(bytes)
-    if (hasBom16(u) || utf16Guess(u)) return true
-    try { new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); return true } catch { return false }
-  }
-  const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('')
-  const cleanMime = (m) => {
-    const t = String(m || '').split(';')[0].trim()
-    return /^[\w.+-]{1,60}\/[\w.+-]{1,80}$/.test(t) ? t.toLowerCase() : ''
-  }
-
   // By tag, not instanceof: a page's own realm objects (an iframe's Blob) still count.
   const tagOf = (v) => Object.prototype.toString.call(v)
   const isBlob = (v) => { const t = tagOf(v); return t === '[object Blob]' || t === '[object File]' }
@@ -619,70 +471,12 @@
     return null
   }
 
-  // Full-text scan for files: every tier reads all of the text (no head/tail cap).
-  function scanFile(text) {
-    const out = []
-    for (const [tier, rules] of TIERS) {
-      for (const r of rules) if (matchesOf(r, text).length) out.push({ tier, name: r.name, action: actionFor(tier, r.name) })
-    }
-    return out
-  }
-
-  async function fileFacts(part) {
-    if (part.stream) return { name: null, mime: '', bytes: null, sha256: null, scanned: false, hits: [] }
-    const buf = part.bytes ?? await part.blob.arrayBuffer()
-    const mime = part.blob ? cleanMime(part.blob.type) : cleanMime(part.mime)
-    const name = part.name
-    const bytes = buf.byteLength
-    const sha256 = hex(await crypto.subtle.digest('SHA-256', buf))
-    const scanned = bytes <= MAX_FILE_SCAN && (textLike(name, mime) || (part.raw === true && !name && readsAsText(buf)))
-    let hits = []
-    if (scanned) hits = scanFile(part.scanText !== undefined ? decodeText(buf) + '\n' + part.scanText : decodeText(buf))
-    return { name, mime, bytes, sha256, scanned, hits }
-  }
-
-  /*
-   * The strictest of the app's file policy and the rule actions (redact counts
-   * as warn: files are never rewritten). Observe mode only logs.
-   */
-  function fileAction(app_, hits) {
-    if (config.mode === 'observe') return 'allow'
-    let top = FILE_ORDER[config.files[app_]] || 0
-    for (const h of hits) {
-      const a = h.action === 'block' ? 2 : (h.action === 'warn' || h.action === 'redact') ? 1 : 0
-      if (a > top) top = a
-    }
-    return ['allow', 'warn', 'block'][top]
-  }
-
   /*
    * Decide one upload (a list of files). Resolves to 'go' | 'block' | 'remove' |
    * 'cancel' and has already emitted one attachment row per file.
    */
   async function decideUpload(up) {
-    const parts = up.parts
-    const facts = []
-    for (const p of parts) {
-      try {
-        facts.push(await fileFacts(p))
-      } catch {
-        // Could not read or hash this file: never break the app, but say so in
-        // the record, and let the file policy decide (warn asks, block stops).
-        facts.push({ name: p.name, mime: p.blob ? cleanMime(p.blob.type) : cleanMime(p.mime),
-          bytes: p.blob ? p.blob.size : (p.bytes ? p.bytes.byteLength : null), sha256: null, scanned: false,
-          hits: [], unreadable: true })
-      }
-    }
-    const level = (f) => FILE_ORDER[fileAction(app, f.hits)] // 0 allow, 1 warn, 2 block
-    const labels = []
-    for (const f of facts) {
-      for (const h of f.hits) {
-        if (fileAction(app, [h]) !== 'allow' && !labels.includes(h.name)) labels.push(h.name)
-      }
-      if (f.unreadable && level(f) > 0 && !labels.includes('unreadable')) labels.push('unreadable')
-    }
-    const top = facts.reduce((m, f) => Math.max(m, level(f)), 0)
-    const flagsOf = (f) => [...f.hits.map((h) => `${h.tier}:${h.name}`), ...(f.unreadable ? ['flag:unreadable'] : [])]
+    const { facts, labels, top, level, flagsOf } = await assessFiles(app, up.parts)
     // One row per file; `verdictOf` gives each its own outcome.
     const finish = (verdictOf, out) => {
       // The app still shows a file whose upload was refused as attached;
@@ -875,6 +669,9 @@
     if (strict) return refusal(['unreadable'])
     return consumed ? null : orig.call(self, input, init)
   }
+
+  // The checker didn't load (or the page put something in its place): say so once; sends are refused above.
+  if (!core && covered) emit({ kind: 'browser.health.core_missing', app })
 
   window.fetch = function (input, init) {
     let url = ''

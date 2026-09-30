@@ -15,6 +15,8 @@ import { REPO } from './env.mjs'
 
 const EXT = path.join(REPO, 'src', 'byoai', 'browser_extension')
 const read = (f) => readFileSync(path.join(EXT, f), 'utf8')
+const SITES_JS = readFileSync(path.join(EXT, 'shield-sites.js'), 'utf8')
+const CORE_JS = readFileSync(path.join(EXT, 'shield-core.js'), 'utf8')
 const CONTENT_JS = read('content.js')
 const RELAY_JS = read('content-relay.js')
 const CONSENT_JS = read('consent.js')
@@ -72,6 +74,8 @@ function world({ host = 'claude.ai', config, relay = false, reply = () => new Re
   })
   win.postMessage = (data, _origin, transfer) => postPort(win, win.Event, transfer[0], data)
   vm.runInContext(CONSENT_JS, ctx)
+  vm.runInContext(SITES_JS, ctx)
+  vm.runInContext(CORE_JS, ctx)
   vm.runInContext(CONTENT_JS, ctx) // listed first in the manifest, so it is listening when the relay posts
   if (relay) vm.runInContext(RELAY_JS, ctx)
   else connectPage(win, win.Event, { consented: true, mode: 'redact', apps: null, ...config })
@@ -275,6 +279,8 @@ describe('warn without a relay', () => {
     win.addEventListener('shield-agent-capture', (ev) => captured.push(ev.detail))
     const ctx = vm.createContext({ window: win, document: win.document, location: { host: 'claude.ai' }, CustomEvent: win.CustomEvent,
       Request, Response, TextDecoder, crypto, FormData, Blob, JSON, setTimeout, clearTimeout, Date })
+    vm.runInContext(SITES_JS, ctx)
+    vm.runInContext(CORE_JS, ctx)
     vm.runInContext(CONTENT_JS, ctx)
     // a relay that connects, sets warn, then goes away
     const relayEnd = connectPage(win, win.Event, { consented: true, mode: 'redact', apps: null, actions: { secret: 'warn' } })

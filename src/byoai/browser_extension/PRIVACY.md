@@ -90,6 +90,20 @@ Already true on this Mac: Shield keeps `sha256` and the keyed name hash only in
 its local ledger and sealed record. They are not part of any sync level
 (`seal`, `daily`, `events`), so neither leaves the device.
 
+## What the input gate reads
+
+From version 0.10.0, when you press Enter in a message box, click a send
+button, submit a form, pick a file, or drop or paste a file, the extension
+reads the message text or the file in its own isolated part of the page (a
+part the site's scripts cannot read or change) to check it against the rules
+described below, before the site receives it. This happens entirely in your
+browser. The text and file contents are not stored, not put in any event and
+not sent to Shield or anywhere else; only rule names, lengths, a file's hash,
+type, size and name (hashed by Shield) go into the record, as before. To
+remove a detail it may rewrite the message box, and to stop a file it may clear
+the file picker. It does not read voice input or anything you have not sent,
+picked, dropped or pasted.
+
 ## What it changes
 
 On claude.ai and chatgpt.com (and chat.openai.com), when Shield's mode is

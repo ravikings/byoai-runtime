@@ -1,0 +1,297 @@
+/**
+ * Coriqo Shield: the rule engine both worlds share.
+ *
+ * Loaded before content.js (page world) and before content-relay.js (isolated
+ * world), each in its own copy, so the network wrapper and the input gate
+ * read messages and files with the same code: the same rules from
+ * shield-rules.js, the same validators, placeholders, private-key handling,
+ * file text-likeness and SHA-256, and the same policy cleaning. Nothing here
+ * keeps text; results are rule names, counts and hashes.
+ */
+(function () {
+  'use strict'
+  /*
+   * This script runs before any page script, so a `__shieldCore` that already
+   * exists was put there by the page. It is not reused: a marker says so, and
+   * content.js then fails closed. The real one is defined non-writable and
+   * non-configurable, so the page can't replace it afterwards either.
+   */
+  const has = (k) => Object.prototype.hasOwnProperty.call(window, k)
+  if (has('__shieldCore') || has('__shieldCoreTampered')) {
+    try { Object.defineProperty(window, '__shieldCoreTampered', { value: true }) } catch { /* already marked */ }
+    return
+  }
+
+  // Which app each host is, from the generated shield-sites.js (sites.json is the one source).
+  const sites = (window.__shieldSites && window.__shieldSites.sites) || []
+  const APP_FOR_HOST = {}
+  for (const site of sites) for (const h of site.hosts || []) APP_FOR_HOST[h] = site.app
+  const APPS = [...new Set(sites.map((x) => x.app))]
+
+  // `getConfig()` is the caller's live policy: {mode, apps, actions, files}.
+  function engine(RULES, getConfig) {
+    const compile = (list) => (list || []).map(([name, source, flags]) =>
+      ({ name, all: new RegExp(source, flags.replace('g', '') + 'g') }))
+    const TIERS = [['secret', compile(RULES.secret)], ['pii', compile(RULES.pii)], ['flag', compile(RULES.flag)]]
+
+    const SCAN_MAX = 2_000_000
+    const ORDER = { log: 0, redact: 1, warn: 2, block: 3 }
+    const isAction = (a) => typeof a === 'string' && Object.prototype.hasOwnProperty.call(ORDER, a)
+    // Only valid actions survive; a missing or invalid one falls back to the default.
+    const cleanActions = (a) => {
+      const out = {}
+      for (const tier of ['secret', 'pii', 'flag']) if (a && isAction(a[tier])) out[tier] = a[tier]
+      return out
+    }
+    const FILE_ORDER = { allow: 0, warn: 1, block: 2 }
+    const cleanFiles = (f) => {
+      const out = {}
+      for (const a of APPS) {
+        if (f && typeof f[a] === 'string' && Object.prototype.hasOwnProperty.call(FILE_ORDER, f[a])) out[a] = f[a]
+      }
+      return out
+    }
+
+    // A regex hit counts only if the rule's named validator passes on the match.
+    function luhn(m) {
+      const d = m.replace(/\D/g, '')
+      if (d.length < 13 || d.length > 19) return false
+      let sum = 0
+      for (let i = 0; i < d.length; i++) {
+        let n = d.charCodeAt(d.length - 1 - i) - 48
+        if (i % 2 === 1) { n *= 2; if (n > 9) n -= 9 }
+        sum += n
+      }
+      return sum % 10 === 0
+    }
+    function iban(m) {
+      const s = m.replace(/\s/g, '').toUpperCase()
+      if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(s)) return false
+      let rem = 0
+      for (const ch of s.slice(4) + s.slice(0, 4)) {
+        const v = /[A-Z]/.test(ch) ? String(ch.charCodeAt(0) - 55) : ch
+        for (const dg of v) rem = (rem * 10 + (dg.charCodeAt(0) - 48)) % 97
+      }
+      return rem === 1
+    }
+    const VALIDATORS = { luhn, iban }
+    const passes = (name, m) => {
+      const v = RULES.validators && RULES.validators[name]
+      if (!v) return true
+      const fn = VALIDATORS[v]
+      return fn ? fn(m) : false // an unknown validator never vouches for a hit
+    }
+    const matchesOf = (rule, text) => {
+      const out = []
+      for (const m of text.matchAll(rule.all)) if (passes(rule.name, m[0])) out.push(m[0])
+      return out
+    }
+
+    // What Shield does about one hit: a rule's own action first, else the
+    // policy's action for its tier. "observe" mode makes everything a log.
+    function actionFor(tier, name) {
+      if (getConfig().mode === 'observe') return 'log'
+      const own = RULES.rule_actions && RULES.rule_actions[name]
+      if (isAction(own)) return own
+      const t = getConfig().actions[tier]
+      if (isAction(t)) return t
+      const d = RULES.default_actions && RULES.default_actions[tier]
+      return isAction(d) ? d : 'log'
+    }
+
+    // Rules a message matches: [{tier, name, action}] (rule names, never text).
+    // The secret tier always reads the full text; pii and flag read the head and
+    // tail of a text over SCAN_MAX (and the caller flags it oversize).
+    const capped = (text) => (text.length > SCAN_MAX ? text.slice(0, SCAN_MAX / 2) + '\n' + text.slice(-SCAN_MAX / 2) : text)
+    function scan(text) {
+      const out = []
+      const short = capped(text)
+      for (const [tier, rules] of TIERS) {
+        const t = tier === 'secret' ? text : short
+        for (const r of rules) if (matchesOf(r, t).length) out.push({ tier, name: r.name, action: actionFor(tier, r.name) })
+      }
+      return out
+    }
+
+    // [EMAIL_1]: numbered per body by distinct value, so a model can keep
+    // references straight. Lives only for one call; nothing is kept.
+    function redactWithRules(text, names, state, hit) {
+      for (const [tier, rules] of TIERS) {
+        if (tier === 'flag') continue
+        for (const r of rules) {
+          if (!names.has(r.name)) continue
+          const sub = (m) => {
+            if (!passes(r.name, m)) return m
+            const label = (RULES.placeholder && RULES.placeholder[r.name]) || 'REDACTED'
+            const seen = state[label] || (state[label] = new Map())
+            if (!seen.has(m)) seen.set(m, seen.size + 1)
+            hit.add(r.name)
+            return `[${label}_${seen.get(m)}]`
+          }
+          text = r.name === 'private_key_block' ? redactPrivateKeys(text, r.all, sub) : text.replace(r.all, sub)
+        }
+      }
+      return text
+    }
+
+    /*
+     * A private key header, and the key body through its END line when that
+     * starts within 8192 characters, become one placeholder. Detection is the
+     * header alone; the END search is code, not a regex, and only moves forward
+     * (an END candidate that is not a valid END line is not one for any later
+     * header either), so a stream of headers is linear. Same as
+     * byoai.integrations.shield._redact_private_keys.
+     */
+    const KEY_END = /-----END [A-Z ]{0,256}PRIVATE KEY(?: BLOCK)?-----/y
+    const KEY_BODY_MAX = 8192
+    function redactPrivateKeys(text, headerRx, sub) {
+      const header = new RegExp(headerRx.source, headerRx.flags)
+      const out = []
+      let pos = 0
+      let endAt = -2
+      let endStop = -1
+      for (let m; (m = header.exec(text));) {
+        if (m.index < pos) continue
+        let stop = m.index + m[0].length
+        if (endAt !== -1 && endAt < stop) {
+          endAt = -1
+          for (let i = text.indexOf('-----END ', stop); i !== -1; i = text.indexOf('-----END ', i + 1)) {
+            KEY_END.lastIndex = i
+            const e = KEY_END.exec(text)
+            if (e) { endAt = i; endStop = i + e[0].length; break }
+          }
+        }
+        if (endAt !== -1 && endAt - stop <= KEY_BODY_MAX) stop = endStop
+        out.push(text.slice(pos, m.index), sub(text.slice(m.index, stop)))
+        pos = stop
+      }
+      out.push(text.slice(pos))
+      return out.join('')
+    }
+
+
+    const MAX_FILE_SCAN = 5 * 1024 * 1024
+    const TEXT_EXT = new Set(('.txt .csv .tsv .json .jsonl .md .log .env .ini .cfg .conf .yaml .yml .xml ' +
+      '.sql .py .js .ts .go .java .rb .sh .pem .key').split(' '))
+    // Python's os.path.splitext: leading dots of the base name are not an extension.
+    function extOf(name) {
+      const base = String(name || '').split('/').pop().replace(/^\.+/, '')
+      const i = base.lastIndexOf('.')
+      return i < 0 ? '' : base.slice(i).toLowerCase()
+    }
+    const TEXT_MIMES = new Set(['application/json', 'application/x-sh', 'application/xml',
+      'application/x-yaml', 'application/yaml'])
+    // A declared type that is text whatever the file is called (as mime_text_like in Python).
+    function mimeTextLike(mime) {
+      const m = String(mime || '').split(';')[0].trim().toLowerCase()
+      return m.startsWith('text/') || TEXT_MIMES.has(m) || m.endsWith('+json') || m.endsWith('+xml') ||
+        m.includes('yaml') || m.includes('x509') || m.includes('pem')
+    }
+    const textLike = (name, mime) => TEXT_EXT.has(extOf(name)) || mimeTextLike(mime)
+    // utf-16le / utf-16be for text with no byte-order mark: over 30% of the bytes at one parity are zero.
+    function utf16Guess(u) {
+      const n = u.length
+      if (n < 4) return null
+      let odd = 0
+      let even = 0
+      for (let i = 0; i < n; i++) if (u[i] === 0) { if (i % 2) odd++; else even++ }
+      if (odd / (n / 2) > 0.3 && odd >= even) return 'utf-16le'
+      if (even / (n / 2) > 0.3) return 'utf-16be'
+      return null
+    }
+    const hasBom16 = (u) => u.length >= 2 && ((u[0] === 0xff && u[1] === 0xfe) || (u[0] === 0xfe && u[1] === 0xff))
+    function decodeText(bytes) {
+      const u = new Uint8Array(bytes)
+      if (u.length >= 2 && u[0] === 0xff && u[1] === 0xfe) return new TextDecoder('utf-16le').decode(u)
+      if (u.length >= 2 && u[0] === 0xfe && u[1] === 0xff) return new TextDecoder('utf-16be').decode(u)
+      const g = utf16Guess(u)
+      if (g) return new TextDecoder(g).decode(u)
+      return new TextDecoder('utf-8', { ignoreBOM: true }).decode(u)
+    }
+    // Valid UTF-8, or UTF-16 (with a mark, or by the zero-byte pattern): a bare upload that reads as text.
+    function readsAsText(bytes) {
+      const u = new Uint8Array(bytes)
+      if (hasBom16(u) || utf16Guess(u)) return true
+      try { new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); return true } catch { return false }
+    }
+    const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('')
+    const cleanMime = (m) => {
+      const t = String(m || '').split(';')[0].trim()
+      return /^[\w.+-]{1,60}\/[\w.+-]{1,80}$/.test(t) ? t.toLowerCase() : ''
+    }
+
+
+    // Full-text scan for files: every tier reads all of the text (no head/tail cap).
+    function scanFile(text) {
+      const out = []
+      for (const [tier, rules] of TIERS) {
+        for (const r of rules) if (matchesOf(r, text).length) out.push({ tier, name: r.name, action: actionFor(tier, r.name) })
+      }
+      return out
+    }
+
+    async function fileFacts(part) {
+      if (part.stream) return { name: null, mime: '', bytes: null, sha256: null, scanned: false, hits: [] }
+      const buf = part.bytes ?? await part.blob.arrayBuffer()
+      const mime = part.blob ? cleanMime(part.blob.type) : cleanMime(part.mime)
+      const name = part.name
+      const bytes = buf.byteLength
+      const sha256 = hex(await crypto.subtle.digest('SHA-256', buf))
+      const scanned = bytes <= MAX_FILE_SCAN && (textLike(name, mime) || (part.raw === true && !name && readsAsText(buf)))
+      let hits = []
+      if (scanned) hits = scanFile(part.scanText !== undefined ? decodeText(buf) + '\n' + part.scanText : decodeText(buf))
+      return { name, mime, bytes, sha256, scanned, hits }
+    }
+
+    /*
+     * The strictest of the app's file policy and the rule actions (redact counts
+     * as warn: files are never rewritten). Observe mode only logs.
+     */
+    function fileAction(app_, hits) {
+      if (getConfig().mode === 'observe') return 'allow'
+      let top = FILE_ORDER[getConfig().files[app_]] || 0
+      for (const h of hits) {
+        const a = h.action === 'block' ? 2 : (h.action === 'warn' || h.action === 'redact') ? 1 : 0
+        if (a > top) top = a
+      }
+      return ['allow', 'warn', 'block'][top]
+    }
+
+
+    /*
+     * Facts and the decision for a list of files (parts as fileFacts takes them):
+     * shared by the network wrapper and the input gate so both judge alike.
+     * `level(f)` is 0 allow, 1 warn, 2 block; `labels` are the rule names (and
+     * "unreadable") that raised it; nothing here holds file text past the call.
+     */
+    async function assessFiles(app_, parts) {
+      const facts = []
+      for (const p of parts) {
+        try {
+          facts.push(await fileFacts(p))
+        } catch {
+          // Could not read or hash this file: never break the app, but say so in
+          // the record, and let the file policy decide (warn asks, block stops).
+          facts.push({ name: p.name, mime: p.blob ? cleanMime(p.blob.type) : cleanMime(p.mime),
+            bytes: p.blob ? p.blob.size : (p.bytes ? p.bytes.byteLength : null), sha256: null, scanned: false,
+            hits: [], unreadable: true })
+        }
+      }
+      const level = (f) => FILE_ORDER[fileAction(app_, f.hits)]
+      const labels = []
+      for (const f of facts) {
+        for (const h of f.hits) {
+          if (fileAction(app_, [h]) !== 'allow' && !labels.includes(h.name)) labels.push(h.name)
+        }
+        if (f.unreadable && level(f) > 0 && !labels.includes('unreadable')) labels.push('unreadable')
+      }
+      const top = facts.reduce((m, f) => Math.max(m, level(f)), 0)
+      const flagsOf = (f) => [...f.hits.map((h) => `${h.tier}:${h.name}`), ...(f.unreadable ? ['flag:unreadable'] : [])]
+      return { facts, labels, top, level, flagsOf }
+    }
+
+    return { SCAN_MAX, ORDER, cleanActions, cleanFiles, passes, scan, redactWithRules, assessFiles, cleanMime }
+  }
+
+  Object.defineProperty(window, '__shieldCore', { value: Object.freeze({ engine }), writable: false, configurable: false })
+})()

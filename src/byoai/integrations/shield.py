@@ -1943,7 +1943,7 @@ class Feed:
             if kind == "browser.chat.attachment":
                 self._absorb_file(r, "browser", date, ts)
                 return
-            if kind == "browser.health.unmatched":
+            if kind in ("browser.health.unmatched", "browser.health.core_missing"):
                 return  # facts for the ledger and seal, not a message row
             wire = r.get("wire") if isinstance(r.get("wire"), str) else None
             ts_raw = r.get("sent_at") or ""
@@ -2190,7 +2190,8 @@ class Feed:
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 EXTENSION_SCHEMES = ("chrome-extension://", "moz-extension://")
 BROWSER_KINDS = ("browser.chat.request", "browser.chat.status", "browser.chat.reply",
-                 "browser.chat.attachment", "browser.health.unmatched")
+                 "browser.chat.attachment", "browser.health.unmatched",
+                 "browser.health.core_missing")
 
 # Hosts the browser extension watches. The relay covers the whole page even
 # when the send itself bypassed fetch, so a bare host must classify like the
@@ -2259,6 +2260,10 @@ _BROWSER_VERDICT = re.compile(
 # What became of an uploaded file, as the extension records it.
 _ATTACH_VERDICT = re.compile(
     r"allowed|blocked|cancelled|warned(?:\u2192|->)(?:uploaded|removed)")
+# Which layer saw a send or a file: the extension's input gate (before the page
+# gets it) or its network wrapper (the backstop).
+_STAGES = frozenset({"input", "network"})
+_GATE_REASONS = frozenset({"rewrite_failed", "send_retry_needed"})
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _NAME_HASH = re.compile(r"hmac-sha256:[0-9a-f]{64}")
 _RULES_VERSION = re.compile(r"[0-9a-f]{12}")
@@ -2294,6 +2299,18 @@ def clean_browser_row(row: object) -> dict | None:
     # Random per send, set in the page: ties a reply row to its request.
     if isinstance(row.get("send_id"), str) and _SEND_ID.fullmatch(row["send_id"]):
         out["send_id"] = row["send_id"]
+    # Which layer saw it, and the id the input gate gave the send so its input
+    # row and network row can be matched. Only request and attachment rows have them.
+    if row["kind"] in ("browser.chat.request", "browser.chat.attachment"):
+        stage = row.get("stage")
+        if isinstance(stage, str) and stage in _STAGES:
+            out["stage"] = stage
+        if isinstance(row.get("gate_id"), str) and _SEND_ID.fullmatch(row["gate_id"]):
+            out["gate_id"] = row["gate_id"]
+        # Why a gate stopped a send that no rule named (the box couldn't be rewritten).
+        reason = row.get("reason")
+        if isinstance(reason, str) and reason in _GATE_REASONS:
+            out["reason"] = reason
     # Set by the extension's page capture (content.js), which runs the same
     # rules before the message leaves the page. Anything not a known rule
     # name is dropped, not the row.

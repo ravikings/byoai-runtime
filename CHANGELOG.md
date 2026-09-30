@@ -20,6 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[redacted-email]`.
 
 ### Added
+- **Extension 0.10.0: an input gate.** Wrapping the page's network calls can't
+  reliably stop a send (claude.ai sent through a hidden iframe's own `fetch`,
+  then retried with other body types), so the message and the files are now
+  checked when the user hands them to the page: Enter (not Shift/Alt/Ctrl/Cmd,
+  not during IME composition) or a click on send in the compose box, a form
+  submit, a picked file, a drop and a paste. The listeners run in the
+  extension's isolated world, in the capture phase from `document_start`, so
+  they run before any page handler and the page can't patch or read them. They
+  use the same rules, `actions` and `files` policy as the network wrapper
+  (`block` stops the event and shows a notice; `warn` shows the bar, and
+  *Send anyway* / *Upload anyway* re-dispatch once through a one-shot flag;
+  `redact` rewrites the box so the app sees the placeholders; a file that is
+  blocked or removed never reaches the app's uploader). The network wrapper
+  stays as the backstop. Gemini and Copilot get the gate too: the first
+  protection for them beyond a record. New files: `shield-core.js` (the rule
+  engine both worlds load, moved out of `content.js`), `sites.json` (message
+  box, send button and file input selectors per app; the gate falls back to
+  generic ones) and the generated `shield-sites.js`. Browser rows for sends and
+  files now carry `stage` (`input` or `network`), and the network wrapper adds
+  the `gate_id` of a send the gate just decided so the two rows can be matched;
+  the Shield server accepts both. Text and files are read in the isolated world
+  for rule names, counts and hashes only.
 - **Shield for your own chat app.** New `byoai.shield_guard` (`check(body, files=)`
   returns `allow`, `warn`, `redact` or `block` with rule labels, redacted body and
   per-file facts) over the existing rules. `byoai-cache` gains an opt-in guard,

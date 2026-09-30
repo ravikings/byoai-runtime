@@ -17,6 +17,8 @@ import { connectPage } from './port.mjs'
 
 const EXT = path.join(REPO, 'src', 'byoai', 'browser_extension')
 const RULES_JS = readFileSync(path.join(EXT, 'shield-rules.js'), 'utf8')
+const SITES_JS = readFileSync(path.join(EXT, 'shield-sites.js'), 'utf8')
+const CORE_JS = readFileSync(path.join(EXT, 'shield-core.js'), 'utf8')
 const CONTENT_JS = readFileSync(path.join(EXT, 'content.js'), 'utf8')
 const { cases } = JSON.parse(readFileSync(path.join(REPO, 'tests', 'fixtures', 'shield_redaction_cases.json'), 'utf8'))
 
@@ -40,6 +42,8 @@ function page(host, config, reply = () => new Response('{}', { status: 200 })) {
   window.addEventListener('shield-agent-capture', (ev) => captured.push(ev.detail))
   const ctx = vm.createContext({ window, location: window.location, CustomEvent, Request, Response, TextDecoder, crypto, FormData, Blob, setTimeout, clearTimeout, Date })
   vm.runInContext(RULES_JS, ctx)
+  vm.runInContext(SITES_JS, ctx)
+  vm.runInContext(CORE_JS, ctx)
   vm.runInContext(CONTENT_JS, ctx)
   // The relay hands over its port, then the config, as it does in the browser.
   const relay = config ? connectPage(window, Event, config) : null
