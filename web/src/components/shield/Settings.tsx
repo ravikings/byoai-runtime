@@ -9,7 +9,7 @@ import {
   RETENTION_DAYS, enrolWithCoriqo, fetchCoriqo, fetchInstalledApps, fetchPolicy, fetchPrivacy,
   publishSeal, savePolicy, scrubStoredText,
 } from '@/api/shield'
-import type { ShieldAction, ShieldPolicy, ShieldSharing } from '@/api/shield'
+import type { ShieldAction, ShieldFileAction, ShieldPolicy, ShieldSharing } from '@/api/shield'
 import { APP_NAME, ConfirmDialog, SectionHead, plural } from './shared'
 
 const MODES = [
@@ -17,7 +17,8 @@ const MODES = [
   ['observe', 'Record only', 'Messages go out unchanged. Shield records which rules matched.', false],
 ] as const
 
-type Weaker = { change: Partial<ShieldPolicy>; kind: 'observe' | 'keep_text' | 'actions' }
+type Kind = 'observe' | 'keep_text' | 'actions' | 'files'
+type Weaker = { change: Partial<ShieldPolicy>; kinds: Kind[] }
 
 const TIERS = [
   ['secret', 'Secrets', 'API keys and tokens, private keys, login tokens, database passwords.'],
@@ -28,6 +29,10 @@ const ACTION_LABEL: Record<ShieldAction, string> = {
   block: 'Stop the send', warn: 'Ask first', redact: 'Replace', log: 'Record only',
 }
 const STRICT: ShieldAction[] = ['log', 'redact', 'warn', 'block']
+const FILE_LABEL: Record<ShieldFileAction, string> = {
+  allow: 'Allow', warn: 'Ask first', block: 'Block',
+}
+const FILE_STRICT: ShieldFileAction[] = ['allow', 'warn', 'block']
 const DEFAULT_ACTIONS = { secret: 'block', pii: 'redact', flag: 'log' } as const
 // Apps only the desktop proxy sees, through their public API.
 const API_APPS = new Set(['github_copilot', 'mistral', 'deepseek', 'groq', 'openrouter', 'together', 'gemini_api'])
@@ -49,14 +54,23 @@ export function Settings() {
    * the server refuses them without the acknowledgement. */
   const change = (next: Partial<ShieldPolicy>) => {
     const p = policy.data
-    if (p && next.mode === 'observe' && p.mode !== 'observe') return setAsking({ change: next, kind: 'observe' })
-    if (p && next.keep_text && !p.keep_text) return setAsking({ change: next, kind: 'keep_text' })
+    const kinds: Kind[] = []
+    if (p && next.mode === 'observe' && p.mode !== 'observe') kinds.push('observe')
+    if (p && next.keep_text && !p.keep_text) kinds.push('keep_text')
     if (p && next.actions) {
       const now = p.actions ?? DEFAULT_ACTIONS
       const lower = (Object.keys(next.actions) as (keyof typeof now)[])
         .some(t => STRICT.indexOf(next.actions![t]) < STRICT.indexOf(now[t]))
-      if (lower) return setAsking({ change: next, kind: 'actions' })
+      if (lower) kinds.push('actions')
     }
+    if (p && next.files) {
+      const now = p.files ?? {}
+      const lower = Object.entries(next.files).some(
+        ([app, a]) => FILE_STRICT.indexOf(a) < FILE_STRICT.indexOf(now[app] ?? 'allow'))
+      if (lower) kinds.push('files')
+    }
+    // Every lowering in this change is listed in one dialog, and one confirmation covers them all.
+    if (kinds.length) return setAsking({ change: next, kinds })
     save.mutate(next)
   }
   if (policy.isPending) return <p className="empty-row" role="status">Loading settings…</p>
@@ -123,7 +137,26 @@ export function Settings() {
             In Chrome, the Shield extension (0.8 or later) does this on claude.ai and chatgpt.com before the
             message leaves the page; "Ask first" shows a bar with Send redacted, Send anyway and Cancel. The desktop
             proxy can't show that bar, so there "Ask first" replaces. On gemini.google.com and copilot.microsoft.com
-            messages go out unchanged and are only recorded. Attached files are recorded by type and size, never read.
+            messages go out unchanged and are only recorded. Uploaded files are set under Files you upload.
+          </p>
+        </section>
+
+        <section className="settings-block" aria-labelledby="files-h">
+          <SectionHead id="files-h" title="Files you upload"
+            help="Shield records each file's SHA-256, size and type. Text files are also checked with the rules above." />
+          {Object.keys(p.apps).filter(app => covered.has(app)).map(app => (
+            <label key={app} className="row-app">
+              <span><b>{APP_NAME[app] ?? app}</b></span>
+              <select aria-label={`${APP_NAME[app] ?? app}: files`} value={p.files?.[app] ?? 'allow'}
+                onChange={e => change({ files: { ...(p.files ?? {}), [app]: e.target.value as ShieldFileAction } })}>
+                {FILE_STRICT.map(a => <option key={a} value={a}>{FILE_LABEL[a]}</option>)}
+              </select>
+            </label>
+          ))}
+          <p className="muted setting-help">
+            Text-like files up to 5 MB (.txt, .csv, .json, .env, .pem, code and similar) are read on this Mac by the same
+            rules; PDFs, images and Office files are recorded as "Not scanned" and only this setting applies. The desktop
+            proxy can't ask, so there "Ask first" stops the upload. Shield keeps no copy of a file or its name.
           </p>
         </section>
 
@@ -173,23 +206,28 @@ export function Settings() {
         <DataLocation sharing={p.sharing} />
       </aside>
 
-      {asking && (
-        <ConfirmDialog
-          title={asking.kind === 'observe' ? 'Send messages unchanged?' : asking.kind === 'actions' ? 'Make Shield less strict?' : 'Keep message previews?'}
-          confirmLabel={asking.kind === 'observe' ? 'Send unchanged' : asking.kind === 'actions' ? 'Make less strict' : 'Keep previews'}
-          busy={save.isPending}
-          onCancel={() => { setAsking(null); save.reset() }}
-          onConfirm={() => save.mutate({ ...asking.change, acknowledge: 'less_private' })}>
-          {asking.kind === 'actions'
-            ? <p>More of what you type will reach the AI app as typed. Shield will still record which rules matched.</p>
-            : asking.kind === 'observe'
-            ? <p>Emails, card numbers, phone numbers and keys will reach the AI app as typed. Shield
-              will only record which rules matched. The notice on this Mac will say so.</p>
-            : <p>Shield will store up to 200 characters of each message on this Mac, with personal
-              details removed. The rest of what you type still isn't kept.</p>}
-          {save.isError && <p role="alert">Not saved: {save.error.message}</p>}
-        </ConfirmDialog>
-      )}
+      {asking && (() => {
+        const only = asking.kinds.length === 1 ? asking.kinds[0] : null
+        const NOTE: Record<Kind, string> = {
+          observe: 'Emails, card numbers, phone numbers and keys will reach the AI app as typed. Shield will only record which rules matched. The notice on this Mac will say so.',
+          keep_text: 'Shield will store up to 200 characters of each message on this Mac, with personal details removed. The rest of what you type still isn\'t kept.',
+          actions: 'More of what you type will reach the AI app as typed. Shield will still record which rules matched.',
+          files: 'Files will reach the AI app with less checking. Shield will still record each file\'s hash and which rules matched.',
+        }
+        return (
+          <ConfirmDialog
+            title={only === 'observe' ? 'Send messages unchanged?' : only === 'keep_text' ? 'Keep message previews?' : 'Make Shield less strict?'}
+            confirmLabel={only === 'observe' ? 'Send unchanged' : only === 'keep_text' ? 'Keep previews' : 'Make less strict'}
+            busy={save.isPending}
+            onCancel={() => { setAsking(null); save.reset() }}
+            onConfirm={() => save.mutate({ ...asking.change, acknowledge: 'less_private' })}>
+            {only
+              ? <p>{NOTE[only]}</p>
+              : <ul>{asking.kinds.map(k => <li key={k}>{NOTE[k]}</li>)}</ul>}
+            {save.isError && <p role="alert">Not saved: {save.error.message}</p>}
+          </ConfirmDialog>
+        )
+      })()}
     </div>
   )
 }

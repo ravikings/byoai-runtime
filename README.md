@@ -409,8 +409,29 @@ guarantee none.
 through tools and documents the AI reads on the provider's servers, which a
 page-level filter never sees.
 
-**Do you scan uploaded files?** No. Shield records that a file was attached
-(type and size), not what is in it.
+**Do you scan uploaded files?** Partly, and it proves what was sent either
+way. For every upload Shield seals the file's SHA-256, size and type, which
+rules matched and the version of the rules that ran (`rules_version`), plus a
+keyed hash of the file name. It never keeps the file, its name or any of its
+content. The browser extension does send the raw file name to your local Shield
+so that Shield can make that keyed hash; until it is delivered the name sits in
+the extension's in-memory session queue (`chrome.storage.session`, not written
+to disk), and Shield fingerprints it and drops it. The name is also shown in the
+on-page warn bar and nowhere else.
+
+Text-like files up to 5 MB (`.txt .csv .tsv .json .jsonl .md .log .env .ini
+.cfg .conf .yaml .yml .xml .sql .py .js .ts .go .java .rb .sh .pem .key`, or
+`text/*`, JSON, YAML and certificate types) are read on your Mac by the same
+rules as messages. PDFs, images, Office files and anything larger are recorded
+as `scanned: false`; Shield does not claim to know what is inside them. A
+per-app `files` setting (`allow`, `warn`, `block`; default `allow`) applies to
+every file. The desktop proxy has no way to ask, so there `warn` stops the
+upload; in the browser, `warn` asks first with *Remove file* (only the flagged
+files come out of a multi-file upload), *Upload anyway* and *Cancel*.
+
+To settle "that isn't the file I sent", run `byoai shield check-file <path>`
+(add `--name <original name>` if the copy was renamed): it prints
+`hash: match|different`, `rules reproduce: yes|no` and `seal verifies: yes|no`.
 
 **Which apps are covered?** Browser: Claude and ChatGPT read and redact;
 Gemini and Copilot record only. Desktop proxy: Claude, ChatGPT, and (off by
@@ -559,7 +580,7 @@ pins the entry matching that `key_id`. Key rotation isn't supported yet — a
 with an unknown key".
 
 A managed policy names which settings are locked (`mode`, `apps`,
-`keep_text`, `retention_days`, `notice`, `sync`, any subset). `sync` is how
+`keep_text`, `retention_days`, `notice`, `sync`, any subset; the per-tier `actions` and the `files` policy are not lockable yet). `sync` is how
 much activity the organisation may see (`seal`, `daily` or `events`, never
 message text); Settings always says who receives what, in plain words. Locked settings
 override this Mac's own choice; everything else is still yours to change.

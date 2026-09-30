@@ -15,6 +15,18 @@ export const ShieldFlag = z.object({
   rule: z.string().min(1),
 })
 
+/** What Shield knows about an uploaded file: type, size and SHA-256, never the
+ * name or content. ``scanned: false`` means the rules did not read it. */
+export const ShieldFile = z.object({
+  mime: z.string().nullish(),
+  bytes: z.number().int().nonnegative().nullish(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  name_hash: z.string().nullish(),
+  scanned: z.boolean().nullish(),
+  rules_version: z.string().nullish(),
+})
+export type ShieldFile = z.infer<typeof ShieldFile>
+
 export const SHIELD_SOURCES = ['mcp', 'desktop', 'browser'] as const
 
 export const ShieldItem = z.object({
@@ -40,6 +52,8 @@ export const ShieldItem = z.object({
   usage: z.record(z.unknown()).nullish(),
   latency_ms: z.number().nullish(),
   seal: z.string().min(1),
+  /** Present on rows for an uploaded file. */
+  file: ShieldFile.nullish(),
 })
 
 export const ShieldFeed = z.object({
@@ -128,6 +142,11 @@ export type ShieldSharing = z.infer<typeof ShieldSharing>
 export const ShieldAction = z.enum(['block', 'warn', 'redact', 'log'])
 export type ShieldAction = z.infer<typeof ShieldAction>
 
+/** What happens to a file uploaded to an app. "warn" asks first in the
+ * browser; the desktop proxy can't ask, so it stops the upload. */
+export const ShieldFileAction = z.enum(['allow', 'warn', 'block'])
+export type ShieldFileAction = z.infer<typeof ShieldFileAction>
+
 export const ShieldPolicy = z.object({
   mode: z.enum(['observe', 'redact', 'block']),
   apps: z.record(z.boolean()),
@@ -136,6 +155,8 @@ export const ShieldPolicy = z.object({
   notice: z.boolean(),
   /** What happens per kind of hit: secrets, personal details, flags. */
   actions: z.object({ secret: ShieldAction, pii: ShieldAction, flag: ShieldAction }).optional(),
+  /** Per app: what happens to an uploaded file. */
+  files: z.record(ShieldFileAction).optional(),
   /** Apps the capture proxy can read. Served, not saved: the others can't
    * be turned on yet. */
   covered_apps: z.array(z.string()).optional(),

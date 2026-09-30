@@ -20,6 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[redacted-email]`.
 
 ### Added
+- **Shield file evidence.** A per-app `files` policy (`allow`, `warn`, `block`;
+  default `allow`; lowering needs `acknowledge: less_private`) applies to every
+  uploaded file. Text-like files up to 5 MB are also read by the existing rules.
+  The desktop proxy hashes each multipart file part (or an upload-path body)
+  and records `desktop.chat.attachment` with `sha256`, `name_hash`, `scanned`,
+  `flags` and `rules_version`; these rows are now shown and sealed. `warn`
+  blocks there. `rules_version` is written into `shield-rules.js` by the
+  generator. New `byoai shield check-file <path>` prints hash match, rules
+  reproduce and seal verifies. `sha256` never syncs. Shield gains a Files
+  setting per app and shows type, size, hash and "Not scanned" on file rows.
+  The browser extension (0.9.0) does the same in the page: it recognises
+  uploads by shape (a `FormData` with a file, claude.ai `wiggle/upload-file`,
+  ChatGPT's pre-signed PUT to `*.oaiusercontent.com`, which it now watches over
+  `XMLHttpRequest` for uploads only), hashes and checks the file, and asks first
+  on `warn` (*Remove file*, *Upload anyway*, *Cancel*). `browser.chat.attachment`
+  rows gain `sha256`, `scanned`, `flags`, `rules_version` and `verdict`, plus
+  the raw `name` for the local Shield to hash and drop (see the extension's
+  PRIVACY.md). Telemetry blobs (`/api/v2/rum`) and ChatGPT's `prepare` and
+  `realtime` calls no longer count as attachments or unrecognised sends. The
+  desktop proxy also treats ChatGPT's file-storage PUT as an upload.
 - **Shield browser extension 0.8.0: a warn bar, health events and attachment
   facts.** A tier set to `warn` holds the send behind a bar in the page (send
   redacted, send anyway, cancel; 60 s without an answer cancels, and the
@@ -28,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in ten minutes, none inspected) emit `browser.health.unmatched` /
   `desktop.health.unmatched` and the popup says Shield may be out of date. A
   file attached in the page is recorded as `browser.chat.attachment` (type and
-  size only, not scanned).
+  size only in 0.8.0; hashed and checked from 0.9.0).
 - **Desktop proxy: new app toggles, off by default.** `github_copilot`,
   `mistral`, `deepseek`, `groq`, `openrouter`, `together` and `gemini_api`.
   Fixtures come from public API documentation and are untested against live

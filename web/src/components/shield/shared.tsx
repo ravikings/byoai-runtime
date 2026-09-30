@@ -2,7 +2,7 @@
  * Pieces every Shield tab uses: rule and app labels, the date filter, the
  * shared feed query, the notice strip and the receipt download button.
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { fetchFeed, fetchReceipt } from '@/api/shield'
@@ -22,6 +22,7 @@ export const RULE_LABEL: Record<string, string> = {
   stripe_key: 'Stripe key', private_key_block: 'private key', jwt: 'login token (JWT)',
   conn_string: 'database password', bearer: 'bearer token', credential_assign: 'password or secret',
   iban: 'bank account (IBAN)', oversize: 'very large message',
+  too_many_files: 'very many files', unreadable: 'file that could not be checked',
   reply_leak: 'secret echoed in reply', reply_toxic: 'harsh language in reply',
 }
 
@@ -240,5 +241,35 @@ export function ConfirmDialog({ title, children, confirmLabel, onConfirm, onCanc
         </div>
       </div>
     </div>
+  )
+}
+
+const fileSize = (n: number) => n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
+
+/** Evidence for one uploaded file: type, size, the start of its SHA-256 with a
+ * button for the whole hash, the rules that matched and whether it was read. */
+export function FileEvidence({ item }: { item: Item }) {
+  const [copied, setCopied] = useState(false)
+  const f = item.file
+  if (!f) return null
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(f.sha256)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* clipboard blocked: the hash is still on screen */ }
+  }
+  return (
+    <span className="file-evidence" data-testid="file-evidence">
+      <span className="tag info">{f.mime || 'unknown type'}</span>
+      {f.bytes != null && <span className="muted">{fileSize(f.bytes)}</span>}
+      <span className="hash mono" title="SHA-256 of the file">{f.sha256.slice(0, 16)}</span>
+      <button type="button" className="btn ghost sm" onClick={e => { e.stopPropagation(); void copy() }}
+        aria-label="Copy the full SHA-256">{copied ? 'Copied' : 'Copy'}</button>
+      {f.scanned === false && <span className="tag unknown">Not scanned</span>}
+      {item.flags.map(fl => (
+        <span key={fl.rule} className={`tag ${flagTagClass(fl.tier)}`}>{ruleLabel(fl.rule)}</span>
+      ))}
+    </span>
   )
 }

@@ -7,7 +7,7 @@ import { useState } from 'react'
 import { fetchVerify } from '@/api/shield'
 import { checkReceipt } from '@/lib/receipt'
 import type { ReceiptCheck } from '@/lib/receipt'
-import { ReceiptButton, SectionHead, downloadBlob, plural, tierLabel, tierTagClass, useFeed } from './shared'
+import { FileEvidence, ReceiptButton, SectionHead, downloadBlob, plural, tierLabel, tierTagClass, useFeed } from './shared'
 import type { Item } from './shared'
 
 export function Ledger({ onOpen }: { onOpen: (it: Item) => void }) {
@@ -65,7 +65,7 @@ export function Ledger({ onOpen }: { onOpen: (it: Item) => void }) {
                 <tr key={it.id} onClick={() => onOpen(it)} className="clickable">
                   <td>{it.date} {it.ts?.slice(0, 5)}</td>
                   <td>{it.surface.split(' ·')[0]}</td>
-                  <td className="verb-cell">{it.verb}</td>
+                  <td className="verb-cell">{it.verb}{it.file && <><br /><FileEvidence item={it} /></>}</td>
                   <td><span className={`tag ${tierTagClass(it.tier)}`}>{tierLabel(it)}</span></td>
                   <td><span className="hash">{it.seal.slice(0, 16)}</span></td>
                   <td onClick={e => e.stopPropagation()}><ReceiptButton seal={it.seal} /></td>

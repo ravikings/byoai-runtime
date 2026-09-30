@@ -4,7 +4,7 @@
  * Activity, the Ledger or the Timeline.
  */
 import { useEffect, useRef } from 'react'
-import { ReceiptButton, flagTagClass, ruleLabel, tierLabel, tierTagClass, toolLabel } from './shared'
+import { FileEvidence, ReceiptButton, flagTagClass, ruleLabel, tierLabel, tierTagClass, toolLabel } from './shared'
 import type { Item } from './shared'
 
 const VERDICT: Record<Item['tier'], string> = {
@@ -54,6 +54,17 @@ export function Sheet({ item, onClose, onOpenTimeline }: {
           <span><b>{what(item)}</b> {VERDICT[item.tier]}</span>
         </div>
 
+        {item.file && (<>
+          <h3 className="label">File</h3>
+          <p><FileEvidence item={item} /></p>
+          <p className="muted">
+            The hash is what <code>shasum -a 256</code> prints for the file that was sent. Shield keeps no copy of the file or its name.
+            {item.file.scanned === false && ' The rules did not read this file type; only the per-app file setting applied.'}
+          </p>
+        </>)}
+
+        {/* A file's rule hits are already shown with its evidence above. */}
+        {!item.file && (<>
         <h3 className="label">Rules matched</h3>
         {item.flags.length === 0
           ? <p className="muted">None.</p>
@@ -67,6 +78,7 @@ export function Sheet({ item, onClose, onOpenTimeline }: {
               ))}
             </ul>
           )}
+        </>)}
 
         {(item.tools?.length ?? 0) > 0 && (<>
           <h3 className="label">Tools the AI used</h3>
