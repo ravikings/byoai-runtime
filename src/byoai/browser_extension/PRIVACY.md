@@ -42,7 +42,7 @@ Two more kinds of row carry no message text at all:
 
 | Kind | Fields | Why |
 |---|---|---|
-| `browser.chat.attachment` | `app`, `mime`, `bytes` | a file was attached: its type and size, never its content, and it is not scanned or blocked |
+| `browser.chat.attachment` | `app`, `name`, `mime`, `bytes`, `sha256`, `scanned`, `flags`, `rules_version`, `verdict` | a file was uploaded: its type, size and SHA-256, whether Shield's rules read it, the rule names that matched, the rules version and what happened (`allowed`, `blocked`, `cancelled`, `warned→uploaded`, `warned→removed`), never its content. `name` is described under "File hashing" below |
 | `browser.health.unmatched` | `app`, `path` | three chat-like requests in ten minutes that Shield did not recognise (the site may have changed): the first 60 characters of the path, no query, no body. The popup then says "Shield may be out of date" |
 
 Nothing else. The extension does not read page content, the DOM, cookies, form
@@ -54,6 +54,41 @@ a copy of its stream as it arrives, only for the names of the tools the AI
 ran and the number of sources a search returned; its text is not kept. The server side drops any unexpected
 field, text included, before it reaches the record (`clean_browser_row`), and
 accepts only known rule names.
+
+## File hashing
+
+When a file is uploaded to a covered app, the extension works out in the page
+what is being sent. An upload is a form (`FormData`) that contains a file, on
+any address, or a file body sent to a known upload address: claude.ai's
+`wiggle/upload-file`, and the PUT to ChatGPT's file storage
+(`*.oaiusercontent.com/files/<id>/raw`, sent with `XMLHttpRequest`, which the
+extension now also watches, for uploads only). Nothing else counts: telemetry
+that posts a text blob is not treated as an attachment.
+
+Before a file form (`FormData`) is checked it is copied, and the copy is what is sent, so the hash and the check are of what goes out. For each file it computes the SHA-256 in the page (Web Crypto). For text-like
+files up to 5 MB (`.txt .csv .json .env .pem` and the other extensions listed
+in CONFIGURATION.md, or a `text/*` type) it also runs Shield's rules on the
+decoded text, in the page. It sends Shield the hash, size, type, rule names,
+whether the file was scanned, the version of the rules and what happened. PDFs,
+images, Office files and anything over 5 MB are recorded as not scanned. The
+file's content is never put in an event or kept, and no copy of the file is
+kept.
+
+The one thing that is sent about the file name: the raw `name` is in the
+`browser.chat.attachment` row that goes to your local Shield (the address you
+paired, on this Mac by default). Shield turns it into a keyed hash right away
+and discards the name; the ledger and the sealed record keep only the hash. In
+the extension the row waits in the send queue, which lives in
+`chrome.storage.session` (memory, cleared when the browser session ends, not
+written to disk), until it is delivered. The name is also shown
+in the on-page warn bar, when the per-app file policy is `warn`, and nowhere
+else. Files are never rewritten: the choices are *Remove file* (the upload
+fails like a network error), *Upload anyway* and *Cancel*; 60 seconds without
+an answer cancels.
+
+Already true on this Mac: Shield keeps `sha256` and the keyed name hash only in
+its local ledger and sealed record. They are not part of any sync level
+(`seal`, `daily`, `events`), so neither leaves the device.
 
 ## What it changes
 

@@ -57,7 +57,15 @@
     for (const tier of ['secret', 'pii', 'flag']) if (a && isAction(a[tier])) out[tier] = a[tier]
     return out
   }
-  let config = { consented: false, mode: 'redact', apps: null, actions: {} }
+  const FILE_ORDER = { allow: 0, warn: 1, block: 2 }
+  const cleanFiles = (f) => {
+    const out = {}
+    for (const a of Object.keys(APP_FOR_HOST).map((h) => APP_FOR_HOST[h])) {
+      if (f && typeof f[a] === 'string' && Object.prototype.hasOwnProperty.call(FILE_ORDER, f[a])) out[a] = f[a]
+    }
+    return out
+  }
+  let config = { consented: false, mode: 'redact', apps: null, actions: {}, files: {} }
   /*
    * Everything from the relay (config, warn answers) arrives on one
    * MessageChannel port that the relay transfers in a single event at
@@ -77,6 +85,7 @@
         mode: ['observe', 'redact', 'block'].includes(c.mode) ? c.mode : 'redact',
         apps: c.apps && typeof c.apps === 'object' ? c.apps : null,
         actions: cleanActions(c.actions),
+        files: cleanFiles(c.files),
       }
     } else if (c.t === 'warn-result') {
       answered(c.send_id, c.choice)
@@ -195,17 +204,53 @@
       if (tier === 'flag') continue
       for (const r of rules) {
         if (!names.has(r.name)) continue
-        text = text.replace(r.all, (m) => {
+        const sub = (m) => {
           if (!passes(r.name, m)) return m
           const label = (RULES.placeholder && RULES.placeholder[r.name]) || 'REDACTED'
           const seen = state[label] || (state[label] = new Map())
           if (!seen.has(m)) seen.set(m, seen.size + 1)
           hit.add(r.name)
           return `[${label}_${seen.get(m)}]`
-        })
+        }
+        text = r.name === 'private_key_block' ? redactPrivateKeys(text, r.all, sub) : text.replace(r.all, sub)
       }
     }
     return text
+  }
+
+  /*
+   * A private key header, and the key body through its END line when that
+   * starts within 8192 characters, become one placeholder. Detection is the
+   * header alone; the END search is code, not a regex, and only moves forward
+   * (an END candidate that is not a valid END line is not one for any later
+   * header either), so a stream of headers is linear. Same as
+   * byoai.integrations.shield._redact_private_keys.
+   */
+  const KEY_END = /-----END [A-Z ]{0,256}PRIVATE KEY(?: BLOCK)?-----/y
+  const KEY_BODY_MAX = 8192
+  function redactPrivateKeys(text, headerRx, sub) {
+    const header = new RegExp(headerRx.source, headerRx.flags)
+    const out = []
+    let pos = 0
+    let endAt = -2
+    let endStop = -1
+    for (let m; (m = header.exec(text));) {
+      if (m.index < pos) continue
+      let stop = m.index + m[0].length
+      if (endAt !== -1 && endAt < stop) {
+        endAt = -1
+        for (let i = text.indexOf('-----END ', stop); i !== -1; i = text.indexOf('-----END ', i + 1)) {
+          KEY_END.lastIndex = i
+          const e = KEY_END.exec(text)
+          if (e) { endAt = i; endStop = i + e[0].length; break }
+        }
+      }
+      if (endAt !== -1 && endAt - stop <= KEY_BODY_MAX) stop = endStop
+      out.push(text.slice(pos, m.index), sub(text.slice(m.index, stop)))
+      pos = stop
+    }
+    out.push(text.slice(pos))
+    return out.join('')
   }
 
   /*
@@ -301,15 +346,15 @@
    * cancels: the original is never sent without an explicit choice.
    */
   const WARN_MS = 60_000
-  const CHOICES = ['redacted', 'sent', 'cancelled']
+  const CHOICES = ['redacted', 'sent', 'cancelled', 'removed']
   const waiting = new Map()
-  function askUser(sendId, labels) {
+  function askUser(sendId, labels, file) {
     // No live relay to show the bar: don't hang, redact (never send the original).
     if (!port) return Promise.resolve('no_relay')
     return new Promise((resolve) => {
       const timer = setTimeout(() => { waiting.delete(sendId); resolve('cancelled') }, WARN_MS)
       waiting.set(sendId, { resolve, timer })
-      try { port.postMessage({ t: 'warn', send_id: sendId, labels }) } catch { relayGone() }
+      try { port.postMessage(file ? { t: 'warn', send_id: sendId, labels, file: true, name: file.name } : { t: 'warn', send_id: sendId, labels }) } catch { relayGone() }
     })
   }
   // The relay closed its end: nothing can answer, so every held send goes redacted.
@@ -405,7 +450,10 @@
    * silently open.
    */
   const LOOSE_SEND = /conversation|completion|chat|messages/i
-  const UPLOAD_PATH = /files|upload|attachments/i
+  // Requests that look like a send by name but are not one: an upload (handled
+  // as a file, see below), Datadog telemetry, the realtime channel and ChatGPT's
+  // prepare call. They never count toward "Shield may be out of date".
+  const NOT_A_SEND = /\/(files|uploads?|attachments)(\/|$|\?)|\/wiggle\/upload-file$|\/backend-api\/files|\/backend-api\/f\/conversation\/prepare|\/realtime\/|\/api\/v2\/rum/i
   const CANARY_MS = 10 * 60_000
   let unmatched = []
   let lastInspected = 0
@@ -419,32 +467,249 @@
     }
   }
 
-  // Attachments are recorded, never read: type and size only.
-  function noteAttachment(input, init) {
-    let mime = ''
-    let bytes = null
-    const body = init && init.body
-    const size = (b) => (typeof Blob !== 'undefined' && b instanceof Blob ? b.size : 0)
-    if (typeof FormData !== 'undefined' && body instanceof FormData) {
-      bytes = 0
-      mime = 'multipart/form-data'
-      for (const [, v] of body.entries()) {
-        if (typeof v === 'string') bytes += v.length
-        else { bytes += size(v); if (v.type && mime === 'multipart/form-data') mime = v.type }
-      }
-    } else if (typeof Blob !== 'undefined' && body instanceof Blob) {
-      mime = body.type
-      bytes = body.size
-    } else {
-      const h = (init && init.headers) || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : null)
-      const get = (k) => (h && typeof h.get === 'function' ? h.get(k) : h && (h[k] ?? h[k.toLowerCase()])) || ''
-      mime = String(get('Content-Type')).split(';')[0].trim()
-      const n = Number(get('Content-Length'))
-      bytes = Number.isFinite(n) && n > 0 ? n : (typeof body === 'string' ? body.length : null)
-    }
-    mime = /^[\w.+-]{1,60}\/[\w.+-]{1,80}$/.test(mime) ? mime.toLowerCase() : ''
-    emit({ kind: 'browser.chat.attachment', app, mime, bytes })
+  /*
+   * Files. What counts as an upload is decided by shape, never by a path
+   * word alone (telemetry posts Blobs too):
+   *   (a) a FormData with at least one File/Blob entry, on any path;
+   *   (b) a Blob, File, ArrayBuffer or typed array body on a known upload
+   *       endpoint: claude.ai .../wiggle/upload-file, or a PUT to ChatGPT's
+   *       pre-signed storage (*.oaiusercontent.com/files/<id>/raw).
+   * For each file the page computes its SHA-256, and for text-like files up to
+   * 5 MB runs Shield's rules on the text (rule names only). The file's bytes
+   * and text are never put in an event or kept; the file name goes only into
+   * the attachment row for the local Shield, which keeps a keyed hash of it.
+   * Same checks as byoai.integrations.shield.inspect_file.
+   */
+  const MAX_FILE_SCAN = 5 * 1024 * 1024
+  const TEXT_EXT = new Set(('.txt .csv .tsv .json .jsonl .md .log .env .ini .cfg .conf .yaml .yml .xml ' +
+    '.sql .py .js .ts .go .java .rb .sh .pem .key').split(' '))
+  // Python's os.path.splitext: leading dots of the base name are not an extension.
+  function extOf(name) {
+    const base = String(name || '').split('/').pop().replace(/^\.+/, '')
+    const i = base.lastIndexOf('.')
+    return i < 0 ? '' : base.slice(i).toLowerCase()
   }
+  const TEXT_MIMES = new Set(['application/json', 'application/x-sh', 'application/xml',
+    'application/x-yaml', 'application/yaml'])
+  // A declared type that is text whatever the file is called (as mime_text_like in Python).
+  function mimeTextLike(mime) {
+    const m = String(mime || '').split(';')[0].trim().toLowerCase()
+    return m.startsWith('text/') || TEXT_MIMES.has(m) || m.endsWith('+json') || m.endsWith('+xml') ||
+      m.includes('yaml') || m.includes('x509') || m.includes('pem')
+  }
+  const textLike = (name, mime) => TEXT_EXT.has(extOf(name)) || mimeTextLike(mime)
+  // utf-16le / utf-16be for text with no byte-order mark: over 30% of the bytes at one parity are zero.
+  function utf16Guess(u) {
+    const n = u.length
+    if (n < 4) return null
+    let odd = 0
+    let even = 0
+    for (let i = 0; i < n; i++) if (u[i] === 0) { if (i % 2) odd++; else even++ }
+    if (odd / (n / 2) > 0.3 && odd >= even) return 'utf-16le'
+    if (even / (n / 2) > 0.3) return 'utf-16be'
+    return null
+  }
+  const hasBom16 = (u) => u.length >= 2 && ((u[0] === 0xff && u[1] === 0xfe) || (u[0] === 0xfe && u[1] === 0xff))
+  function decodeText(bytes) {
+    const u = new Uint8Array(bytes)
+    if (u.length >= 2 && u[0] === 0xff && u[1] === 0xfe) return new TextDecoder('utf-16le').decode(u)
+    if (u.length >= 2 && u[0] === 0xfe && u[1] === 0xff) return new TextDecoder('utf-16be').decode(u)
+    const g = utf16Guess(u)
+    if (g) return new TextDecoder(g).decode(u)
+    return new TextDecoder('utf-8', { ignoreBOM: true }).decode(u)
+  }
+  // Valid UTF-8, or UTF-16 (with a mark, or by the zero-byte pattern): a bare upload that reads as text.
+  function readsAsText(bytes) {
+    const u = new Uint8Array(bytes)
+    if (hasBom16(u) || utf16Guess(u)) return true
+    try { new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); return true } catch { return false }
+  }
+  const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('')
+  const cleanMime = (m) => {
+    const t = String(m || '').split(';')[0].trim()
+    return /^[\w.+-]{1,60}\/[\w.+-]{1,80}$/.test(t) ? t.toLowerCase() : ''
+  }
+
+  // By tag, not instanceof: a page's own realm objects (an iframe's Blob) still count.
+  const tagOf = (v) => Object.prototype.toString.call(v)
+  const isBlob = (v) => { const t = tagOf(v); return t === '[object Blob]' || t === '[object File]' }
+  const isBytes = (v) => tagOf(v) === '[object ArrayBuffer]' || ArrayBuffer.isView(v)
+  const isForm = (v) => tagOf(v) === '[object FormData]'
+  const CLAUDE_UPLOAD = /^\/api\/organizations\/[^/]+\/conversations\/[^/]+\/wiggle\/upload-file\/?$/
+  const GPT_UPLOAD_HOST = /\.oaiusercontent\.com$/
+  const GPT_UPLOAD_PATH = /^\/files\/[^/]+\/raw\/?$/
+  function knownUploadEndpoint(method, url) {
+    let u
+    try { u = new URL(url, location.href) } catch { return false }
+    if (u.protocol !== 'https:') return false
+    const host = u.hostname.replace(/\.$/, '') // a trailing dot names the same host
+    if (method === 'POST' && host === 'claude.ai') return CLAUDE_UPLOAD.test(u.pathname)
+    if (method === 'PUT') return GPT_UPLOAD_HOST.test(host) && GPT_UPLOAD_PATH.test(u.pathname)
+    return false
+  }
+  const copyBytes = (b) => (ArrayBuffer.isView(b)
+    ? new Uint8Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)).buffer
+    : b.slice(0))
+  const nameOf = (v) => (typeof v.name === 'string' && v.name ? v.name : null)
+  /*
+   * The files a body carries, or null when it is not an upload; `body` is what
+   * must be sent instead of the original, a snapshot taken now, so what is
+   * hashed and checked is what goes out even if the page changes its object
+   * while the check runs: a FormData is copied, a mutable buffer is copied.
+   * On a known endpoint a string, URLSearchParams or Document is read as bytes
+   * (sent as the string it was), and a stream, which can't be read without
+   * using it up, is recorded as not scanned.
+   */
+  function uploadOf(body, known) {
+    if (isForm(body)) {
+      const snap = new FormData()
+      const parts = []
+      for (const [k, v] of body.entries()) {
+        snap.append(k, v)
+        if (typeof v !== 'string' && isBlob(v)) parts.push({ blob: v, name: nameOf(v) })
+      }
+      return parts.length ? { parts, body: snap } : null
+    }
+    if (!known) return null
+    const textPart = (str, mime, sendBody, scanText) => ({
+      parts: [{ bytes: new TextEncoder().encode(str).buffer, name: null, raw: true, mime, scanText }], body: sendBody,
+    })
+    if (isBlob(body)) return { parts: [{ blob: body, name: nameOf(body), raw: true }], body }
+    if (isBytes(body)) { const snap = copyBytes(body); return { parts: [{ bytes: snap, name: null, raw: true }], body: snap } }
+    if (typeof body === 'string') return textPart(body, 'text/plain', body)
+    const tag = tagOf(body)
+    if (tag === '[object URLSearchParams]') {
+      const str = body.toString()
+      // The rules read the decoded values too: "key%3DAKIA..." hides a key from \b.
+      let plain = str
+      try { plain = decodeURIComponent(str.replace(/\+/g, ' ')) } catch { /* not decodable: read as is */ }
+      return textPart(str, 'application/x-www-form-urlencoded', new window.URLSearchParams(str), plain)
+    }
+    if (body && body.nodeType === 9) {
+      const str = new window.XMLSerializer().serializeToString(body)
+      return textPart(str, 'text/html', str)
+    }
+    if (tag === '[object ReadableStream]') return { parts: [{ stream: true, name: null, raw: true }], body }
+    return null
+  }
+
+  // Full-text scan for files: every tier reads all of the text (no head/tail cap).
+  function scanFile(text) {
+    const out = []
+    for (const [tier, rules] of TIERS) {
+      for (const r of rules) if (matchesOf(r, text).length) out.push({ tier, name: r.name, action: actionFor(tier, r.name) })
+    }
+    return out
+  }
+
+  async function fileFacts(part) {
+    if (part.stream) return { name: null, mime: '', bytes: null, sha256: null, scanned: false, hits: [] }
+    const buf = part.bytes ?? await part.blob.arrayBuffer()
+    const mime = part.blob ? cleanMime(part.blob.type) : cleanMime(part.mime)
+    const name = part.name
+    const bytes = buf.byteLength
+    const sha256 = hex(await crypto.subtle.digest('SHA-256', buf))
+    const scanned = bytes <= MAX_FILE_SCAN && (textLike(name, mime) || (part.raw === true && !name && readsAsText(buf)))
+    let hits = []
+    if (scanned) hits = scanFile(part.scanText !== undefined ? decodeText(buf) + '\n' + part.scanText : decodeText(buf))
+    return { name, mime, bytes, sha256, scanned, hits }
+  }
+
+  /*
+   * The strictest of the app's file policy and the rule actions (redact counts
+   * as warn: files are never rewritten). Observe mode only logs.
+   */
+  function fileAction(app_, hits) {
+    if (config.mode === 'observe') return 'allow'
+    let top = FILE_ORDER[config.files[app_]] || 0
+    for (const h of hits) {
+      const a = h.action === 'block' ? 2 : (h.action === 'warn' || h.action === 'redact') ? 1 : 0
+      if (a > top) top = a
+    }
+    return ['allow', 'warn', 'block'][top]
+  }
+
+  /*
+   * Decide one upload (a list of files). Resolves to 'go' | 'block' | 'remove' |
+   * 'cancel' and has already emitted one attachment row per file.
+   */
+  async function decideUpload(up) {
+    const parts = up.parts
+    const facts = []
+    for (const p of parts) {
+      try {
+        facts.push(await fileFacts(p))
+      } catch {
+        // Could not read or hash this file: never break the app, but say so in
+        // the record, and let the file policy decide (warn asks, block stops).
+        facts.push({ name: p.name, mime: p.blob ? cleanMime(p.blob.type) : cleanMime(p.mime),
+          bytes: p.blob ? p.blob.size : (p.bytes ? p.bytes.byteLength : null), sha256: null, scanned: false,
+          hits: [], unreadable: true })
+      }
+    }
+    const level = (f) => FILE_ORDER[fileAction(app, f.hits)] // 0 allow, 1 warn, 2 block
+    const labels = []
+    for (const f of facts) {
+      for (const h of f.hits) {
+        if (fileAction(app, [h]) !== 'allow' && !labels.includes(h.name)) labels.push(h.name)
+      }
+      if (f.unreadable && level(f) > 0 && !labels.includes('unreadable')) labels.push('unreadable')
+    }
+    const top = facts.reduce((m, f) => Math.max(m, level(f)), 0)
+    const flagsOf = (f) => [...f.hits.map((h) => `${h.tier}:${h.name}`), ...(f.unreadable ? ['flag:unreadable'] : [])]
+    // One row per file; `verdictOf` gives each its own outcome.
+    const finish = (verdictOf, out) => {
+      facts.forEach((f, i) => emit({
+        kind: 'browser.chat.attachment', app, name: f.name && f.name.slice(0, 512), mime: f.mime, bytes: f.bytes,
+        sha256: f.sha256, scanned: f.scanned, flags: flagsOf(f), rules_version: RULES.rules_version,
+        verdict: verdictOf(f, i),
+      }))
+      return out
+    }
+    if (top === 0) return finish(() => 'allowed', 'go')
+    if (top === 2) return finish(() => 'blocked', 'block')
+    const choice = await askUser(newId(), labels, { name: facts.length === 1 ? (facts[0].name || 'a file') : `${facts.length} files` })
+    if (choice === 'sent') return finish((f) => (level(f) > 0 ? 'warned\u2192uploaded' : 'allowed'), 'go')
+    if (choice === 'removed') {
+      // Only the files that raised the warning come out; the rest go on.
+      const flagged = new Set(facts.map((f, i) => (level(f) > 0 ? i : -1)).filter((i) => i >= 0))
+      if (flagged.size < facts.length && isForm(up.body)) {
+        // The file entries come in the same order as `parts`.
+        const rest = new FormData()
+        let n = 0
+        for (const [k, v] of up.body.entries()) {
+          if (typeof v !== 'string' && isBlob(v)) { if (flagged.has(n++)) continue }
+          rest.append(k, v)
+        }
+        up.body = rest
+        return finish((f) => (level(f) > 0 ? 'warned\u2192removed' : 'allowed'), 'go')
+      }
+      return finish(() => 'warned\u2192removed', 'remove')
+    }
+    return finish(() => 'cancelled', 'cancel') // cancel, timeout, or no bar to ask on
+  }
+
+  /*
+   * When there is no time to read the file (a synchronous XHR, a beacon that
+   * must answer at once): only the per-app file policy applies. block and warn
+   * both stop it (nothing can ask); each file is recorded as not scanned, with
+   * its size and no hash. Returns 'go' or 'block'.
+   */
+  function policyOnly(parts) {
+    const act = config.mode === 'observe' ? 'allow' : (config.files[app] || 'allow')
+    for (const p of parts) {
+      emit({
+        kind: 'browser.chat.attachment', app, name: p.name ? p.name.slice(0, 512) : null,
+        mime: p.blob ? cleanMime(p.blob.type) : cleanMime(p.mime),
+        bytes: p.blob ? p.blob.size : (p.bytes ? p.bytes.byteLength : null), sha256: null, scanned: false, flags: [],
+        rules_version: RULES.rules_version, verdict: act === 'allow' ? 'allowed' : 'blocked',
+      })
+    }
+    return act === 'allow' ? 'go' : 'block'
+  }
+
+  // Files are checked only where the user agreed and Shield governs the app.
+  const filesGoverned = () => config.consented && (config.apps === null || config.apps[app] === true)
 
   /*
    * Which tools the AI ran for this reply, read from a copy of the reply
@@ -533,6 +798,37 @@
     return null
   }
 
+  const refuseFile = () => refusal(['file upload'])
+  const failed = () => Promise.reject(new TypeError('Failed to fetch'))
+  function uploadFlow(self, input, init, up, body) {
+    return decideUpload(up).then((out) => {
+      if (out === 'block' || out === 'cancel') return refuseFile()
+      if (out === 'remove') return failed()
+      const args = up.body !== body ? [input, { ...init, body: up.body }] : [input, init]
+      return orig.apply(self, args)
+    })
+  }
+  // A fetch(Request): the body is read from a clone, and what is checked is
+  // what is sent, as a new Request built from the same snapshot.
+  async function requestFlow(self, input, init, known, ct) {
+    let up = null
+    try {
+      up = /^multipart\/form-data/i.test(ct)
+        ? uploadOf(await input.clone().formData(), false)
+        : uploadOf(await input.clone().blob(), known)
+    } catch {
+      // Could not read it: pass it on, unless files are blocked, which is not bypassed by that.
+      return config.files[app] === 'block' && config.mode !== 'observe' ? refuseFile() : orig.call(self, input, init)
+    }
+    if (!up) return orig.call(self, input, init)
+    const out = await decideUpload(up)
+    if (out === 'block' || out === 'cancel') return refuseFile()
+    if (out === 'remove') return failed()
+    const headers = {}
+    for (const [k, v] of input.headers) if (!(isForm(up.body) && k.toLowerCase() === 'content-type')) headers[k] = v
+    return orig.call(self, new Request(input, { body: up.body, headers }), init)
+  }
+
   window.fetch = function (input, init) {
     let url = ''
     try { url = typeof Request !== 'undefined' && input instanceof Request ? input.url : String(input) } catch { /* unreadable */ }
@@ -545,10 +841,19 @@
       const method = String((init && init.method) || (isRequestObject ? input.method : 'POST')).toUpperCase()
       const isChat = CHAT_PATHS.some((p) => p.test(path))
       const body = init && init.body
-      if (method === 'POST' && ((typeof FormData !== 'undefined' && body instanceof FormData) ||
-          (typeof Blob !== 'undefined' && body instanceof Blob && !isChat) || UPLOAD_PATH.test(pathOnly))) {
-        noteAttachment(input, init)
-      } else if (method === 'POST' && !isChat && covered && LOOSE_SEND.test(pathOnly)) {
+      if (filesGoverned() && (method === 'POST' || method === 'PUT')) {
+        const known = knownUploadEndpoint(method, url)
+        // A Request object carries its body itself (init.body absent): read a clone.
+        const inRequest = isRequestObject && !(init && init.body != null)
+        if (!inRequest) {
+          const up = uploadOf(body, known)
+          if (up) return uploadFlow(this, input, init, up, body)
+        } else {
+          const ct = String(input.headers.get('content-type') || '')
+          if (/^multipart\/form-data/i.test(ct) || known) return requestFlow(this, input, init, known, ct)
+        }
+      }
+      if (method === 'POST' && !isChat && covered && LOOSE_SEND.test(pathOnly) && !NOT_A_SEND.test(pathOnly)) {
         canary(pathOnly)
       }
       if (method === 'POST' && isChat) {
@@ -582,4 +887,97 @@
     } catch { /* capture must never break the chat */ }
     return orig.apply(this, arguments)
   }
+
+  /*
+   * XMLHttpRequest: ChatGPT uploads the file itself to its storage host with an
+   * XHR PUT. Only an upload (see uploadOf) is held; every other request goes
+   * straight to the original send, untouched. State is per open(): a held body
+   * is never sent after the page aborts or opens the request again.
+   */
+  if (typeof XMLHttpRequest !== 'undefined') {
+    const XP = XMLHttpRequest.prototype
+    const origOpen = XP.open
+    const origSend = XP.send
+    const origAbort = XP.abort
+    const meta = new WeakMap()
+    XP.open = function (method, url) {
+      try { meta.set(this, { method: String(method).toUpperCase(), url: String(url), sync: arguments[2] === false, token: {}, held: false }) } catch { /* unreadable */ }
+      return origOpen.apply(this, arguments)
+    }
+    XP.abort = function () {
+      const m = meta.get(this)
+      if (m) { m.token = {}; m.held = false }
+      return origAbort.apply(this, arguments)
+    }
+    /*
+     * A refused upload ends the way a network failure does: readyState 4,
+     * status 0, readystatechange, error, loadend (and the upload's own).
+     * Done by really sending the request to a blob: address nothing serves, so
+     * the browser produces those events itself; if that can't be done the
+     * events are dispatched by hand.
+     */
+    function failLikeNetwork(xhr) {
+      try {
+        origOpen.call(xhr, 'POST', `blob:${location.origin || 'null'}/${newId()}`, true)
+        origSend.call(xhr, ' ')
+        return
+      } catch { /* fall back below */ }
+      const fire = (t, type) => { try { t.dispatchEvent(new window.ProgressEvent(type)) } catch { /* nothing to tell */ } }
+      try { origAbort.call(xhr) } catch { /* not open */ }
+      for (const t of [xhr.upload, xhr]) { if (t) { fire(t, 'error'); fire(t, 'loadend') } }
+    }
+    XP.send = function (body) {
+      const m = meta.get(this)
+      if (m && m.held) throw new window.DOMException("Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.", 'InvalidStateError')
+      let up = null
+      try {
+        if (m && filesGoverned() && (m.method === 'POST' || m.method === 'PUT')) {
+          up = uploadOf(body, knownUploadEndpoint(m.method, m.url))
+        }
+      } catch { up = null }
+      if (!up) return origSend.apply(this, arguments)
+      const xhr = this
+      if (m.sync) {
+        // A synchronous send can't wait for a hash: only the file policy applies.
+        if (policyOnly(up.parts) === 'go') return origSend.call(xhr, up.body)
+        throw new window.DOMException("Failed to execute 'send' on 'XMLHttpRequest': Failed to load", 'NetworkError')
+      }
+      m.held = true
+      const token = m.token
+      const settle = (out) => {
+        const cur = meta.get(xhr)
+        if (cur !== m || cur.token !== token || xhr.readyState !== 1) return // aborted or reopened while held
+        m.held = false
+        if (out === 'go') origSend.call(xhr, up.body)
+        else failLikeNetwork(xhr)
+      }
+      decideUpload(up).then(settle, () => settle('go'))
+    }
+  }
+
+  /*
+   * sendBeacon: the same. It has to answer at once, so a `block` file policy
+   * returns false right away; otherwise the beacon is checked and, if it may go,
+   * sent when the check ends.
+   */
+  try {
+    const nav = window.navigator
+    const origBeacon = nav && nav.sendBeacon
+    if (typeof origBeacon === 'function') {
+      nav.sendBeacon = function (url, data) {
+        try {
+          if (filesGoverned()) {
+            const up = uploadOf(data, knownUploadEndpoint('POST', String(url)))
+            if (up) {
+              if (config.mode !== 'observe' && config.files[app] === 'block') { policyOnly(up.parts); return false }
+              decideUpload(up).then((out) => { if (out === 'go') origBeacon.call(nav, url, up.body) },
+                () => origBeacon.call(nav, url, up.body))
+              return true
+            }
+          }
+        } catch { /* never break the page */ }
+        return origBeacon.apply(this, arguments)
+      }
+    }
+  } catch { /* no navigator */ }
 })()

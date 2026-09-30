@@ -160,7 +160,6 @@ describe('page capture: a body it cannot read', () => {
     await p.window.fetch('https://claude.ai' + SEND_PATH['claude.ai'], { method: 'POST', body: form })
     expect(p.sent).toEqual([form])
     expect(p.captured).toEqual([
-      { kind: 'browser.chat.attachment', app: 'claude', mime: 'multipart/form-data', bytes: 20 },
       { kind: 'browser.chat.request', app: 'claude', chars: null, wire: SEND_PATH['claude.ai'] },
     ])
   })

@@ -28,6 +28,7 @@ the proxy and the shield UI can't disagree about what a rule is.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -42,7 +43,9 @@ from byoai.integrations.shield import (
     action_for,
     all_message_text,
     append_row,
+    _MIME,
     evaluate,
+    inspect_file,
     inspect_text,
     message_text,
     proxy_alive_path,
@@ -66,6 +69,8 @@ HOSTS: tuple[dict, ...] = (
     {"host": "chat.openai.com", "app": "chatgpt", "format": "chatgpt_web", "verified": True},
     {"host": "openai.com", "app": "chatgpt", "format": "openai", "verified": True},
     {"host": "*.openai.com", "app": "chatgpt", "format": "openai", "verified": True},
+    # ChatGPT's file storage: the pre-signed PUT of the file itself (observed live).
+    {"host": "*.oaiusercontent.com", "app": "chatgpt", "format": "upload", "verified": True},
     {"host": "gemini.google.com", "app": "gemini", "format": "batch_rpc", "verified": True},
     {"host": "copilot.microsoft.com", "app": "copilot", "format": "websocket", "verified": True},
     # verified: False - fixture from public API docs, not a live capture.
@@ -105,6 +110,11 @@ LOOKS_LIKE_SEND = re.compile(r"conversation|completion|chat|messages|generateCon
 CANARY_COUNT, CANARY_WINDOW = 3, 600
 # Uploads: recorded as "a file was attached", never read.
 UPLOAD_PATH = re.compile(r"/(?:files|upload|uploads|attachments)(?:$|[/?-])")
+# A raw (non-form) upload body: only ChatGPT's pre-signed PUT of the file
+# itself. Other file-ish paths carry JSON metadata, not a file.
+MAX_FILE_PARTS = 32  # file parts listed one by one per request; the rest is one blob row
+RAW_UPLOAD_HOST = "*.oaiusercontent.com"
+RAW_UPLOAD_PATH = re.compile(r"^/files/[^/]+/raw/?$")
 # Endpoints worth one body-free metadata row each.
 MEANS = (
     re.compile(r"/system_prompts"),
@@ -140,6 +150,56 @@ def not_covered_reason(host: str | None) -> str | None:
         if host and _host_matches(entry["host"], host):
             return entry["reason"]
     return None
+
+
+def multipart_boundary(content_type: str) -> str | None:
+    from email.message import Message
+    msg = Message()
+    msg["Content-Type"] = content_type
+    b = msg.get_param("boundary")
+    return b if isinstance(b, str) and b else None
+
+
+def multipart_files(content_type: str, body: bytes):
+    """(file name, declared type, exact bytes) of every file part in a
+    multipart/form-data body, split on the boundary by hand so the bytes are
+    the ones sent (a part's payload is everything between its blank line and
+    the CRLF before the next boundary). Yields nothing when the body can't be
+    read as a form."""
+    from email.message import Message
+    from email.parser import BytesHeaderParser
+    msg = Message()
+    msg["Content-Type"] = content_type
+    boundary = msg.get_param("boundary")
+    if not isinstance(boundary, str) or not boundary:
+        return
+    delim = b"--" + boundary.encode("latin-1", "replace")
+    for chunk in body.split(delim)[1:]:
+        if chunk.startswith(b"--"):
+            break  # closing delimiter
+        if chunk.startswith(b"\r\n"):
+            chunk = chunk[2:]
+        elif chunk.startswith(b"\n"):
+            chunk = chunk[1:]
+        if chunk.startswith((b"\r\n", b"\n")):
+            continue  # a part with no headers is not a file
+        # The blank line that ends the headers: CRLF, or a bare LF from a
+        # sloppy client (some servers accept both).
+        crlf, lf = chunk.find(b"\r\n\r\n"), chunk.find(b"\n\n")
+        if crlf != -1 and (lf == -1 or crlf < lf):
+            head, payload, nl = chunk[:crlf], chunk[crlf + 4:], b"\r\n"
+        elif lf != -1:
+            head, payload, nl = chunk[:lf], chunk[lf + 2:], b"\n"
+        else:
+            continue
+        if payload.endswith(nl):
+            payload = payload[:-len(nl)]
+        hdrs = BytesHeaderParser().parsebytes(head + b"\r\n\r\n")
+        fname = hdrs.get_filename()
+        if fname is None:
+            continue
+        mime = str(hdrs.get("content-type", "") or "").split(";", 1)[0].strip().lower()
+        yield (str(fname) or None, mime or "application/octet-stream", payload)
 
 
 def _path(flow) -> str:
@@ -285,28 +345,96 @@ class ShieldProxy:
             self._unmatched[host] = []
             self._log("health.unmatched", target=host, app=app, path=path[:60])
 
-    def _attachment(self, flow, app: str, host: str) -> None:
-        """Record that a file went out (type and size), never what is in it."""
+    def _attachment(self, flow, app: str, host: str) -> bool:
+        """Hash and check every file this upload carries, and record one row
+        per file: type, size, SHA-256, rule hits, never the name or content.
+        Returns True when the upload was refused."""
         req = flow.request
         if str(getattr(req, "method", "POST")).upper() not in ("POST", "PUT"):
-            return
+            return False
         headers = getattr(req, "headers", None) or {}
-        ctype = str(headers.get("content-type", "")).split(";", 1)[0].strip().lower()
+        ctype_full = str(headers.get("content-type", ""))
+        ctype = ctype_full.split(";", 1)[0].strip().lower()
         is_form = ctype.startswith("multipart/")
-        if not is_form and not UPLOAD_PATH.search(_path(flow)):
-            return
         try:
             content = req.get_content(strict=False) if hasattr(req, "get_content") else b""
         except Exception:  # noqa: BLE001 - never break the app over a record
             content = b""
         content = content or b""
-        mime = ctype
-        if is_form:  # the file part's own declared type, from its header only
-            m = re.search(rb"filename=[^\r\n]*\r\n[Cc]ontent-[Tt]ype:\s*([\w.+-]+/[\w.+-]+)",
-                          content[:65536])
-            mime = m.group(1).decode("ascii", "replace").lower() if m else ctype
-        self._log("chat.attachment", target=host, app=app, mime=mime[:80] or None,
-                  bytes=len(content))
+        if not is_form:
+            # A raw body is an upload when it goes to ChatGPT's file storage
+            # (any PUT or POST with a body there), or to an upload-looking path
+            # with any content type or none. A JSON object or array on such a
+            # path is metadata (ChatGPT's POST /backend-api/files), not a file.
+            if not content:
+                return False
+            if not _host_matches(RAW_UPLOAD_HOST, _clean_host(host)):
+                if not UPLOAD_PATH.search(_path(flow)):
+                    return False
+                if content.lstrip()[:1] in (b"{", b"["):
+                    try:
+                        if isinstance(json.loads(content), (dict, list)):
+                            return False
+                    except ValueError:
+                        pass
+        policy = self.policy()
+        rows: list[dict] = []
+        stop: list[str] = []
+        state = {"n": 0}
+        rest = {"sha": hashlib.sha256(), "bytes": 0, "flags": [], "scanned": True, "any": False}
+
+        def check(name, mime, data, raw):
+            facts = inspect_file(name, mime if _MIME.fullmatch(mime or "") else None,
+                                 data, app, policy, raw_upload=raw)
+            action = facts.pop("action")
+            if action in ("warn", "block"):  # no place to ask here: warn stops it too
+                stop.append(action)
+                for f in facts["flags"]:
+                    rule = f.partition(":")[2]
+                    if action_for(rule, policy) in ("warn", "block", "redact"):
+                        label = RULE_LABEL.get(rule, rule)
+                        if label not in stop:
+                            stop.append(label)
+            state["n"] += 1
+            if state["n"] <= MAX_FILE_PARTS:
+                rows.append(facts)
+            else:
+                # Every part is read and counted against the policy; only the
+                # rows are capped: the rest share one row (hash of all of
+                # their bytes together, combined flags).
+                rest["any"] = True
+                rest["sha"].update(data)
+                rest["bytes"] += len(data)
+                rest["scanned"] &= facts["scanned"]
+                rest["flags"] += [f for f in facts["flags"] if f not in rest["flags"]]
+
+        if is_form:
+            for n, m, d in multipart_files(ctype_full, content):
+                check(n, m, d, False)
+            if not state["n"]:
+                if multipart_boundary(ctype_full):
+                    return False  # a form with no file part is not an upload
+                # Declared as a form but unreadable: the whole body is the
+                # evidence, and it is not read by the rules.
+                check(None, "application/octet-stream", content, False)
+        else:
+            check(None, ctype, content, True)
+        if rest["any"]:
+            facts = inspect_file(None, "application/octet-stream", b"", app, policy)
+            facts.pop("action")
+            facts.update(bytes=rest["bytes"], sha256=rest["sha"].hexdigest(), scanned=rest["scanned"],
+                         flags=[*rest["flags"], "flag:too_many_files"])
+            rows.append(facts)
+        blocked = any(a in ("warn", "block") for a in stop)
+        for facts in rows:
+            self._log("chat.attachment", target=host, app=app,
+                      verdict="blocked" if blocked else "allowed", **facts)
+        if not blocked:
+            return False
+        labels = [x for x in stop if x not in ("warn", "block")]
+        _refuse(flow, "Stopped on this Mac: file upload blocked"
+                + (" (" + ", ".join(labels) + ")" if labels else ""))
+        return True
 
     # -- mitmproxy hooks --------------------------------------------------
     def request(self, flow) -> None:
@@ -323,7 +451,8 @@ class ShieldProxy:
             self._log("meta", target=host, app=app, path=_path(flow)[:120])
             return
         if not _match(flow, INTERESTING):
-            self._attachment(flow, app, host)
+            if self._attachment(flow, app, host):
+                return
             self._canary(flow, app, host)
             return
         self._inspected[host] = time.time()

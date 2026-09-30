@@ -1,0 +1,20 @@
+{
+  "observed": "2026-09-29, a 6-byte hello.txt, live chatgpt.com",
+  "steps": [
+    {"transport": "fetch", "method": "POST", "url": "https://chatgpt.com/backend-api/files",
+     "body": {"kind": "json metadata, no file"}, "attachment": false},
+    {"transport": "XMLHttpRequest", "method": "PUT",
+     "url": "https://<name>.oaiusercontent.com/files/<file-uuid>/raw",
+     "host_pattern": "\\.oaiusercontent\\.com$", "path_pattern": "^/files/[^/]+/raw$",
+     "body": {"kind": "Blob", "type": "text/plain"}, "note": "pre-signed, cross-origin: the file itself",
+     "attachment": true},
+    {"transport": "fetch", "method": "POST", "url": "https://chatgpt.com/backend-api/files/process_upload_stream",
+     "body": {"kind": "none or json"}, "attachment": false}
+  ],
+  "noise": [
+    {"transport": "fetch", "method": "POST", "url": "https://chatgpt.com/realtime/wm",
+     "body": {"kind": "FormData", "entries": [{"name": "sdp", "kind": "string"}, {"name": "session", "kind": "string"}]}},
+    {"transport": "fetch", "method": "POST", "url": "https://chatgpt.com/backend-api/f/conversation/prepare",
+     "body": {"kind": "none"}}
+  ]
+}

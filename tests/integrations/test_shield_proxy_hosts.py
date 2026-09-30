@@ -147,7 +147,8 @@ def test_attachment_records_type_and_size_not_content(proxy):
     proxy.request(flow)
     (row,) = _rows(proxy)
     assert row["kind"] == "desktop.chat.attachment"
-    assert row["mime"] == "application/pdf" and row["bytes"] == len(part)
+    assert row["mime"] == "application/pdf" and row["bytes"] == len(b"TOPSECRETBYTES")
+    assert row["scanned"] is False and row["verdict"] == "allowed"
     assert "TOPSECRET" not in json.dumps(row)
 
 
@@ -157,3 +158,70 @@ def test_uncovered_hosts_get_one_meta_row(proxy):
     (row,) = _rows(proxy)
     assert row["kind"] == "desktop.meta" and row["target"] == "api2.cursor.sh"
     assert row["not_covered"]
+
+
+def _upload_fixture(name):
+    return json.loads((Path(__file__).resolve().parents[1] / "fixtures" / "uploads" / name).read_text())
+
+
+def test_chatgpt_presigned_put_is_an_upload(proxy):
+    step = _upload_fixture("chatgpt.json")["steps"][1]
+    assert step["method"] == "PUT"
+    _enable(proxy, apps={"chatgpt": True})
+    flow = _Flow("files.oaiusercontent.com", "/files/abc123/raw", "")
+    flow.request.method = "PUT"
+    flow.request.headers = {"content-type": "text/plain"}
+    flow.request.get_content = lambda strict=False: b"hello\n"
+    proxy.request(flow)
+    (row,) = _rows(proxy)
+    assert row["kind"] == "desktop.chat.attachment" and row["app"] == "chatgpt"
+    assert row["sha256"] == "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    assert row["bytes"] == 6 and row["verdict"] == "allowed"
+
+
+def test_chatgpt_presigned_put_can_be_blocked(proxy):
+    _enable(proxy, apps={"chatgpt": True}, files={"chatgpt": "block"})
+    flow = _Flow("files.oaiusercontent.com", "/files/abc123/raw", "")
+    flow.request.method = "PUT"
+    flow.request.headers = {"content-type": "text/plain"}
+    flow.request.get_content = lambda strict=False: b"hello\n"
+    proxy.request(flow)
+    assert _rows(proxy)[0]["verdict"] == "blocked"
+    assert flow.response is not None
+
+
+@pytest.mark.parametrize("host,path", [
+    ("evil-oaiusercontent.com", "/files/abc/raw"),   # not on a dot boundary
+])
+def test_only_the_storage_host_counts(proxy, host, path):
+    _enable(proxy, apps={"chatgpt": True})
+    flow = _Flow(host, path, "")
+    flow.request.method = "PUT"
+    flow.request.headers = {"content-type": "text/plain"}
+    flow.request.get_content = lambda strict=False: b"hello\n"
+    proxy.request(flow)
+    assert not proxy.ledger.exists() or [r for r in _rows(proxy) if r["kind"].endswith("attachment")] == []
+
+
+def test_chatgpt_metadata_post_is_not_an_attachment(proxy):
+    _enable(proxy, apps={"chatgpt": True})
+    flow = _Flow("chatgpt.com", "/backend-api/files", "{}")
+    flow.request.headers = {"content-type": "application/json"}
+    proxy.request(flow)
+    assert not proxy.ledger.exists() or [r for r in _rows(proxy) if r["kind"].endswith("attachment")] == []
+
+
+def test_claude_wiggle_upload_multipart(proxy):
+    path = _upload_fixture("claude_ai.json")["upload"]["url"].split("claude.ai", 1)[1]
+    path = path.replace("<org-uuid>", "o1").replace("<conversation-uuid>", "c1")
+    part = (b'--b\r\nContent-Disposition: form-data; name="file"; filename="hello.txt"\r\n'
+            b"Content-Type: text/plain\r\n\r\nhello\n\r\n--b--\r\n")
+    _enable(proxy, apps={"claude": True})
+    flow = _Flow("claude.ai", path, "")
+    flow.request.headers = {"content-type": "multipart/form-data; boundary=b"}
+    flow.request.get_content = lambda strict=False: part
+    proxy.request(flow)
+    (row,) = _rows(proxy)
+    assert row["kind"] == "desktop.chat.attachment" and row["scanned"] is True
+    assert row["sha256"] == "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    assert "hello.txt" not in json.dumps(row)

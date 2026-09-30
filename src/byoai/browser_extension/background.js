@@ -50,6 +50,7 @@ const HEALTH_KEY = 'health_unmatched'
 const POLICY_KEY = 'shield_policy'
 const MODES = ['observe', 'redact', 'block']
 const ACTIONS = ['block', 'warn', 'redact', 'log']
+const FILE_ACTIONS = ['allow', 'warn', 'block']
 const POLICY_APPS = ['claude', 'chatgpt', 'gemini', 'copilot']
 const IDENTITY_PREFIX = 'byoai-shield-identity:'
 
@@ -122,9 +123,11 @@ async function refreshPolicy(endpoint, { verified = false } = {}) {
     for (const tier of ['secret', 'pii', 'flag']) {
       if (ACTIONS.includes(p?.actions?.[tier])) actions[tier] = p.actions[tier]
     }
+    const files = {}
+    for (const app of POLICY_APPS) if (FILE_ACTIONS.includes(p?.files?.[app])) files[app] = p.files[app]
     if (!consentOn) return // withdrawn while asking
     await chrome.storage.local.set({
-      [POLICY_KEY]: { mode: MODES.includes(p?.mode) ? p.mode : 'redact', apps, actions, at: Date.now() },
+      [POLICY_KEY]: { mode: MODES.includes(p?.mode) ? p.mode : 'redact', apps, actions, files, at: Date.now() },
     })
   } catch { /* unreachable: keep what was saved */ }
 }

@@ -82,6 +82,7 @@ dev = [
 ]
 
 [project.scripts]
+byoai = "byoai.cli:main"
 byoai-cache = "byoai.agent_context_cache.main:cli"
 # Long-form alias kept for backward compatibility.
 byoai-agent-context-cache = "byoai.agent_context_cache.main:cli"

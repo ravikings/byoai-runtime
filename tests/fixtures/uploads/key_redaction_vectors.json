@@ -1,0 +1,15 @@
+{
+  "note": "Shared by the Python and the extension tests: {A<n>} expands to n letters A. Redaction of a private key: header alone, or through an END line that starts within 8192 characters of the header.",
+  "vectors": [
+    {"in": "k -----BEGIN PRIVATE KEY-----{A100}-----END PRIVATE KEY----- z", "out": "k [SECRET_1] z"},
+    {"in": "k -----BEGIN RSA PRIVATE KEY----- rest", "out": "k [SECRET_1] rest"},
+    {"in": "-----BEGIN PGP PRIVATE KEY BLOCK-----{A50}-----END PGP PRIVATE KEY BLOCK-----", "out": "[SECRET_1]"},
+    {"in": "-----BEGIN PRIVATE KEY-----{A8192}-----END PRIVATE KEY-----!", "out": "[SECRET_1]!"},
+    {"in": "-----BEGIN PRIVATE KEY-----{A8193}-----END PRIVATE KEY-----!", "out": "[SECRET_1]{A8193}-----END PRIVATE KEY-----!"},
+    {"in": "-----BEGIN PRIVATE KEY-----{A9}-----END CERTIFICATE-----", "out": "[SECRET_1]{A9}-----END CERTIFICATE-----"},
+    {"in": "-----BEGIN PRIVATE KEY-----{A3}-----END PRIVATE KEY----- and -----BEGIN EC PRIVATE KEY-----{A4}-----END EC PRIVATE KEY-----", "out": "[SECRET_1] and [SECRET_2]"},
+    {"in": "-----BEGIN PRIVATE KEY-----x-----END PRIVATE KEY----- -----BEGIN PRIVATE KEY-----x-----END PRIVATE KEY-----", "out": "[SECRET_1] [SECRET_1]"},
+    {"in": "-----BEGIN PRIVATE KEY----- -----BEGIN PRIVATE KEY-----{A2}-----END PRIVATE KEY-----", "out": "[SECRET_1]"},
+    {"in": "-----BEGIN PRIVATE KEY-----{A5}-----END X-----END PRIVATE KEY-----", "out": "[SECRET_1]"}
+  ]
+}

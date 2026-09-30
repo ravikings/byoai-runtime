@@ -1,0 +1,14 @@
+{
+  "observed": "2026-09-29, a 6-byte hello.txt, live claude.ai",
+  "upload": {
+    "transport": "fetch", "method": "POST",
+    "url": "https://claude.ai/api/organizations/<org-uuid>/conversations/<conversation-uuid>/wiggle/upload-file",
+    "path_pattern": "^/api/organizations/[^/]+/conversations/[^/]+/wiggle/upload-file$",
+    "body": {"kind": "FormData", "entries": [{"name": "file", "kind": "File", "type": "text/plain"}]}
+  },
+  "noise": [
+    {"transport": "fetch", "method": "POST", "url": "https://claude.ai/api/v2/rum",
+     "body": {"kind": "Blob or string", "type": "text/plain"},
+     "note": "Datadog telemetry, never an attachment"}
+  ]
+}

@@ -65,7 +65,7 @@
   function tellPage() {
     if (!toPage) return
     toPage.postMessage({ t: 'config', consented: consented === true, mode: policy?.mode,
-      apps: policy?.apps ?? null, actions: policy?.actions ?? null })
+      apps: policy?.apps ?? null, actions: policy?.actions ?? null, files: policy?.files ?? null })
   }
   /*
    * One private MessageChannel to the page-world capture, transferred in a
@@ -159,7 +159,13 @@
   function onWarn(req) {
     if (!req || typeof req.send_id !== 'string' || req.send_id.length > 64 || bars.has(req.send_id)) return
     const sendId = req.send_id
-    const names = [...new Set((Array.isArray(req.labels) ? req.labels : [])
+    // A file variant: the file's name is shown here, in the bar only, and
+    // never goes into an event. Shown as text, cut short.
+    const isFile = req.file === true
+    const fileName = isFile && typeof req.name === 'string' ? req.name.slice(0, 80) : ''
+    const asked = Array.isArray(req.labels) ? req.labels : []
+    const unreadable = isFile && asked.includes('unreadable')
+    const names = [...new Set(asked.filter((n) => n !== 'unreadable')
       .map((n) => RULE_LABEL[n] ?? 'sensitive data'))].slice(0, 5)
     let row
     let timer
@@ -188,7 +194,11 @@
       row.setAttribute('role', 'alertdialog')
       const msg = document.createElement('span')
       msg.className = 'msg'
-      msg.textContent = `This message contains ${names.join(', ') || 'sensitive data'}.`
+      msg.textContent = isFile
+        ? `Shield asks before this file goes out${fileName ? ` (${fileName})` : ''}` +
+          `${names.length ? `: it contains ${names.join(', ')}` : ''}.` +
+          `${unreadable ? " Shield couldn't check this file." : ''}`
+        : `This message contains ${names.join(', ') || 'sensitive data'}.`
       const mk = (label, choice, main) => {
         const b = document.createElement('button')
         b.textContent = label
@@ -196,8 +206,8 @@
         b.addEventListener('click', () => finish(choice))
         return b
       }
-      const def = mk('Send redacted', 'redacted', true)
-      row.append(msg, def, mk('Send anyway', 'sent'), mk('Cancel', 'cancelled'))
+      const def = isFile ? mk('Remove file', 'removed', true) : mk('Send redacted', 'redacted', true)
+      row.append(msg, def, mk(isFile ? 'Upload anyway' : 'Send anyway', 'sent'), mk('Cancel', 'cancelled'))
       row.addEventListener('keydown', (e) => { if (e.key === 'Escape') finish('cancelled') })
       barBox.append(row)
       def.focus?.() // Enter picks the default

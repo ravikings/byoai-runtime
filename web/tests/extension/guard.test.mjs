@@ -332,27 +332,6 @@ describe('canary', () => {
   })
 })
 
-describe('attachments', () => {
-  it('records type and size of a FormData file by metadata only', async () => {
-    const w = make({})
-    const form = new FormData()
-    form.set('file', new Blob(['x'.repeat(2048)], { type: 'application/pdf' }), 'a.pdf')
-    await w.post(form, '/api/organizations/o/upload')
-    expect(w.captured).toEqual([{ kind: 'browser.chat.attachment', app: 'claude', mime: 'application/pdf', bytes: 2048 }])
-    expect(w.sent).toEqual([form])
-  })
-  it('records a Blob body', async () => {
-    const w = make({ host: 'chatgpt.com' })
-    await w.post(new Blob(['abc'], { type: 'image/png' }), '/backend-api/files')
-    expect(w.captured[0]).toEqual({ kind: 'browser.chat.attachment', app: 'chatgpt', mime: 'image/png', bytes: 3 })
-  })
-  it('records an upload path by its content headers', async () => {
-    const w = make({ host: 'chatgpt.com' })
-    await w.post('data', '/backend-api/files', { headers: { 'Content-Type': 'text/plain; charset=x', 'Content-Length': '4' } })
-    expect(w.captured[0]).toEqual({ kind: 'browser.chat.attachment', app: 'chatgpt', mime: 'text/plain', bytes: 4 })
-  })
-})
-
 describe('no message text in any event', () => {
   it('emits none of the fixture strings, across every path', async () => {
     const w = make({ relay: true, config: { actions: { secret: 'warn' } } })
@@ -368,6 +347,7 @@ describe('no message text in any event', () => {
     await w.post(body(`plain ${EMAIL}`))
     const form = new FormData(); form.set('note', all)
     await w.post(form, '/upload')
+    await w.post(new Blob([all]), '/api/v2/rum')
     for (let i = 0; i < 3; i++) await w.post(all, '/api/chat/new?x=' + EMAIL)
     const blob = JSON.stringify([w.captured, w.rows])
     for (const f of FIXTURES) expect(blob).not.toContain(f)

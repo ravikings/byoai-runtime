@@ -175,8 +175,10 @@ SECRET_RULES = [
     ("slack_token",   _rx(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
     ("google_api_key", _rx(r"\bAIza[0-9A-Za-z_-]{35}")),
     ("stripe_key",    _rx(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}")),
-    ("private_key_block", _rx(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
-                                 r"(?:[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)?")),
+    # Detection is the header alone. Redaction extends to a matching END line
+    # within 8 KB, found in code (see _redact_private_keys), not in the regex:
+    # a lazy "up to 8 KB then END" quantifier is quadratic on a stream of headers.
+    ("private_key_block", _rx(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----")),
     ("jwt",           _rx(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("conn_string",   _rx(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:@/]*:[^\s@/]+@")),
     ("bearer",        _rx(r"\bBearer\s+[A-Za-z0-9._-]{20,}")),
@@ -207,7 +209,9 @@ REPLY_RULES = [
 RULE_TIER = {**{r: "secret" for r, _ in SECRET_RULES},
              **{r: "pii" for r, _ in PII_RULES},
              **{r: "flag" for r, _ in FLAG_RULES},
-             "oversize": "flag"}  # no pattern: the body was too big to scan whole
+             "oversize": "flag",  # no pattern: the body was too big to scan whole
+             "too_many_files": "flag",
+             "unreadable": "flag"}  # no pattern: the page could not read the file  # no pattern: an upload with more parts than are listed
 
 
 def _luhn(text: str) -> bool:
@@ -257,6 +261,15 @@ def _matches(rule: str, pattern: re.Pattern, text: str):
     return [m for m in pattern.finditer(text) if _valid(rule, m.group(0))]
 
 
+def _first_match(rule: str, pattern: re.Pattern, text: str):
+    """The first match that counts, or None; stops there, so a body that is
+    one match after another costs one match, not all of them."""
+    for m in pattern.finditer(text):
+        if _valid(rule, m.group(0)):
+            return m
+    return None
+
+
 RULE_LABEL = {
     "emails": "email address", "cards": "card number", "wallets": "wallet address",
     "phone_numbers": "phone number", "ssn_like": "SSN-like number", "iban": "IBAN",
@@ -266,7 +279,8 @@ RULE_LABEL = {
     "stripe_key": "Stripe key", "private_key_block": "private key",
     "jwt": "JWT", "conn_string": "database URL with a password",
     "bearer": "bearer token", "credential_assign": "credential text",
-    "password_said": "credential mention", "oversize": "very large message",
+    "password_said": "credential mention", "oversize": "very large message", "too_many_files": "very many files",
+    "unreadable": "file that could not be checked",
     "executable_masquerade": "dangerous file",
     "tool_intent": "agent action intent", "connector_tool_call": "agent tool call",
     "reply_pii_echo": "PII echoed in reply", "reply_leak": "secret echoed in reply",
@@ -342,6 +356,167 @@ APP_LABEL = {"claude": "Claude", "chatgpt": "ChatGPT", "gemini": "Gemini",
 COVERED_APPS = ("claude", "chatgpt", "github_copilot", "mistral", "deepseek",
                 "groq", "openrouter", "together", "gemini_api")
 
+# ---- the rules object the extension carries, and its version ------------
+
+
+def _js_rule(name: str, pattern: re.Pattern) -> list[str]:
+    """[name, source, flags] for ``new RegExp(source, flags)``. JavaScript has
+    no leading ``(?i)``, so that becomes the ``i`` flag."""
+    source, flags = pattern.pattern, ""
+    if source.startswith("(?i)"):
+        source = source[4:]
+        flags = "i"
+    if pattern.flags & re.I:
+        flags = "i"
+    # Groups JavaScript also reads: (?:  (?=  (?!  (?<=  (?<!  -- anything else
+    # after an unescaped "(?" (inline flags, named groups) must be rewritten.
+    if re.search(r"(?<!\\)\(\?(?![:=!]|<[=!])", source):
+        raise ValueError(f"rule {name!r} uses Python-only group syntax")
+    return [name, source, flags]
+
+
+def extension_rules() -> dict:
+    """The rules object scripts/gen_extension_rules.py writes into
+    shield-rules.js (without ``rules_version``, which is a hash of this)."""
+    return {
+        "secret": [_js_rule(n, p) for n, p in SECRET_RULES],
+        "pii": [_js_rule(n, p) for n, p in PII_RULES],
+        "flag": [_js_rule(n, p) for n, p in FLAG_RULES],
+        # A match only counts if its named validator passes.
+        "validators": VALIDATOR_NAMES,
+        # Redacted as [EMAIL_1], [SECRET_2], ... (numbered per distinct value).
+        "placeholder": PLACEHOLDER,
+        "rule_actions": RULE_ACTIONS,
+        "default_actions": DEFAULT_ACTIONS,
+        "covered_apps": list(COVERED_APPS),
+    }
+
+
+def rules_version_of(rules: dict) -> str:
+    """First 12 hex of SHA-256 over the canonical JSON of ``rules``."""
+    from byoai.recorder.canonical import canonicalize
+    return hashlib.sha256(canonicalize(rules)).hexdigest()[:12]
+
+
+#: Names the version of the rules that checked a file. Each file row carries it
+#: so an examiner can tell which rules to run; shield-rules.js carries the same.
+RULES_VERSION = rules_version_of(extension_rules())
+
+# ---- files ---------------------------------------------------------------
+#: Per-app file policy, weakest to strictest. ``warn`` asks first in the
+#: browser; the desktop proxy has no way to ask, so there it blocks.
+FILE_ACTIONS = ("allow", "warn", "block")
+TEXT_EXTENSIONS = frozenset(
+    ".txt .csv .tsv .json .jsonl .md .log .env .ini .cfg .conf .yaml .yml .xml "
+    ".sql .py .js .ts .go .java .rb .sh .pem .key".split())
+MAX_FILE_SCAN = 5 * 1024 * 1024
+
+
+def clean_files(raw: object) -> dict:
+    """App -> file action; a missing or invalid entry is ``allow``."""
+    raw = raw if isinstance(raw, dict) else {}
+    return {a: (raw[a] if raw.get(a) in FILE_ACTIONS else "allow") for a in APP_LABEL}
+
+
+def file_action(app: str | None, policy: dict | None) -> str:
+    return clean_files((policy or {}).get("files")).get(app or "", "allow")
+
+
+TEXT_MIMES = frozenset((
+    "application/json", "application/x-sh", "application/xml",
+    "application/x-yaml", "application/yaml"))
+
+
+def mime_text_like(mime: str | None) -> bool:
+    """A declared type that is text whatever the file is called: text/*, JSON,
+    XML, YAML, shell, and certificate/key formats (x509, pem)."""
+    m = (mime or "").split(";", 1)[0].strip().lower()
+    return (m.startswith("text/") or m in TEXT_MIMES or m.endswith("+json")
+            or m.endswith("+xml") or "yaml" in m or "x509" in m or "pem" in m)
+
+
+def is_text_like(name: str | None, mime: str | None) -> bool:
+    ext = _os.path.splitext(name or "")[1].lower()
+    return ext in TEXT_EXTENSIONS or mime_text_like(mime)
+
+
+def _utf16_guess(data: bytes) -> str | None:
+    """utf-16-le / utf-16-be for text without a byte-order mark: more than 30%
+    of the bytes at one parity are zero (ASCII in UTF-16 is every other byte)."""
+    n = len(data)
+    if n < 4:
+        return None
+    odd, even = data[1::2].count(0), data[0::2].count(0)
+    if odd / (n / 2) > 0.3 and odd >= even:
+        return "utf-16-le"
+    if even / (n / 2) > 0.3:
+        return "utf-16-be"
+    return None
+
+
+def _decode_text(data: bytes) -> str:
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16", "replace")
+    guess = _utf16_guess(data)
+    if guess:
+        return data.decode(guess, "replace")
+    return data.decode("utf-8", "replace")
+
+
+def _reads_as_text(data: bytes) -> bool:
+    """Valid UTF-8, or UTF-16 (with a mark, or by the zero-byte pattern)."""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff") or _utf16_guess(data):
+        return True
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def inspect_file(name: str | None, mime: str | None, data: bytes, app: str | None,
+                 policy: dict | None, *, key_path: Path | None = None,
+                 raw_upload: bool = False) -> dict:
+    """What a ledger row may hold about one uploaded file: type, size, SHA-256,
+    a keyed hash of the name, whether the rules read it, which rules hit and the
+    version of the rules. Never the name or any of the content.
+
+    ``raw_upload``: the body came bare to a known upload endpoint (ChatGPT's
+    storage PUT), so it has no name and a declared type that means nothing; it
+    is read when it decodes as text.
+
+    ``action`` is ``log``, ``warn`` or ``block``: the strictest of the per-app
+    file policy and the rule actions (``redact`` counts as ``warn``, because
+    files are never rewritten). ``mode: observe`` logs everything."""
+    policy = policy or {}
+    scanned = len(data) <= MAX_FILE_SCAN and (
+        is_text_like(name, mime) or (raw_upload and not name and _reads_as_text(data)))
+    flags: list[str] = []
+    rule_action = "log"
+    if scanned:
+        text = _decode_text(data)
+        found = flags_for(text, replies=False)
+        rule_action, rules = evaluate(text, policy, flags=found)
+        flags = list(dict.fromkeys(
+            f"{t}:{r}" for t, r, _ in found if not r.startswith("reply_")))
+        if rule_action == "redact":
+            rule_action = "warn"
+    base = {"allow": "log", "warn": "warn", "block": "block"}[file_action(app, policy)]
+    action = stricter(rule_action, base)
+    if policy.get("mode") == "observe":
+        action = "log"
+    return {
+        "mime": (mime or "").split(";", 1)[0].strip().lower() or None,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "name_hash": (fingerprint(name, key_path or FINGERPRINT_KEY) if name else None),
+        "scanned": scanned,
+        "flags": flags,
+        "rules_version": RULES_VERSION,
+        "action": action,
+    }
+
+
 DATA_DIR = Path.home() / ".byoai" / "shield"
 FINGERPRINT_KEY = DATA_DIR / "fingerprint.key"
 #: The signed policy envelope last accepted from Coriqo managed mode (private,
@@ -380,10 +555,10 @@ def flags_for(text: str, *, replies: bool = True) -> list[tuple[str, str, str]]:
         # only the softer tiers give up the middle of a huge body.
         subject = text if tier == "secret" else scanned
         for rule, pattern in rules:
-            found = _matches(rule, pattern, subject)
+            found = _first_match(rule, pattern, subject)
             if found:
                 flags.append((reply_tier(rule) if tier == "reply" else tier,
-                              rule, found[0].group(0)[:60]))
+                              rule, found.group(0)[:60]))
     if capped:
         flags.append(("flag", "oversize", ""))
     return flags
@@ -421,10 +596,57 @@ def redact_with_rules(text: str, policy: dict | None = None,
             seen = state.setdefault(label, {})
             return f"[{label}_{seen.setdefault(value, len(seen) + 1)}]"
 
-        text = p.sub(sub, text)
+        if rule == "private_key_block":
+            text = _redact_private_keys(text, sub, p)
+        else:
+            text = p.sub(sub, text)
         if changed:
             hit.append(rule)
     return text, hit
+
+
+_KEY_END = re.compile(r"-----END [A-Z ]{0,256}PRIVATE KEY(?: BLOCK)?-----", re.ASCII)
+KEY_BODY_MAX = 8192
+
+
+def _redact_private_keys(text: str, sub, header: re.Pattern) -> str:
+    """Replace each private-key header, and the key body through its END line
+    when that starts within KEY_BODY_MAX characters of the header, with one
+    placeholder. Linear: the END search moves forward only (an END candidate
+    that is not a valid END line is not one for any later header either)."""
+    out: list[str] = []
+    pos = 0
+    end_at = -2  # start of the next valid END line at or after the last search point
+    end_stop = -1
+    for m in header.finditer(text):
+        if m.start() < pos:
+            continue
+        stop = m.end()
+        if end_at != -1 and end_at < stop:
+            i = text.find("-----END ", stop)
+            end_at = -1
+            while i != -1:
+                e = _KEY_END.match(text, i)
+                if e:
+                    end_at, end_stop = i, e.end()
+                    break
+                i = text.find("-----END ", i + 1)
+        if end_at != -1 and end_at - stop <= KEY_BODY_MAX:
+            stop = end_stop
+        out.append(text[pos:m.start()])
+        out.append(sub(_Span(text[m.start():stop])))
+        pos = stop
+    out.append(text[pos:])
+    return "".join(out)
+
+
+class _Span:
+    """The bit of a ``re.Match`` the substituter reads."""
+    def __init__(self, value: str) -> None:
+        self._v = value
+
+    def group(self, _n: int = 0) -> str:
+        return self._v
 
 
 def redact(text: str) -> str:
@@ -1057,6 +1279,9 @@ def default_policy() -> dict:
         # What each tier does on a hit: block | warn | redact | log. The mode
         # above is the master switch ("observe" logs everything).
         "actions": dict(DEFAULT_ACTIONS),
+        # What happens to a file uploaded to each app: allow | warn | block.
+        # Text-like files are also read by the rules; see inspect_file.
+        "files": {a: "allow" for a in APP_LABEL},
         # What Coriqo may receive about activity: "seal" (integrity only),
         # "daily" totals, or per-message "events". Only a signed managed
         # policy moves it; see byoai.integrations.shield_sync.
@@ -1068,6 +1293,7 @@ def merge_policy(disc: dict) -> dict:
     p = {**default_policy(), **disc}
     p["apps"] = {**default_policy()["apps"], **(disc.get("apps") or {})}
     p["actions"] = clean_actions(disc.get("actions"))
+    p["files"] = clean_files(disc.get("files"))
     return p
 
 
@@ -1109,6 +1335,11 @@ def load_policy(cfg: ShieldConfig) -> dict:
 # device — capture, redaction, sealing — is unaffected by whether a device is
 # managed at all.
 
+# The settings a managed policy is validated for (see _validate_managed_policy).
+# It is a reference list, not a gate: load_policy applies every key a signed
+# document names in ``locked``, and Coriqo's own list (shield_server.policy)
+# offers mode, apps, keep_text, retention_days and notice. ``actions`` and
+# ``files`` are not lockable yet.
 MANAGED_LOCKABLE_KEYS = ("mode", "apps", "keep_text", "retention_days", "notice",
                          "sync")
 
@@ -1400,6 +1631,12 @@ def apply_policy_update(policy: dict, payload: dict) -> dict:
             raise ValueError("actions must map secret, pii or flag to "
                              + ", ".join(ACTIONS))
         out["actions"] = {**clean_actions(out.get("actions")), **acts}
+    if "files" in payload:
+        fl = payload["files"]
+        if not isinstance(fl, dict) or not all(
+                a in APP_LABEL and v in FILE_ACTIONS for a, v in fl.items()):
+            raise ValueError("files must map app names to " + ", ".join(FILE_ACTIONS))
+        out["files"] = {**clean_files(out.get("files")), **fl}
     for key in ("keep_text", "notice"):
         if key in payload:
             if not isinstance(payload[key], bool):
@@ -1414,7 +1651,10 @@ def apply_policy_update(policy: dict, payload: dict) -> dict:
                 or (out["keep_text"] and not policy.get("keep_text"))
                 or any(ACTIONS.index(a) < ACTIONS.index(
                     clean_actions(policy.get("actions"))[t])
-                    for t, a in out["actions"].items()))
+                    for t, a in out["actions"].items())
+                or any(FILE_ACTIONS.index(v) < FILE_ACTIONS.index(
+                    clean_files(policy.get("files"))[a])
+                    for a, v in out["files"].items()))
     if weakened and payload.get("acknowledge") != "less_private":
         raise ValueError("This makes Shield less private than it is now; "
                          "confirm it to save (acknowledge: less_private)")
@@ -1700,7 +1940,10 @@ class Feed:
             if kind == "browser.chat.reply":
                 self._attach_tools(r, label)
                 return
-            if kind in ("browser.chat.attachment", "browser.health.unmatched"):
+            if kind == "browser.chat.attachment":
+                self._absorb_file(r, "browser", date, ts)
+                return
+            if kind == "browser.health.unmatched":
                 return  # facts for the ledger and seal, not a message row
             wire = r.get("wire") if isinstance(r.get("wire"), str) else None
             ts_raw = r.get("sent_at") or ""
@@ -1749,6 +1992,8 @@ class Feed:
                       chars=r.get("chars"), redactions=r.get("redactions"))
             self.items[0]["ts"], self.items[0]["date"] = shown_ts, shown_date
             self.items[0]["_send_id"] = r.get("send_id")
+        elif kind == "desktop.chat.attachment":
+            self._absorb_file(r, "desktop", date, ts)
         elif kind == "tool.call":
             ident = r.get("identity") or {}
             tool = r.get("tool") or "execute"
@@ -1775,6 +2020,29 @@ class Feed:
                             call_id=r.get("call_id"),
                             status="failed" if kind == "tool.error" else "answered")
 
+    def _absorb_file(self, r: dict, source: str, date: str, ts: str) -> None:
+        """A file that went (or was stopped) on its way to an AI app. Only rows
+        that carry a SHA-256 are shown and sealed; older attachment rows stay
+        ledger-only, as before."""
+        sha = r.get("sha256")
+        if not (isinstance(sha, str) and _SHA256.fullmatch(sha)):
+            return
+        app = r.get("app") or "claude"
+        label = APP_LABEL.get(app, app)
+        nbytes = r.get("bytes") if isinstance(r.get("bytes"), int) else None
+        file = {k: r[k] for k in ("mime", "bytes", "sha256", "name_hash",
+                                  "scanned", "rules_version") if r.get(k) is not None}
+        verdict = r.get("verdict") if isinstance(r.get("verdict"), str) else None
+        blocked = verdict == "blocked"
+        self._add(source=source, surface=f"{label} \u00b7 {source}", ts=ts,
+                  verb=(f"File to {label} stopped on this Mac" if blocked and source == "desktop"
+                        else f"File to {label} stopped in this browser" if blocked
+                        else f"File to {label}"
+                        + (f" \u00b7 {nbytes:,} bytes" if nbytes is not None else "")),
+                  date=date, flags_box=_flags_from_row(r),
+                  status="blocked" if blocked else "answered", verdict=verdict,
+                  file=file)
+
     def _is_first_browser_send(self, label: str) -> bool:
         return not any(
             it["source"] == "browser" and it["surface"].startswith(label)
@@ -1782,7 +2050,7 @@ class Feed:
 
     def _add(self, *, source, surface, ts, verb, date, status="answered",
              tool=None, identity=None, flags_box, verdict=None, text_hmac=None,
-             chars=None, redactions=None):
+             chars=None, redactions=None, file=None):
         item = {
             "id": self._current_id, "source": source, "surface": surface,
             "ts": ts, "date": date, "verb": redact(verb), "status": status,
@@ -1793,6 +2061,8 @@ class Feed:
             "redactions": _as_list(redactions), "reply": None,
             "tools": [], "sources": None,
         }
+        if file:
+            item["file"] = file
         item["tier"] = _tier(item)
         # The seal binds what happened, not what was said: the message
         # fingerprint and length stand in for its text unless the admin
@@ -1804,6 +2074,8 @@ class Feed:
             "text_hmac": text_hmac, "chars": chars,
             "identity": item["identity"], "usage": {},
         }
+        if file:
+            item["_seal_payload"]["file"] = file
         if self._policy.get("keep_text"):
             item["_seal_payload"]["text_redacted"] = item["verb"][:400]
         item["seal"] = (self.seals.stamp(item["_seal_payload"])
@@ -1978,12 +2250,18 @@ def request_problem(method: str, path: str, headers) -> str | None:
 _BROWSER_FLAGS = frozenset(
     [f"{tier}:{rule}" for tier, rules in (("secret", SECRET_RULES), ("pii", PII_RULES),
                                           ("flag", FLAG_RULES))
-     for rule, _ in rules] + ["flag:oversize"])
+     for rule, _ in rules] + ["flag:oversize", "flag:unreadable", "flag:too_many_files"])
 _BROWSER_VERDICT = re.compile(
     r"observe|redact|block|blocked|redacted\(\d{1,2}\)"
     r"|warned(?:\u2192|->)(?:sent|redacted|cancelled)")
 # Names of tools an AI app ran for a reply ("web.run", "python"), as the
 # extension reads them from the reply stream. A name, never text.
+# What became of an uploaded file, as the extension records it.
+_ATTACH_VERDICT = re.compile(
+    r"allowed|blocked|cancelled|warned(?:\u2192|->)(?:uploaded|removed)")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_NAME_HASH = re.compile(r"hmac-sha256:[0-9a-f]{64}")
+_RULES_VERSION = re.compile(r"[0-9a-f]{12}")
 _TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,48}")
 _MIME = re.compile(r"[A-Za-z0-9!#$&^_.+-]{1,60}/[A-Za-z0-9!#$&^_.+-]{1,80}")
 _SEND_ID = re.compile(r"[A-Za-z0-9-]{8,64}")
@@ -2025,7 +2303,9 @@ def clean_browser_row(row: object) -> dict | None:
     if isinstance(row.get("redactions"), list):
         out["redactions"] = sorted({r for r in row["redactions"]
                                     if isinstance(r, str) and r in RULE_REDACT})
-    if isinstance(row.get("verdict"), str) and _BROWSER_VERDICT.fullmatch(row["verdict"]):
+    verdict_re = (_ATTACH_VERDICT if row["kind"] == "browser.chat.attachment"
+                  else _BROWSER_VERDICT)
+    if isinstance(row.get("verdict"), str) and verdict_re.fullmatch(row["verdict"]):
         out["verdict"] = row["verdict"]
     if isinstance(row.get("tools"), list):
         out["tools"] = list(dict.fromkeys(
@@ -2039,6 +2319,25 @@ def clean_browser_row(row: object) -> dict | None:
     nbytes = row.get("bytes")
     if isinstance(nbytes, int) and not isinstance(nbytes, bool) and 0 <= nbytes < 2**40:
         out["bytes"] = nbytes
+    # File evidence: the hash and rule version the page computed, and a keyed
+    # hash of the file name. A raw ``name`` is hashed here and then dropped;
+    # it never reaches the ledger.
+    if isinstance(row.get("sha256"), str) and _SHA256.fullmatch(row["sha256"]):
+        out["sha256"] = row["sha256"]
+    if isinstance(row.get("name"), str) and row["name"]:
+        out["name_hash"] = fingerprint(row["name"][:512])
+    elif isinstance(row.get("name_hash"), str) and _NAME_HASH.fullmatch(row["name_hash"]):
+        out["name_hash"] = row["name_hash"]
+    if isinstance(row.get("scanned"), bool):
+        out["scanned"] = row["scanned"]
+    # A page can't say "not read" about text: a text type of a size the rules
+    # read is always recorded as scanned (and check-file then holds it to that).
+    if (row["kind"] == "browser.chat.attachment"
+            and mime_text_like(out.get("mime")) and out.get("bytes", MAX_FILE_SCAN + 1) <= MAX_FILE_SCAN):
+        out["scanned"] = True
+    if (isinstance(row.get("rules_version"), str)
+            and _RULES_VERSION.fullmatch(row["rules_version"])):
+        out["rules_version"] = row["rules_version"]
     # browser.health.unmatched: a path prefix, trimmed, no query and no body.
     if isinstance(row.get("path"), str):
         out["path"] = re.sub(r"[^A-Za-z0-9/_.:-]", "?", row["path"].split("?", 1)[0])[:60]

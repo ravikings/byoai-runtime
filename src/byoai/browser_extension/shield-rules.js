@@ -45,7 +45,7 @@
       ],
       [
         "private_key_block",
-        "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:[\\s\\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)?",
+        "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----",
         ""
       ],
       [
@@ -160,7 +160,8 @@
       "openrouter",
       "together",
       "gemini_api"
-    ]
+    ],
+    "rules_version": "c223d35432be"
   }
   Object.defineProperty(window, '__shieldRules', { value: Object.freeze(rules) })
 })()
