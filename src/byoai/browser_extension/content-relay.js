@@ -73,7 +73,7 @@
   // Why the gate did or didn't act, readable from the page for support (no text,
   // no rule matches: a state word only).
   const diag = (s) => { try { document.documentElement.setAttribute('data-shield-gate', s) } catch { /* no DOM yet */ } }
-  diag(eng ? 'ready' : `off:${!gateApp ? 'no-site' : !RULES ? 'no-rules' : !core ? 'no-core' : 'no-engine'}`)
+  diag(eng ? 'ready' : `off:${!gateApp ? `no-site:n=${sites.length}:h=${location.host}:top=${window === window.top}:g=${typeof window.__shieldSites}` : !RULES ? 'no-rules' : !core ? 'no-core' : 'no-engine'}`)
   const localWaiters = new Map()
   var gateListeners = null // eslint-disable-line no-var -- read by disable(), which can run first
   let bypass = false // one-shot: set only around the gate's own re-dispatch
