@@ -122,10 +122,16 @@ from them). *Record only* (`observe`) leaves messages unchanged, and so does
 an app switched off in Shield. Until the extension has heard from your Shield
 it uses the default, *redact*.
 
-On gemini.google.com and copilot.microsoft.com messages always go out
-unchanged: those sites send them as form-encoded or websocket traffic the
-extension can't safely rewrite. Sends that don't go through the page's
-`fetch` are noted, not rewritten, and attachments are never read (only their type and size are noted).
+On gemini.google.com and copilot.microsoft.com the network requests are only
+noted, never rewritten: those sites send messages as form-encoded or websocket
+traffic the extension can't safely rewrite. When those apps are turned on in
+Shield (they are off in Shield's default policy, and checked like the others
+until the extension has heard from your Shield), the input gate above still
+checks what you send and attach there, with
+the same actions: it can stop a send, rewrite the message box or clear the file
+picker before the site receives anything. Other sends that don't go through the
+page's `fetch` are noted, not rewritten. Attachments are read only as described
+under "File hashing" and "What the input gate reads".
 
 No account, device or user identifier is attached to rows. There is no
 analytics, no telemetry, no advertising and no third-party request. The data is
