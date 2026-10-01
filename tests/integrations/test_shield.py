@@ -1298,16 +1298,19 @@ def test_the_extension_sites_file_is_generated_from_sites_json():
         assert {m.split("//")[1].split("/")[0] for m in entry["matches"]} == hosts
         js = entry["js"]
         # The shared engine reads the rules and the site list, and both scripts read the engine.
-        assert js.index("shield-rules.js") < js.index("shield-core.js")
-        assert js.index("shield-sites.js") < js.index("shield-core.js")
-        for consumer in ("content.js", "content-relay.js"):
-            if consumer in js:
-                assert js.index("shield-core.js") < js.index(consumer)
     isolated = next(e for e in manifest["content_scripts"] if "world" not in e)
     page = next(e for e in manifest["content_scripts"] if e.get("world") == "MAIN")
     assert isolated["js"][-1] == "content-relay.js" and page["js"][-1] == "content.js"
-    assert {"shield-rules.js", "shield-core.js", "shield-sites.js"} <= set(isolated["js"])
-    assert {"shield-rules.js", "shield-core.js", "shield-sites.js"} <= set(page["js"])
+    pj = page["js"]
+    assert pj.index("shield-rules.js") < pj.index("shield-core.js") < pj.index("content.js")
+    assert pj.index("shield-sites.js") < pj.index("shield-core.js")
+    # Chrome injects a file once per frame: no file may be listed in both worlds
+    # (found live: the isolated world never got the site profiles). The isolated
+    # world loads its own generated bundle first.
+    assert not set(isolated["js"]) & set(pj)
+    assert isolated["js"][0] == "shield-iso.js"
+    assert mod.ISO_TARGET.read_text() == mod.render_iso(), (
+        "shield-iso.js is out of date: run python scripts/gen_extension_rules.py")
     # The host -> app map is not written by hand anywhere else in the extension.
     ext = mod.SITES_SOURCE.parent
     for name in ("shield-core.js", "content.js", "content-relay.js"):
