@@ -70,6 +70,10 @@
   const gateApp = site.app
   let cfg = { consented: false, mode: 'redact', apps: null, actions: {}, files: {} }
   const eng = gateApp && RULES && core && core.engine(RULES, () => cfg)
+  // Why the gate did or didn't act, readable from the page for support (no text,
+  // no rule matches: a state word only).
+  const diag = (s) => { try { document.documentElement.setAttribute('data-shield-gate', s) } catch { /* no DOM yet */ } }
+  diag(eng ? 'ready' : `off:${!gateApp ? 'no-site' : !RULES ? 'no-rules' : !core ? 'no-core' : 'no-engine'}`)
   const localWaiters = new Map()
   var gateListeners = null // eslint-disable-line no-var -- read by disable(), which can run first
   let bypass = false // one-shot: set only around the gate's own re-dispatch
@@ -449,11 +453,14 @@
   }
 
   function gateSend(ev, kind, compose) {
-    if (!eng || !compose) return
+    if (!eng) return diag('skip:no-engine')
+    if (!compose) return diag(`skip:no-compose:${kind}`)
     if (bypass) { bypass = false; return }
     const text = readText(compose)
     const halt = () => { stop(ev); if (kind === 'key') stopKeyUntil = Date.now() + 2000 }
-    if (!text.trim() || !governing()) return
+    if (!text.trim()) return diag('skip:empty')
+    if (!governing()) return diag(`skip:not-governing:${cfg.consented ? 'c' : 'nc'}:${cfg.apps === null ? 'all' : cfg.apps[gateApp] ? 'on' : 'off'}`)
+    diag('judged')
     const now = Date.now()
     // pointerdown then click, or Enter then the form's submit, are one send: one
     // decision. A repeat of the same text any other way is a new send, judged and recorded.
