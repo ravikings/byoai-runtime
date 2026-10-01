@@ -76,7 +76,8 @@ export function Settings() {
   if (policy.isPending) return <p className="empty-row" role="status">Loading settings…</p>
   if (policy.isError) return <p className="empty-row" role="alert">Can't reach Shield on this Mac.</p>
   const p = policy.data
-  const covered = new Set(p.covered_apps ?? Object.keys(p.apps))
+  const inputOnly = new Set(p.input_only_apps ?? [])
+  const covered = new Set([...(p.covered_apps ?? Object.keys(p.apps)), ...inputOnly])
   const locked = new Set(p.managed?.locked ?? [])
 
   return (
@@ -167,7 +168,9 @@ export function Settings() {
             help="On: Shield checks what the app sends. Off: its traffic passes through, unchecked and unrecorded." />
           {locked.has('apps') && <p className="muted setting-help">Set by {p.managed?.by || 'your administrator'}.</p>}
           {Object.entries(p.apps).map(([app, on]) => {
-            const where = API_APPS.has(app)
+            const where = inputOnly.has(app)
+              ? 'Checked in Chrome as you send or attach (Shield extension 0.10 or later). Shield can\'t read its traffic, so the desktop proxy doesn\'t check it.'
+              : API_APPS.has(app)
               ? 'Checked when the desktop proxy sees its API traffic. Not yet tested against live traffic.'
               : installed.data
               ? installed.data[app] ? 'Installed on this Mac.' : 'Not found in Applications; the web version is still covered.'

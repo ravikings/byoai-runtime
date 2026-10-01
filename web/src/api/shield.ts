@@ -160,6 +160,8 @@ export const ShieldPolicy = z.object({
   /** Apps the capture proxy can read. Served, not saved: the others can't
    * be turned on yet. */
   covered_apps: z.array(z.string()).optional(),
+  /** Apps checked only at input, by the browser extension's gate. */
+  input_only_apps: z.array(z.string()).optional(),
   managed: ShieldManaged.optional(),
   sharing: ShieldSharing.optional(),
 })

@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[redacted-email]`.
 
 ### Added
+- Gemini and Copilot can be turned on in Shield (`input_only_apps` in
+  `/api/policy`): the input gate checks what is sent and attached there, though
+  their traffic still can't be read. Settings says so.
 - **Extension 0.10.0: an input gate.** Wrapping the page's network calls can't
   reliably stop a send (claude.ai sent through a hidden iframe's own `fetch`,
   then retried with other body types), so the message and the files are now

@@ -371,9 +371,10 @@ was said**. With no settings changed:
 
 **Which apps.** The proxy reads Claude (claude.ai, the Claude desktop app,
 the Anthropic API) and ChatGPT (chatgpt.com, the OpenAI Chat Completions and
-Responses APIs; off until turned on). Gemini and Copilot are listed but not
-covered: their clients don't send JSON the proxy can read, so their toggles
-can't be turned on and say so.
+Responses APIs; off until turned on). Gemini and Copilot don't send JSON the
+proxy can read; their toggles can be turned on for the browser extension's
+input gate, which checks what you send and attach there (the proxy and the
+network layer still only record them).
 
 All of these are keys in `policy.json`, edited from Shield's Settings tab.
 
@@ -447,8 +448,8 @@ To settle "that isn't the file I sent", run `byoai shield check-file <path>`
 (add `--name <original name>` if the copy was renamed): it prints
 `hash: match|different`, `rules reproduce: yes|no` and `seal verifies: yes|no`.
 
-**Which apps are covered?** Browser: Claude and ChatGPT read and redact;
-Gemini and Copilot record only. Desktop proxy: Claude, ChatGPT, and (off by
+**Which apps are covered?** Browser: Claude and ChatGPT are checked at input
+and on the network; Gemini and Copilot are checked at input (when turned on). Desktop proxy: Claude, ChatGPT, and (off by
 default) GitHub Copilot chat, Mistral, DeepSeek, Groq, OpenRouter, Together
 and the Gemini API. Those last seven are built from public API docs and are
 untested against live traffic. Cursor, Windsurf and Perplexity are not covered.

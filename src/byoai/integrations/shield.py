@@ -355,6 +355,10 @@ APP_LABEL = {"claude": "Claude", "chatgpt": "ChatGPT", "gemini": "Gemini",
 # neither can be governed yet; their toggles stay off and say why.
 COVERED_APPS = ("claude", "chatgpt", "github_copilot", "mistral", "deepseek",
                 "groq", "openrouter", "together", "gemini_api")
+# Apps whose traffic Shield can't read, but whose messages and files the
+# extension's input gate checks as the user hands them to the page. They can
+# be turned on; the network backstop and the desktop proxy still can't read them.
+INPUT_ONLY_APPS = ("gemini", "copilot")
 
 # ---- the rules object the extension carries, and its version ------------
 
@@ -1620,7 +1624,7 @@ def apply_policy_update(policy: dict, payload: dict) -> dict:
                 isinstance(v, bool) for v in payload["apps"].values()):
             raise ValueError("apps must map app names to true/false")
         for app, on in payload["apps"].items():
-            if on and app not in COVERED_APPS:
+            if on and app not in COVERED_APPS and app not in INPUT_ONLY_APPS:
                 raise ValueError(f"Shield can't read {APP_LABEL.get(app, app)} "
                                  "messages yet, so it can't be turned on")
         out["apps"] = {**out["apps"], **payload["apps"]}
@@ -2462,7 +2466,8 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                 return {"device_id": key.device_id, "public_key": key.public_key_b64,
                         "sig": key.sign(IDENTITY_PREFIX + nonce.encode())}
             if path == "/api/policy":
-                out = {**load_policy(cfg), "covered_apps": list(COVERED_APPS)}
+                out = {**load_policy(cfg), "covered_apps": list(COVERED_APPS),
+                       "input_only_apps": list(INPUT_ONLY_APPS)}
                 summary = managed_summary(load_managed_policy(cfg.managed_policy_path))
                 pol_error = publisher.policy_status().get("error")
                 if summary or pol_error:
@@ -2628,7 +2633,8 @@ def serve(cfg: ShieldConfig, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                 return
             save_policy(cfg, policy)
             self._send(200, json.dumps(
-                {**policy, "covered_apps": list(COVERED_APPS)}).encode())
+                {**policy, "covered_apps": list(COVERED_APPS),
+                 "input_only_apps": list(INPUT_ONLY_APPS)}).encode())
 
         def _browser_ingest(self) -> None:
             """Rows from the browser extension: same ledger, same seal chain,

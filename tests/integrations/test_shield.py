@@ -356,10 +356,16 @@ def test_harsh_reply_is_a_conduct_flag_not_pii():
 
 
 def test_uncovered_apps_cannot_be_turned_on():
-    with pytest.raises(ValueError, match="Gemini"):
-        apply_policy_update(default_policy(), {"apps": {"gemini": True}})
+    with pytest.raises(ValueError, match="nope"):
+        apply_policy_update(default_policy(), {"apps": {"nope": True}})
     assert apply_policy_update(default_policy(),
                                {"apps": {"chatgpt": True}})["apps"]["chatgpt"]
+
+
+def test_input_only_apps_can_be_turned_on():
+    # Gemini and Copilot are checked by the extension's input gate, not their traffic.
+    out = apply_policy_update(default_policy(), {"apps": {"gemini": True, "copilot": True}})
+    assert out["apps"]["gemini"] and out["apps"]["copilot"]
 
 
 def test_chatgpt_and_openai_bodies_are_redacted():
